@@ -171,6 +171,9 @@ zyxel,wx5600-t0-ubootmod)
 	ubootenv_add_ubi_default
 	ubootenv_add_sys_mtd "u-boot-env" "0x0" "0x20000" "0x40000" "2"
 	;;
+bell,xg-040g-md)
+	ubootenv_add_mtd "env" "0x0" "0x80000" "0x20000" "4"
+	;;
 zyxel,ex5700-telenor)
 	ubootenv_add_uci_config "/dev/ubootenv" "0x0" "0x4000" "0x4000" "1"
 	;;
