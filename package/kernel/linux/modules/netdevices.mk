@@ -672,7 +672,7 @@ define KernelPackage/dsa-mt7530-mmio/description
   Used on Airoha EN7581 SoC with built-in switch.
 endef
 
-$(eval $(call KernelPackage,dsa-mt7530-mmio)
+$(eval $(call KernelPackage,dsa-mt7530-mmio))
 
 
 define KernelPackage/phy-aquantia
