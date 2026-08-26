@@ -19,6 +19,9 @@ nokia,xg-040g-md-ubi)
 nokia,xg-040g-md)
 	ubootenv_add_mtd "u-boot-env" "0x1c000" "0x4000" "0x4000"
 	;;
+nokia,xg-040g-md-tcboot)
+	ubootenv_add_mtd "env" "0x0" "0x80000" "0x20000" "4"
+	;;
 esac
 
 config_load ubootenv

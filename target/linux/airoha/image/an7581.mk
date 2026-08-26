@@ -188,3 +188,20 @@ define Device/nokia_xg-040g-md-ubi
   ARTIFACTS := bl31-uboot.fip preloader.bin
 endef
 TARGET_DEVICES += nokia_xg-040g-md-ubi
+
+define Device/nokia_xg-040g-md-tcboot
+  $(call Device/nokia_xg-040g-md-common)
+  DEVICE_VARIANT := (tcboot)
+  DEVICE_DTS := an7581-nokia_xg-040g-md-tcboot
+  # 与 25.12 线 bell_xg-040g-md 的分区表逐字节一致，允许自其直接 sysupgrade
+  SUPPORTED_DEVICES += bell,xg-040g-md
+  KERNEL_SIZE := 8192k
+  IMAGE_SIZE := 261120k
+  KERNEL_IN_UBI := 1
+  UBINIZE_OPTS := -s 2048
+  IMAGES := factory.bin sysupgrade.bin
+  IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
+  IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
+  DEVICE_PACKAGES += uboot-envtools ubi-utils
+endef
+TARGET_DEVICES += nokia_xg-040g-md-tcboot
