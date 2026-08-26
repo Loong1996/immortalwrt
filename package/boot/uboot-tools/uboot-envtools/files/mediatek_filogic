@@ -72,6 +72,9 @@ zyxel,ex5601-t0-ubootmod|\
 zyxel,wx5600-t0-ubootmod)
 	ubootenv_add_ubi_default
 	;;
+bell,xg-040g-md)
+	ubootenv_add_mtd "env" "0x0" "0x80000" "0x20000" "4"
+	;;
 acer,predator-w6|\
 acer,predator-w6d|\
 acer,vero-w6m|\
