@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+/*
+ * 第三方 tcboot.bin 引导的分区布局。
+ *
+ * 与上游两个变体的区别：
+ *   stock-parts  保留原厂 Nokia 分区表，rootfs 寄生在 data 分区 (129 MB)
+ *   ubi-parts    OpenWrt U-Boot 布局，bl2 128K + ubi 255.875 MB
+ *   本文件       tcboot 占 0x0-0x80000，env 0x80000-0x100000，
+ *                其余 255 MB 全部为 ubi
+ *
+ * 注意：原厂 ri 分区（MAC 来源）位于 0x5200000，落在 ubi 区域内，
+ * 刷入后会被覆盖。因此 MAC 改由 ubi 中名为 "ri" 的卷提供 ——
+ * 该卷需在刷机时用原厂 ri 分区的备份创建，见 README。
+ */
+
+&partitions {
+	partition@0_all {
+		label = "all_flash";
+		reg = <0x0 0x10000000>;
+		read-only;
+	};
+
+	partition@0 {
+		label = "bootloader";
+		reg = <0x0 0x80000>;
+		read-only;
+	};
+
+	partition@80000 {
+		label = "env";
+		reg = <0x80000 0x80000>;
+	};
+
+	partition@100000 {
+		label = "ubi";
+		reg = <0x100000 0xff00000>;
+		compatible = "linux,ubi";
+
+		volumes {
+			ubi-volume-bosa {
+				volname = "bosa";
+			};
+
+			ubi-volume-factory {
+				volname = "ri";
+
+				nvmem-layout {
+					compatible = "fixed-layout";
+
+					#address-cells = <1>;
+					#size-cells = <1>;
+
+					macaddr_factory_3e: macaddr@3e {
+						compatible = "mac-base";
+						reg = <0x3e 0x6>;
+						#nvmem-cell-cells = <1>;
+					};
+				};
+			};
+		};
+	};
+};
