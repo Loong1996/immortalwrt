@@ -32,3 +32,24 @@
 	/delete-property/ nvmem-cell-names;
 	/delete-property/ nvmem-cells;
 };
+
+/*
+ * 第三方 tcboot 带的 ATF 没有实现 Airoha 的 AVS SIP 调用（0x82000301），
+ * mainline 的 airoha-cpu-pmdomain 只有这一条路，SMC 返回 0 导致时钟频率读
+ * 成 0，cpufreq-dt 随之注册失败：
+ *
+ *	cpufreq: cpufreq_policy_online: ->get() failed
+ *	cpufreq-dt cpufreq-dt: failed register driver: -19
+ *
+ * 结果是 CPU 恒定停在引导程序设定的频率，且因为 cpufreq 的散热设备没注册，
+ * cpu-thermal 那个 95°C 的被动降频档位没有任何东西可以执行。
+ *
+ * patches-6.18/608 给驱动加了直接编程 ARMPLL 的回退路径，这里把它需要的两
+ * 段寄存器补上。驱动会先探测 SMC，只有在 SMC 无响应时才用这两段，所以对
+ * ATF 正常的板子没有影响。
+ */
+&cpufreq {
+	reg = <0x0 0x1fa20000 0x0 0x2c0>,	/* chip-scu */
+	      <0x0 0x1efbe000 0x0 0x800>;	/* mcucfg */
+	reg-names = "chip-scu", "mcucfg";
+};
