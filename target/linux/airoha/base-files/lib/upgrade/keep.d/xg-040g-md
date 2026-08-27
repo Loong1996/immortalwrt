@@ -1,0 +1,2 @@
+# 无 ri 卷时随机生成并固化的 MAC，丢了会导致 sysupgrade 后 MAC 变化
+/etc/xg-040g-md-mac
