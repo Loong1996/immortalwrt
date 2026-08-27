@@ -202,6 +202,13 @@ define Device/nokia_xg-040g-md-tcboot
   IMAGES := factory.bin sysupgrade.bin
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  DEVICE_PACKAGES += uboot-envtools ubi-utils
+  # 剔除 uboot-envtools：env 分区从未被写过，CRC 无效，U-Boot 会回落到自己的
+  # 内置默认环境（bootcmd 从 UBI 读 kernel），这是安全状态。但 fw_setenv 在
+  # CRC 无效时用的是编译进它自己的通用默认值（bootcmd=run distro_bootcmd），
+  # 一旦执行就会把这份错误环境连同正确的 CRC 写入 flash，U-Boot 从此不再使用
+  # 内置默认值，直接掉进命令行且不报错 —— 当场无感，重启才失联。
+  # 本变体没有任何东西需要读写 U-Boot 环境（platform.sh 里调 fw_setenv 的
+  # nokia_initial_setup 只匹配 stock 变体），故整包移除。
+  DEVICE_PACKAGES += ubi-utils -uboot-envtools
 endef
 TARGET_DEVICES += nokia_xg-040g-md-tcboot
