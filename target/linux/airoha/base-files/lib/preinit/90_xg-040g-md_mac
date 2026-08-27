@@ -1,0 +1,77 @@
+#
+# tcboot 变体的 ri 卷（存放原厂 MAC）不是镜像的一部分，需刷机时用原厂 ri
+# 分区的备份手工创建。所以该变体的 dts 里去掉了 nvmem-cells —— 一旦声明，
+# 卷缺失时 airoha_eth 会永久停在 deferred probe，整机无网络。
+#
+# 这里在用户态复刻 nvmem 的行为：每次启动读一次 ri 卷，读到有效 MAC 就应用；
+# 读不到就用一个生成一次并持久化的 MAC。因此用户任何时候补上 ri 卷，重启即
+# 生效，不需要重刷固件。
+#
+# 本钩子排在 80_mount_root、82_config_generate 之后（overlay 已挂载），而
+# netifd 是 START=20，还远未启动，此时改 MAC 是安全的。用户若在
+# /etc/config/network 里显式设了 macaddr，netifd 会在之后覆盖，优先级更高。
+#
+
+XG040GMD_MAC_FILE=/etc/xg-040g-md-mac
+
+# 等价于内核的 is_valid_ether_addr()：非全零、且不是组播地址
+xg040gmd_mac_valid() {
+	case "$1" in
+		??:??:??:??:??:??) ;;
+		*) return 1 ;;
+	esac
+	[ "$1" = "00:00:00:00:00:00" ] && return 1
+	[ $(( 0x${1%%:*} & 1 )) -eq 0 ]
+}
+
+xg040gmd_mac_from_ri() {
+	local v name vol mac
+
+	for v in /sys/class/ubi/ubi*_*; do
+		[ -r "$v/name" ] || continue
+		read -r name < "$v/name"
+		[ "$name" = "ri" ] || continue
+		vol="${v##*/}"
+		break
+	done
+	[ -n "$vol" ] && [ -c "/dev/$vol" ] || return 1
+
+	# 偏移与共用 dtsi 中 macaddr@3e 的 reg = <0x3e 0x6> 一致
+	mac=$(dd if="/dev/$vol" bs=1 skip=62 count=6 2>/dev/null | \
+		hexdump -v -e '1/1 ":%02x"' | cut -c2-)
+	xg040gmd_mac_valid "$mac" || return 1
+
+	echo "$mac"
+}
+
+xg040gmd_set_mac() {
+	local mac netdev
+
+	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "nokia,xg-040g-md-tcboot" ] || return
+
+	mac=$(xg040gmd_mac_from_ri)
+
+	if [ -z "$mac" ]; then
+		[ -r "$XG040GMD_MAC_FILE" ] && read -r mac < "$XG040GMD_MAC_FILE"
+		if ! xg040gmd_mac_valid "$mac"; then
+			mac=$(dd if=/dev/urandom bs=1 count=6 2>/dev/null | \
+				hexdump -v -e '1/1 ":%02x"' | cut -c2-)
+			# 置本地管理位、清组播位
+			mac="$(printf '%02x' $(( (0x${mac%%:*} & 0xfe) | 0x02 ))):${mac#*:}"
+			xg040gmd_mac_valid "$mac" || return
+			echo "$mac" > "$XG040GMD_MAC_FILE" 2>/dev/null
+		fi
+	fi
+
+	# eth0 是 gdm1（DSA conduit），lan1 是 gdm4（2.5G 口），lan2~4 是交换机
+	# 用户口。DSA 用户口的 MAC 是建口时从 conduit 继承的，此后再改 conduit
+	# 不会传播过去，因此要逐个设置。
+	for netdev in eth0 lan1 lan2 lan3 lan4; do
+		[ -e "/sys/class/net/$netdev" ] || continue
+		[ "$(cat "/sys/class/net/$netdev/address" 2>/dev/null)" = "$mac" ] && continue
+		ip link set dev "$netdev" down 2>/dev/null
+		ip link set dev "$netdev" address "$mac" 2>/dev/null
+	done
+}
+
+boot_hook_add preinit_main xg040gmd_set_mac
