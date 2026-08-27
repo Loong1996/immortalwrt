@@ -45,13 +45,19 @@ xg040gmd_mac_from_ri() {
 }
 
 xg040gmd_set_mac() {
-	local mac netdev
+	local mac src netdev flags
 
 	[ "$(cat /tmp/sysinfo/board_name 2>/dev/null)" = "nokia,xg-040g-md-tcboot" ] || return
 
+	# failsafe 下 netifd 不会运行，接口是 preinit 拉起来给人进救援用的，
+	# 这里绝不能去动它们，否则救援网络就断了。
+	[ "$FAILSAFE" = "true" ] && return
+
 	mac=$(xg040gmd_mac_from_ri)
+	src="ri"
 
 	if [ -z "$mac" ]; then
+		src="随机"
 		[ -r "$XG040GMD_MAC_FILE" ] && read -r mac < "$XG040GMD_MAC_FILE"
 		if ! xg040gmd_mac_valid "$mac"; then
 			mac=$(dd if=/dev/urandom bs=1 count=6 2>/dev/null | \
@@ -69,9 +75,15 @@ xg040gmd_set_mac() {
 	for netdev in eth0 lan1 lan2 lan3 lan4; do
 		[ -e "/sys/class/net/$netdev" ] || continue
 		[ "$(cat "/sys/class/net/$netdev/address" 2>/dev/null)" = "$mac" ] && continue
+		# preinit 已经把接口拉起来了（失效保护网络），改完要恢复原状态
+		flags=$(cat "/sys/class/net/$netdev/flags" 2>/dev/null)
 		ip link set dev "$netdev" down 2>/dev/null
 		ip link set dev "$netdev" address "$mac" 2>/dev/null
+		[ $(( ${flags:-0} & 1 )) -eq 1 ] && ip link set dev "$netdev" up 2>/dev/null
 	done
+
+	# 此阶段 logd 尚未启动，logger 无处可写，直接打到控制台便于排查
+	echo "- xg-040g-md: MAC $mac ($src) -"
 }
 
 boot_hook_add preinit_main xg040gmd_set_mac
