@@ -20,10 +20,16 @@ gemtek,w1700k-ubi)
 	ucidef_set_led_netdev "lan4-green" "lan4" "green:lan-4" "lan4" "link_1000 tx rx"
 	;;
 nokia,xg-040g-md|\
+nokia,xg-040g-md-tcboot|\
 nokia,xg-040g-md-ubi)
+	ucidef_set_led_netdev "lan1" "lan1" "mt7530-0:0f:green:lan-1" "lan1" "link tx rx"
 	ucidef_set_led_netdev "lan2" "lan2" "mt7530-0:0a:green:lan-2" "lan2" "link tx rx"
 	ucidef_set_led_netdev "lan3" "lan3" "mt7530-0:0b:green:lan-3" "lan3" "link tx rx"
 	ucidef_set_led_netdev "lan4" "lan4" "mt7530-0:0c:green:lan-4" "lan4" "link tx rx"
+
+	# 面板「上网」灯（green:wan-online，gpio20）由
+	# hotplug.d/iface/99-xg-040g-md-leds 跟着 wan 接口的 ifup/ifdown 走。
+	# 同排的「注册」(green:wan) 和「光信号」(red:wan) 保持原样不接管。
 	;;
 esac
 

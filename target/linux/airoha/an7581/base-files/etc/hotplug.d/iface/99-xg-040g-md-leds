@@ -1,0 +1,26 @@
+#
+# 面板「上网」灯跟着 wan 接口走：拿到地址亮，掉线灭。
+#
+# 没有用 netdev trigger，因为它只能跟到网卡的 carrier —— 网线插上就算亮，
+# 表达不了「地址拿到了、能上网了」这件事；PPPoE 下 wan 的 netdev 还会变成
+# pppoe-wan，绑死物理口也不对。
+#
+# 同排的「注册」(green:wan) 和「光信号」(red:wan) 是 PON 用的，当路由器时
+# 没有对应状态，保持不接管。
+#
+
+[ "$INTERFACE" = "wan" ] || exit 0
+
+. /lib/functions.sh
+
+case "$(board_name)" in
+nokia,xg-040g-md|nokia,xg-040g-md-tcboot|nokia,xg-040g-md-ubi) ;;
+*) exit 0 ;;
+esac
+
+XG040GMD_LED=/sys/class/leds/green:wan-online/brightness
+
+case "$ACTION" in
+ifup)   [ -w "$XG040GMD_LED" ] && echo 1 > "$XG040GMD_LED" ;;
+ifdown) [ -w "$XG040GMD_LED" ] && echo 0 > "$XG040GMD_LED" ;;
+esac
