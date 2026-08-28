@@ -27,9 +27,8 @@ nokia,xg-040g-md-ubi)
 	ucidef_set_led_netdev "lan3" "lan3" "mt7530-0:0b:green:lan-3" "lan3" "link tx rx"
 	ucidef_set_led_netdev "lan4" "lan4" "mt7530-0:0c:green:lan-4" "lan4" "link tx rx"
 
-	# 面板「上网」灯（green:wan-online，gpio20）由
-	# hotplug.d/iface/99-xg-040g-md-leds 跟着 wan 接口的 ifup/ifdown 走。
-	# 同排的「注册」(green:wan) 和「光信号」(red:wan) 保持原样不接管。
+	# 面板那排是光猫的三个灯 —— 「注册」(green:wan)、「光信号」(red:wan)、
+	# 「上网」(green:wan-online)，当路由器时没有对应状态，一律不接管。
 	;;
 esac
 
