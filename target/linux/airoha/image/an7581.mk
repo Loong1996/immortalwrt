@@ -56,7 +56,8 @@ define Device/airoha_an7581-evb
   $(call Device/FitImageLzma)
   DEVICE_VENDOR := Airoha
   DEVICE_MODEL := AN7581 Evaluation Board (SNAND)
-  DEVICE_PACKAGES := kmod-leds-pwm kmod-pwm-airoha kmod-input-gpio-keys-polled
+  DEVICE_PACKAGES := kmod-leds-pwm kmod-pwm-airoha kmod-input-gpio-keys-polled \
+		    uboot-envtools
   DEVICE_DTS := an7581-evb
   DEVICE_DTS_CONFIG := config@1
   IMAGE/sysupgrade.bin := append-kernel | pad-to 128k | append-rootfs | pad-rootfs | append-metadata
@@ -70,7 +71,7 @@ define Device/airoha_an7581-evb-emmc-eagle
   DEVICE_VENDOR := Airoha
   DEVICE_MODEL := AN7581 Evaluation Board (eMMC + Eagle)
   DEVICE_DTS := an7581-evb-emmc-eagle
-  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware \
+  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware uboot-envtools \
 		    kmod-mt7996-firmware wpad-openssl
   ARTIFACT/preloader.bin := an7581-preloader rfb
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot rfb
@@ -82,7 +83,7 @@ define Device/airoha_an7581-evb-emmc-kite
   DEVICE_VENDOR := Airoha
   DEVICE_MODEL := AN7581 Evaluation Board (eMMC + Kite)
   DEVICE_DTS := an7581-evb-emmc-kite
-  DEVICE_PACKAGES := airoha-en7581-npu-firmware \
+  DEVICE_PACKAGES := airoha-en7581-npu-firmware uboot-envtools \
 		    kmod-mt7992-firmware wpad-openssl
   ARTIFACT/preloader.bin := an7581-preloader rfb
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot rfb
@@ -108,7 +109,7 @@ define Device/gemtek_w1700k-ubi
   DEVICE_COMPAT_MESSAGE := Partition table has been changed to cooperate \
        with the vendor bootloader with regard to the BMT/BBT partition at \
        the end of flash. A reinstall including corrected chainloader is needed.
-  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk \
+  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk uboot-envtools \
 		    kmod-hwmon-nct7802 kmod-mt7996-firmware wpad-openssl \
 		    rtl826x-firmware
   UBINIZE_OPTS := -E 5
@@ -132,7 +133,8 @@ define Device/nokia_valyrian
   DEVICE_VENDOR := Nokia
   DEVICE_MODEL := Valyrian
   DEVICE_DTS := an7581-nokia-valyrian
-  DEVICE_PACKAGES := kmod-spi-gpio kmod-gpio-nxp-74hc164 kmod-leds-gpio \
+  DEVICE_PACKAGES := uboot-envtools \
+    kmod-spi-gpio kmod-gpio-nxp-74hc164 kmod-leds-gpio \
     kmod-i2c-gpio kmod-iio-richtek-rtq6056 \
     kmod-sfp kmod-phy-aeonsemi-as21xxx \
     kmod-mt7996-firmware airoha-en7581-mt7996-npu-firmware \
@@ -157,6 +159,8 @@ endef
 
 define Device/nokia_xg-040g-md
   $(call Device/nokia_xg-040g-md-common)
+  # platform.sh 的 nokia_initial_setup 要调 fw_setenv，只有本变体需要
+  DEVICE_PACKAGES += uboot-envtools
   DEVICE_DTS := an7581-nokia_xg-040g-md
   DEVICE_DTS_CONFIG := config@1
   IMAGE_SIZE := 131968k
@@ -182,7 +186,7 @@ define Device/nokia_xg-040g-md-ubi
   IMAGE/sysupgrade.itb := append-kernel | \
 	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
 	append-metadata
-  DEVICE_PACKAGES += fitblk
+  DEVICE_PACKAGES += fitblk uboot-envtools
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot nokia_xg-040g-md
   ARTIFACT/preloader.bin := an7581-preloader nokia_xg-040g-md
   ARTIFACTS := bl31-uboot.fip preloader.bin
@@ -202,13 +206,13 @@ define Device/nokia_xg-040g-md-tcboot
   IMAGES := factory.bin sysupgrade.bin
   IMAGE/factory.bin := append-kernel | pad-to $$$$(KERNEL_SIZE) | append-ubi
   IMAGE/sysupgrade.bin := sysupgrade-tar | append-metadata
-  # 剔除 uboot-envtools：env 分区从未被写过，CRC 无效，U-Boot 会回落到自己的
+  # 不声明 uboot-envtools：env 分区从未被写过，CRC 无效，U-Boot 会回落到自己的
   # 内置默认环境（bootcmd 从 UBI 读 kernel），这是安全状态。但 fw_setenv 在
   # CRC 无效时用的是编译进它自己的通用默认值（bootcmd=run distro_bootcmd），
   # 一旦执行就会把这份错误环境连同正确的 CRC 写入 flash，U-Boot 从此不再使用
   # 内置默认值，直接掉进命令行且不报错 —— 当场无感，重启才失联。
   # 本变体没有任何东西需要读写 U-Boot 环境（platform.sh 里调 fw_setenv 的
-  # nokia_initial_setup 只匹配 stock 变体），故整包移除。
-  DEVICE_PACKAGES += ubi-utils -uboot-envtools
+  # nokia_initial_setup 只匹配 stock 变体）。
+  DEVICE_PACKAGES += ubi-utils
 endef
 TARGET_DEVICES += nokia_xg-040g-md-tcboot
