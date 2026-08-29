@@ -17,9 +17,12 @@ Design notes:
 
 - The method is classified in on_rcv_nxt_update(), not in rx(): the first
   segment can be shorter than "POST" and that callback is the one that
-  guarantees bytes [0..rx_bytes-1] are present and contiguous.  Classifying
-  in rx() misdetects an upload as a GET when the head of the stream is
-  fragmented.
+  guarantees bytes [0..rx_bytes-1] are present and contiguous.
+
+- Content-Length is parsed only after skipping the whitespace that follows
+  the colon.  U-Boot's simple_strtoul() does not skip leading whitespace the
+  way the C library one does, so parsing "Content-Length: 12345" directly at
+  the colon yields 0 and the upload is rejected as empty.
 
 - Exactly one connection at a time may stage data at $loadaddr (up_owner).
   Browsers routinely open extra connections (favicon, prefetch) and those
@@ -94,7 +97,7 @@ Design notes:
  	"HTTP/1.0 200 OK\r\n"
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
-@@ -34,54 +44,313 @@
+@@ -34,54 +44,322 @@
  	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
  	"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
  	"<title>U-Boot recovery</title></head><body "
@@ -194,7 +197,16 @@ Design notes:
 +		up_failed = 1;
 +		return;
 +	}
-+	clen = simple_strtoul(p + 15, NULL, 10);
++	p += 15;
++	/*
++	 * Every client sends "Content-Length: N" with a space after the colon,
++	 * and U-Boot's simple_strtoul() -- unlike the C library one -- does not
++	 * skip leading whitespace (lib/strto.c only handles a 0x prefix).  It
++	 * would return 0 here and the upload would be rejected as empty.
++	 */
++	while (*p == ' ' || *p == '\t')
++		p++;
++	clen = simple_strtoul(p, NULL, 10);
 +	if (!clen || clen > UPLOAD_MAX) {
 +		printf("httpd: refusing %lu byte upload\n", clen);
 +		up_failed = 1;
@@ -426,7 +438,7 @@ Design notes:
  }
  
  static int httpd_on_create(struct tcp_stream *tcp)
-@@ -89,7 +358,7 @@
+@@ -89,7 +367,7 @@
  	if (tcp->lport != HTTPD_PORT)
  		return 0;
  
@@ -435,7 +447,7 @@ Design notes:
  	tcp->rx = httpd_rx;
  	tcp->tx = httpd_tx;
  	tcp->on_rcv_nxt_update = httpd_on_rcv_nxt_update;
-@@ -100,6 +369,18 @@
+@@ -100,6 +378,18 @@
  
  void httpd_start_server(void)
  {
@@ -454,7 +466,7 @@ Design notes:
  	memset(net_server_ethaddr, 0, 6);
  	tcp_stream_set_on_create_handler(httpd_on_create);
  
-@@ -119,12 +400,21 @@
+@@ -119,12 +409,21 @@
  		return CMD_RET_FAILURE;
  	}
  
