@@ -25,6 +25,9 @@ at 0x0..0x80000.  With bootdelay=0 there is no chance to interrupt.
 This patch makes every automatic path a no-op so the board stops at the
 prompt.  Flash is then only touched by commands typed by hand.
 
+NOTE: context is taken from the ImmortalWrt tree, where bootfile* values are
+prefixed "immortalwrt-" rather than "openwrt-".
+
 --- a/defenvs/an7581_nokia_xg-040g-md_env
 +++ b/defenvs/an7581_nokia_xg-040g-md_env
 @@ -2,9 +2,9 @@
@@ -36,9 +39,9 @@ prompt.  Flash is then only touched by commands typed by hand.
  bootconf=config-1
 -bootdelay=0
 +bootdelay=3
- bootfile=openwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb
- bootfile_bl2=openwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
- bootfile_fip=openwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
+ bootfile=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-initramfs-recovery.itb
+ bootfile_bl2=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
+ bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
 @@ -12,9 +12,9 @@
  bootled_status=green:power
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
