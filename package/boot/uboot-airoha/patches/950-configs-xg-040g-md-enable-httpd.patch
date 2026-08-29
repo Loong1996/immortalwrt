@@ -1,0 +1,20 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] configs: nokia_xg-040g-md: enable minimal HTTP recovery server
+
+Turns on the TCP stack and the httpd command added by
+202-net-add-minimal-httpd-server.patch.
+
+Must sort after 401-add-nokia-xg-040g-md.patch, which is the patch that
+creates this defconfig in the first place.
+
+--- a/configs/an7581_nokia_xg-040g-md_defconfig
++++ b/configs/an7581_nokia_xg-040g-md_defconfig
+@@ -41,6 +41,8 @@
+ CONFIG_CMD_MTD_NAND_WRITE_TEST=y
+ CONFIG_CMD_PART=y
+ CONFIG_CMD_TFTPSRV=y
++CONFIG_PROT_TCP=y
++CONFIG_CMD_HTTPD=y
+ CONFIG_CMD_RARP=y
+ CONFIG_CMD_CDP=y
+ CONFIG_CMD_SNTP=y
