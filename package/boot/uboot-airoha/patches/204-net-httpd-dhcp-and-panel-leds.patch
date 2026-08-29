@@ -1,0 +1,287 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] net: httpd: serve DHCP leases and show recovery state on the LEDs
+
+Recovery is entered without a serial console, so the board has to explain
+itself with the two things the user can actually see: the network coming up
+by itself, and the front panel.
+
+DHCP: U-Boot has no DHCP server, only a client, so a minimal one lives here.
+It hands out a single fixed lease (x.x.x.100 on our own subnet) and keeps no
+state -- that is all a single-client rescue link needs, and it removes the
+"configure a static address first" step that makes rescue flows fail.  Only
+DISCOVER and REQUEST are answered, on port 67, via the UDP handler that
+net_loop() already dispatches alongside the TCP streams.
+
+LEDs: the five green panel LEDs chase while the server waits, so the board
+visibly says "waiting for an upload" rather than looking dead.  They go solid
+during flashing (do not power off now) and off when the command returns.  The
+animation re-arms itself from the net_loop timeout handler, which httpd does
+not otherwise use; tcp_stream keeps its own timers, so there is no conflict.
+
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -15,7 +15,9 @@
+ 
+ #include <command.h>
+ #include <console.h>
++#include <dm.h>
+ #include <env.h>
++#include <led.h>
+ #include <net.h>
+ #include <net/tcp.h>
+ #include <linux/string.h>
+@@ -95,6 +97,211 @@
+ /* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
+ #define UPLOAD_MAX	(96 << 20)
+ 
++/*
++ * Panel feedback.  Recovery is a mode the user enters without a serial
++ * console, so the front LEDs are the only way to tell them the board is
++ * waiting for an upload rather than dead.
++ */
++#if CONFIG_IS_ENABLED(LED)
++static const char * const led_chase[] = {
++	"green:power", "green:wan", "green:wan-online",
++	"green:usb-1", "green:usb-2",
++};
++
++#define LED_TICK_MS	120
++
++static int led_pos;
++
++static void led_write(const char *label, enum led_state_t state)
++{
++	struct udevice *dev;
++
++	if (!led_get_by_label(label, &dev))
++		led_set_state(dev, state);
++}
++
++static void led_all(enum led_state_t state)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		led_write(led_chase[i], state);
++}
++
++/* Re-arms itself: net_loop() clears the handler before calling it. */
++static void httpd_led_tick(void)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		led_write(led_chase[i], i == (unsigned int)led_pos ?
++					LEDST_ON : LEDST_OFF);
++
++	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
++	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
++}
++
++static void httpd_led_start(void)
++{
++	led_pos = 0;
++	httpd_led_tick();
++}
++
++static void httpd_led_stop(void)
++{
++	net_set_timeout_handler(0, NULL);
++	led_all(LEDST_OFF);
++}
++#else
++static inline void httpd_led_start(void) { }
++static inline void httpd_led_stop(void) { }
++static inline void led_all(int state) { }
++#define LEDST_ON	0
++#define LEDST_OFF	0
++#endif
++
++/*
++ * Minimal DHCP server.
++ *
++ * Without it the user has to configure a static address before the recovery
++ * page is reachable, which is exactly the kind of step that makes a rescue
++ * flow fail.  One fixed lease is handed out; there is no pool and no state to
++ * keep, which is all a single-client rescue link needs.
++ */
++#define DHCP_SERVER_PORT	67
++#define DHCP_CLIENT_PORT	68
++#define DHCP_MAGIC		0x63825363
++#define DHCP_DISCOVER		1
++#define DHCP_OFFER		2
++#define DHCP_REQUEST		3
++#define DHCP_ACK		5
++#define DHCP_MIN_LEN		240
++#define DHCP_LEASE_SECS		3600
++
++struct dhcp_msg {
++	u8	op, htype, hlen, hops;
++	u32	xid;
++	u16	secs, flags;
++	u32	ciaddr, yiaddr, siaddr, giaddr;
++	u8	chaddr[16];
++	u8	sname[64];
++	u8	file[128];
++	u32	cookie;
++	u8	opts[308];
++} __packed;
++
++/* The single address handed to the client: x.x.x.100 on our own subnet. */
++static struct in_addr dhcp_client_ip(void)
++{
++	struct in_addr ip;
++
++	ip.s_addr = (net_ip.s_addr & htonl(0xffffff00)) | htonl(100);
++
++	return ip;
++}
++
++static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
++{
++	unsigned int i, max;
++
++	if (len <= DHCP_MIN_LEN)
++		return 0;
++
++	max = len - DHCP_MIN_LEN;
++	if (max > sizeof(m->opts))
++		max = sizeof(m->opts);
++
++	for (i = 0; i + 1 < max;) {
++		u8 tag = m->opts[i];
++
++		if (tag == 0) {			/* pad */
++			i++;
++			continue;
++		}
++		if (tag == 255)			/* end */
++			break;
++		if (tag == 53)
++			return m->opts[i + 2];
++		i += 2 + m->opts[i + 1];
++	}
++
++	return 0;
++}
++
++static u8 *dhcp_put(u8 *o, u8 tag, u8 len, const void *val)
++{
++	*o++ = tag;
++	*o++ = len;
++	memcpy(o, val, len);
++
++	return o + len;
++}
++
++static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
++			  unsigned int sport, unsigned int len)
++{
++	static const uchar bcast_mac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
++	const struct dhcp_msg *req = (const struct dhcp_msg *)pkt;
++	struct dhcp_msg *rep;
++	struct in_addr yiaddr, bcast;
++	u32 mask, lease;
++	int type, reply;
++	u8 *o;
++	int n;
++
++	if (dport != DHCP_SERVER_PORT || len < DHCP_MIN_LEN)
++		return;
++	if (req->op != 1 || req->cookie != htonl(DHCP_MAGIC))
++		return;
++
++	type = dhcp_msg_type(req, len);
++	if (type == DHCP_DISCOVER)
++		reply = DHCP_OFFER;
++	else if (type == DHCP_REQUEST)
++		reply = DHCP_ACK;
++	else
++		return;
++
++	yiaddr = dhcp_client_ip();
++
++	rep = (struct dhcp_msg *)(net_tx_packet + net_eth_hdr_size() +
++				  IP_UDP_HDR_SIZE);
++	memset(rep, 0, sizeof(*rep));
++	rep->op = 2;
++	rep->htype = 1;
++	rep->hlen = 6;
++	rep->xid = req->xid;
++	rep->flags = req->flags;
++	rep->yiaddr = yiaddr.s_addr;
++	rep->siaddr = net_ip.s_addr;
++	memcpy(rep->chaddr, req->chaddr, sizeof(rep->chaddr));
++	rep->cookie = htonl(DHCP_MAGIC);
++
++	mask = htonl(0xffffff00);
++	lease = htonl(DHCP_LEASE_SECS);
++
++	o = rep->opts;
++	*o++ = 53;
++	*o++ = 1;
++	*o++ = (u8)reply;
++	o = dhcp_put(o, 54, 4, &net_ip.s_addr);		/* server id */
++	o = dhcp_put(o, 1, 4, &mask);			/* subnet mask */
++	o = dhcp_put(o, 3, 4, &net_ip.s_addr);		/* router */
++	o = dhcp_put(o, 51, 4, &lease);			/* lease time */
++	*o++ = 255;
++
++	n = (int)((u8 *)o - (u8 *)rep);
++	if (n < 300)					/* keep BOOTP-sized */
++		n = 300;
++
++	bcast.s_addr = 0xffffffff;
++	net_send_udp_packet((uchar *)bcast_mac, bcast, DHCP_CLIENT_PORT,
++			    DHCP_SERVER_PORT, n);
++
++	printf("httpd: DHCP %s -> %pI4\n",
++	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr);
++}
++
+ static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
+ {
+ 	int i;
+@@ -392,18 +599,24 @@
+ 
+ 	memset(net_server_ethaddr, 0, 6);
+ 	tcp_stream_set_on_create_handler(httpd_on_create);
++	net_set_udp_handler(httpd_dhcp_rx);
++	httpd_led_start();
+ 
+ 	printf("Using %s device\n", eth_get_name());
+ 	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
++	printf("Handing out DHCP leases from %pI4\n", &net_ip);
+ 	printf("Press Ctrl-C to abort\n");
+ }
+ 
+ static int do_httpd(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		    char *const argv[])
+ {
+-	int err;
++	int err, ret;
+ 
+ 	err = net_loop(HTTPD);
++
++	httpd_led_stop();
++
+ 	if (err < 0) {
+ 		printf("httpd error: %d\n", err);
+ 		return CMD_RET_FAILURE;
+@@ -411,10 +624,14 @@
+ 
+ 	if (flash_pending) {
+ 		flash_pending = 0;
++		/* Solid instead of chasing: do not power off now. */
++		led_all(LEDST_ON);
+ 		printf("httpd: flashing %u bytes with \"%s\"\n",
+ 		       up_size, FLASH_CMD);
+-		return run_command(FLASH_CMD, 0) ? CMD_RET_FAILURE
+-						 : CMD_RET_SUCCESS;
++		ret = run_command(FLASH_CMD, 0);
++		led_all(LEDST_OFF);
++
++		return ret ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
+ 	}
+ 
+ 	return CMD_RET_SUCCESS;
