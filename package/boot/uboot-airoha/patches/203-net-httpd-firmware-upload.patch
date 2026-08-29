@@ -1,0 +1,480 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] net: httpd: accept firmware uploads and hand off to flashing
+
+Step 2 of the web-recovery work: serve an upload form on GET, accept a
+multipart/form-data POST, stage the image at $loadaddr and let the board's
+existing environment scripts do the flashing.
+
+No flashing logic is duplicated here -- the payload is handed to
+"run ubi_write_production", which already removes the old volume, creates
+the new one and verifies the image with iminfo.
+
+Design notes:
+
+- tcp->rx() reports a stream offset, so image data is written straight to
+  $loadaddr with no intermediate buffer; a multi-megabyte upload needs no
+  extra RAM.
+
+- The method is classified in on_rcv_nxt_update(), not in rx(): the first
+  segment can be shorter than "POST" and that callback is the one that
+  guarantees bytes [0..rx_bytes-1] are present and contiguous.  Classifying
+  in rx() misdetects an upload as a GET when the head of the stream is
+  fragmented.
+
+- Exactly one connection at a time may stage data at $loadaddr (up_owner).
+  Browsers routinely open extra connections (favicon, prefetch) and those
+  must not scribble over an upload in flight.
+
+- $loadaddr is read once per invocation.  env_get_hex() walks the whole
+  environment and rx() runs for every segment of the transfer.
+
+- The flash command runs after net_loop() returns, not from a TCP callback,
+  so the network stack is not re-entered while flash is being erased.
+
+- A failed upload resets the state so the user can simply retry; during
+  recovery there may be no second chance to get it right.
+
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -1,32 +1,42 @@
+ // SPDX-License-Identifier: GPL-2.0+
+ /*
+- * Minimal HTTP recovery server for U-Boot.
++ * HTTP recovery server for U-Boot.
+  *
+- * Step 1 of the web-recovery work: this only serves a static page, so that
+- * the TCP stack itself can be validated on the target before any flashing
+- * logic is added.  Upload handling (multipart/form-data -> $loadaddr ->
+- * "run ubi_write_production") is deliberately NOT here yet.
++ * Serves an upload form on GET and accepts a firmware image via
++ * multipart/form-data on POST.  The received image is placed at $loadaddr and
++ * the flashing itself is delegated to the board's existing environment
++ * scripts (ubi_write_production and friends), so no flash logic is
++ * duplicated here.
+  *
+- * Modelled on net/fastboot_tcp.c, the in-tree example of a TCP server built
+- * on U-Boot's own stack (net/tcp.c).  No third-party IP stack is pulled in,
+- * so tftpboot / dhcp / bootmenu keep working unchanged.
++ * Built on U-Boot's own TCP stack (net/tcp.c), modelled on net/fastboot_tcp.c.
++ * No third-party IP stack is pulled in, so tftpboot / dhcp / bootmenu keep
++ * working unchanged.
+  */
+ 
+ #include <command.h>
+ #include <console.h>
++#include <env.h>
+ #include <net.h>
+ #include <net/tcp.h>
+ #include <linux/string.h>
++#include <vsprintf.h>
+ 
+-#define HTTPD_PORT	80
++#define HTTPD_PORT		80
+ 
+-/*
+- * tcp->priv is used as a per-connection "request seen" flag, so that several
+- * browser connections (favicon, prefetch, ...) do not clobber each other.
+- */
+-#define REQ_SEEN	((void *)1)
++/* Enough for the request line + headers of any sane browser. */
++#define HDRBUF_SZ		2048
++/* The trailing "\r\n--boundary--\r\n" lives within this many bytes. */
++#define TAIL_SCAN		512
+ 
+-static const char http_response[] =
++/* tcp->priv values: per-connection classification. */
++#define CONN_UNKNOWN		((void *)0)
++#define CONN_GET		((void *)1)
++#define CONN_POST		((void *)2)
++
++/* Command run after the response has been flushed and net_loop() returned. */
++#define FLASH_CMD		"run ubi_write_production"
++
++static const char resp_form[] =
+ 	"HTTP/1.0 200 OK\r\n"
+ 	"Content-Type: text/html; charset=utf-8\r\n"
+ 	"Connection: close\r\n"
+@@ -34,54 +44,313 @@
+ 	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+ 	"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+ 	"<title>U-Boot recovery</title></head><body "
+-	"style=\"font:14px/1.5 sans-serif;max-width:40em;margin:3em auto;padding:0 1em\">"
+-	"<h1>U-Boot HTTP server is alive</h1>"
+-	"<p>The TCP stack works on this board. "
+-	"The firmware upload endpoint is not implemented yet.</p>"
++	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
++	"<h1>Firmware recovery</h1>"
++	"<form method=\"post\" enctype=\"multipart/form-data\">"
++	"<p><input type=\"file\" name=\"firmware\" required></p>"
++	"<p><button type=\"submit\">Upload and flash</button></p>"
++	"</form>"
++	"<p style=\"background:#fffbe6;border:1px solid #f0c36d;padding:.8em\">"
++	"Do not power off during flashing. The device reboots when done.</p>"
+ 	"</body></html>";
+ 
++static const char resp_done[] =
++	"HTTP/1.0 200 OK\r\n"
++	"Content-Type: text/html; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
++	"<title>Flashing</title></head><body "
++	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
++	"<h1>Image received</h1>"
++	"<p>Writing to flash now. The device reboots when done. "
++	"Do not power it off.</p></body></html>";
++
++static const char resp_400[] =
++	"HTTP/1.0 400 Bad Request\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"Could not parse the upload.\n";
++
++/* State of the single in-flight upload. */
++static int	up_active;	/* a POST connection has been accepted */
++static int	up_parsed;	/* headers understood, offsets known */
++static int	up_failed;	/* parse error, answer 400 */
++static int	up_ready;	/* image complete and moved to $loadaddr */
++static u32	up_body;	/* stream offset of the first image byte */
++static u32	up_total;	/* total request length (headers + body) */
++static u32	up_size;	/* image length */
++static char	up_bound[80];	/* "\r\n--" + multipart boundary */
++static struct tcp_stream *up_owner;	/* owns the staging area */
++static int	up_bound_len;
++static int	flash_pending;	/* run FLASH_CMD after net_loop() returns */
++
++/*
++ * Cached once per httpd invocation: env_get_hex() walks the whole environment,
++ * and rx() is called for every single segment of a multi-megabyte upload.
++ */
++static ulong up_base;
++
++/* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
++#define UPLOAD_MAX	(96 << 20)
++
++static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
++{
++	int i;
++
++	if (nlen <= 0 || hlen < nlen)
++		return -1;
++
++	for (i = 0; i <= hlen - nlen; i++)
++		if (!memcmp(hay + i, needle, nlen))
++			return i;
++
++	return -1;
++}
++
++/*
++ * Parse the request headers plus the first multipart part header, both of
++ * which sit at the very beginning of the stream (already stored at
++ * $loadaddr).  Only called once enough contiguous bytes have arrived.
++ */
++static void httpd_parse(u32 rx_bytes)
++{
++	char hdr[HDRBUF_SZ];
++	const char *base = (const char *)up_base;
++	char *p, *q;
++	int n, hdr_end, part_end, blen;
++	ulong clen;
++
++	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
++	memcpy(hdr, base, n);
++	hdr[n] = '\0';
++
++	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
++	if (hdr_end < 0)
++		return;			/* headers not complete yet */
++	hdr_end += 4;
++
++	p = strstr(hdr, "Content-Length:");
++	if (!p) {
++		up_failed = 1;
++		return;
++	}
++	clen = simple_strtoul(p + 15, NULL, 10);
++	if (!clen || clen > UPLOAD_MAX) {
++		printf("httpd: refusing %lu byte upload\n", clen);
++		up_failed = 1;
++		return;
++	}
++
++	p = strstr(hdr, "boundary=");
++	if (!p) {
++		up_failed = 1;
++		return;
++	}
++	p += 9;
++	if (*p == '"') {
++		p++;
++		for (q = p; *q && *q != '"'; q++)
++			;
++	} else {
++		for (q = p; *q && *q != '\r' && *q != '\n' && *q != ';'; q++)
++			;
++	}
++	blen = q - p;
++	if (blen <= 0 || blen > (int)sizeof(up_bound) - 5) {
++		up_failed = 1;
++		return;
++	}
++	/* The image ends right before CRLF + "--" + boundary. */
++	memcpy(up_bound, "\r\n--", 4);
++	memcpy(up_bound + 4, p, blen);
++	up_bound_len = blen + 4;
++
++	/* The part header ends at the next CRLFCRLF after the request headers. */
++	part_end = mem_find(hdr + hdr_end, n - hdr_end, "\r\n\r\n", 4);
++	if (part_end < 0) {
++		if (n >= HDRBUF_SZ - 1)
++			up_failed = 1;	/* absurdly long part header */
++		return;
++	}
++
++	up_body = hdr_end + part_end + 4;
++	up_total = hdr_end + clen;
++	up_parsed = 1;
++
++	printf("httpd: expecting %lu bytes, image starts at +%u\n",
++	       clen, up_body);
++}
++
++/* Image fully received: trim the trailer and move it to $loadaddr. */
++static void httpd_finish(void)
++{
++	char *base = (char *)up_base;
++	u32 scan_from, scan_len, pos;
++	u32 end;
++
++	/* Locate the closing boundary near the end of the stream. */
++	scan_len = up_total - up_body;
++	if (scan_len > TAIL_SCAN)
++		scan_from = up_total - TAIL_SCAN;
++	else
++		scan_from = up_body;
++	scan_len = up_total - scan_from;
++
++	pos = mem_find(base + scan_from, scan_len, up_bound, up_bound_len);
++	if (pos < 0) {
++		printf("httpd: closing boundary not found\n");
++		up_failed = 1;
++		return;
++	}
++	end = scan_from + pos;
++
++	if (end <= up_body) {
++		printf("httpd: empty image\n");
++		up_failed = 1;
++		return;
++	}
++
++	up_size = end - up_body;
++	memmove(base, base + up_body, up_size);
++	env_set_hex("filesize", up_size);
++	up_ready = 1;
++
++	printf("httpd: received %u bytes at %p\n", up_size, base);
++}
++
+ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
+ {
++	/* A GET needs no body; drop whatever follows. */
++	if (tcp->priv == CONN_GET)
++		return len;
++
+ 	/*
+-	 * The request is not parsed in this step -- we only need to know that
+-	 * something arrived.  Accept and drop it.
++	 * Exactly one connection at a time may stage data at $loadaddr.  The
++	 * first one to deliver offset 0 claims it; a segment arriving before
++	 * that is refused so it gets retried once the head of the stream is in.
+ 	 */
++	if (!up_owner) {
++		if (rx_offs != 0)
++			return 0;
++		up_owner = tcp;
++	} else if (up_owner != tcp) {
++		return len;
++	}
++
++	memcpy((char *)up_base + rx_offs, buf, len);
++
+ 	return len;
+ }
+ 
+ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
+ {
+-	if (rx_bytes > 0)
+-		tcp->priv = REQ_SEEN;
++	/*
++	 * Classify here rather than in rx(): the first segment may be shorter
++	 * than the method name, and this callback guarantees that bytes
++	 * [0..rx_bytes-1] are present and contiguous.
++	 */
++	if (tcp->priv == CONN_UNKNOWN) {
++		if (up_owner != tcp || rx_bytes < 4)
++			return;
++		if (!memcmp((const char *)up_base, "POST", 4)) {
++			if (up_active) {
++				tcp->priv = CONN_GET;	/* one upload at a time */
++				up_owner = NULL;
++				return;
++			}
++			up_active = 1;
++			tcp->priv = CONN_POST;
++		} else {
++			tcp->priv = CONN_GET;
++			up_owner = NULL;	/* release the staging area */
++			return;
++		}
++	}
++
++	if (tcp->priv != CONN_POST)
++		return;
++
++	if (!up_parsed && !up_failed)
++		httpd_parse(rx_bytes);
++
++	if (up_parsed && !up_ready && !up_failed && rx_bytes >= up_total)
++		httpd_finish();
+ }
+ 
++static const char *httpd_response(struct tcp_stream *tcp, int *len)
++{
++	const char *s;
++
++	if (tcp->priv == CONN_POST) {
++		if (up_ready)
++			s = resp_done;
++		else if (up_failed)
++			s = resp_400;
++		else
++			s = NULL;	/* still receiving */
++	} else if (tcp->priv == CONN_GET) {
++		s = resp_form;
++	} else {
++		s = NULL;
++	}
++
++	*len = s ? strlen(s) : 0;
++
++	return s;
++}
++
+ static int httpd_tx(struct tcp_stream *tcp, u32 tx_offs, void *buf, int maxlen)
+ {
+-	int total = strlen(http_response);
+-	int len;
++	const char *s;
++	int total, len;
+ 
+-	/* Nothing to say until a request has actually been seen. */
+-	if (tcp->priv != REQ_SEEN || tx_offs >= total)
++	s = httpd_response(tcp, &total);
++	if (!s || tx_offs >= (u32)total)
+ 		return 0;
+ 
+ 	len = total - tx_offs;
+ 	if (len > maxlen)
+ 		len = maxlen;
+ 
+-	memcpy(buf, http_response + tx_offs, len);
++	memcpy(buf, s + tx_offs, len);
+ 
+ 	return len;
+ }
+ 
+ static void httpd_on_snd_una_update(struct tcp_stream *tcp, u32 tx_bytes)
+ {
++	const char *s;
++	int total;
++
++	s = httpd_response(tcp, &total);
++	if (!s || tx_bytes < (u32)total)
++		return;
++
+ 	/*
+-	 * Close once the whole response has been transmitted AND acknowledged.
+-	 * Doing this from the tx callback would break the stream (see the
+-	 * warning on struct tcp_stream::tx).
++	 * Response delivered and acknowledged.  Closing from the tx callback
++	 * would break the stream, which is why this lives here.
+ 	 */
+-	if (tcp->priv == REQ_SEEN && tx_bytes >= strlen(http_response))
+-		tcp_stream_close(tcp);
++	tcp_stream_close(tcp);
++
++	if (tcp->priv != CONN_POST)
++		return;
++
++	if (up_ready) {
++		flash_pending = 1;
++		net_set_state(NETLOOP_SUCCESS);
++	} else {
++		/* Let the user retry after a failed upload. */
++		printf("httpd: upload failed, ready for another attempt\n");
++		up_active = 0;
++		up_owner = NULL;
++		up_parsed = 0;
++		up_failed = 0;
++		up_body = 0;
++		up_total = 0;
++		up_bound_len = 0;
++	}
+ }
+ 
+ static int httpd_on_create(struct tcp_stream *tcp)
+@@ -89,7 +358,7 @@
+ 	if (tcp->lport != HTTPD_PORT)
+ 		return 0;
+ 
+-	tcp->priv = NULL;
++	tcp->priv = CONN_UNKNOWN;
+ 	tcp->rx = httpd_rx;
+ 	tcp->tx = httpd_tx;
+ 	tcp->on_rcv_nxt_update = httpd_on_rcv_nxt_update;
+@@ -100,6 +369,18 @@
+ 
+ void httpd_start_server(void)
+ {
++	up_active = 0;
++	up_owner = NULL;
++	up_parsed = 0;
++	up_failed = 0;
++	up_ready = 0;
++	up_body = 0;
++	up_total = 0;
++	up_size = 0;
++	up_bound_len = 0;
++	flash_pending = 0;
++	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
++
+ 	memset(net_server_ethaddr, 0, 6);
+ 	tcp_stream_set_on_create_handler(httpd_on_create);
+ 
+@@ -119,12 +400,21 @@
+ 		return CMD_RET_FAILURE;
+ 	}
+ 
++	if (flash_pending) {
++		flash_pending = 0;
++		printf("httpd: flashing %u bytes with \"%s\"\n",
++		       up_size, FLASH_CMD);
++		return run_command(FLASH_CMD, 0) ? CMD_RET_FAILURE
++						 : CMD_RET_SUCCESS;
++	}
++
+ 	return CMD_RET_SUCCESS;
+ }
+ 
+ U_BOOT_CMD(
+ 	httpd,	1,	0,	do_httpd,
+-	"start minimal HTTP recovery server",
++	"start HTTP recovery server",
+ 	"\n"
+-	"    - serve a static page on port 80 (stack validation only)"
++	"    - serve an upload form on port 80; the uploaded image is written\n"
++	"      to $loadaddr and flashed with \"" FLASH_CMD "\""
+ );
