@@ -1,0 +1,217 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] net: add minimal HTTP recovery server
+
+Step 1 of the web-recovery work for Nokia XG-040G-MD: serve a static page
+only, so the TCP stack can be validated on the board before any flashing
+logic is added.
+
+No third-party IP stack is introduced.  U-Boot's traditional network stack
+has carried TCP since 2020 (net/tcp.c), and net/fastboot_tcp.c is an in-tree
+example of a TCP server built on it; this follows the same structure.
+tftpboot / dhcp / bootmenu are unaffected.
+
+Enable with CONFIG_PROT_TCP=y and CONFIG_CMD_HTTPD=y in the board defconfig.
+
+diff -urN a/include/net-legacy.h b/include/net-legacy.h
+--- a/include/net-legacy.h
++++ b/include/net-legacy.h
+@@ -303,8 +303,11 @@
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, DHCP6, PING, PING6, DNS, NFS, CDP,
+ 	NETCONS, SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT_UDP, FASTBOOT_TCP,
+-	WOL, UDP, NCSI, WGET, RS
++	WOL, UDP, NCSI, WGET, RS, HTTPD
+ };
++
++/* net/httpd.c */
++void httpd_start_server(void);
+ 
+ /* Indicates whether the file name was specified on the command line */
+ extern bool	net_boot_file_name_explicit;
+diff -urN a/net/Kconfig b/net/Kconfig
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -212,6 +212,15 @@
+ 	  Enable a generic tcp framework that allows defining a custom
+ 	  handler for tcp protocol.
+ 
++config CMD_HTTPD
++	bool "httpd - minimal HTTP recovery server"
++	depends on PROT_TCP
++	help
++	  Start a minimal HTTP server that serves a recovery page on port 80.
++	  Intended for flashing firmware from a browser without a serial
++	  console. Built on U-Boot's own TCP stack; no third-party IP stack
++	  is required.
++
+ config PROT_TCP_SACK
+ 	bool "TCP SACK support"
+ 	depends on PROT_TCP
+diff -urN a/net/Makefile b/net/Makefile
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -25,6 +25,7 @@
+ obj-$(CONFIG_CMD_TFTPBOOT) += tftp.o
+ obj-$(CONFIG_$(PHASE_)UDP_FUNCTION_FASTBOOT)  += fastboot_udp.o
+ obj-$(CONFIG_$(PHASE_)TCP_FUNCTION_FASTBOOT)  += fastboot_tcp.o
++obj-$(CONFIG_CMD_HTTPD) += httpd.o
+ obj-$(CONFIG_CMD_WOL)  += wol.o
+ obj-$(CONFIG_PROT_UDP) += udp.o
+ obj-$(CONFIG_PROT_TCP) += tcp.o
+diff -urN a/net/httpd.c b/net/httpd.c
+--- /dev/null
++++ b/net/httpd.c
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * Minimal HTTP recovery server for U-Boot.
++ *
++ * Step 1 of the web-recovery work: this only serves a static page, so that
++ * the TCP stack itself can be validated on the target before any flashing
++ * logic is added.  Upload handling (multipart/form-data -> $loadaddr ->
++ * "run ubi_write_production") is deliberately NOT here yet.
++ *
++ * Modelled on net/fastboot_tcp.c, the in-tree example of a TCP server built
++ * on U-Boot's own stack (net/tcp.c).  No third-party IP stack is pulled in,
++ * so tftpboot / dhcp / bootmenu keep working unchanged.
++ */
++
++#include <command.h>
++#include <console.h>
++#include <net.h>
++#include <net/tcp.h>
++#include <linux/string.h>
++
++#define HTTPD_PORT	80
++
++/*
++ * tcp->priv is used as a per-connection "request seen" flag, so that several
++ * browser connections (favicon, prefetch, ...) do not clobber each other.
++ */
++#define REQ_SEEN	((void *)1)
++
++static const char http_response[] =
++	"HTTP/1.0 200 OK\r\n"
++	"Content-Type: text/html; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
++	"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
++	"<title>U-Boot recovery</title></head><body "
++	"style=\"font:14px/1.5 sans-serif;max-width:40em;margin:3em auto;padding:0 1em\">"
++	"<h1>U-Boot HTTP server is alive</h1>"
++	"<p>The TCP stack works on this board. "
++	"The firmware upload endpoint is not implemented yet.</p>"
++	"</body></html>";
++
++static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
++{
++	/*
++	 * The request is not parsed in this step -- we only need to know that
++	 * something arrived.  Accept and drop it.
++	 */
++	return len;
++}
++
++static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
++{
++	if (rx_bytes > 0)
++		tcp->priv = REQ_SEEN;
++}
++
++static int httpd_tx(struct tcp_stream *tcp, u32 tx_offs, void *buf, int maxlen)
++{
++	int total = strlen(http_response);
++	int len;
++
++	/* Nothing to say until a request has actually been seen. */
++	if (tcp->priv != REQ_SEEN || tx_offs >= total)
++		return 0;
++
++	len = total - tx_offs;
++	if (len > maxlen)
++		len = maxlen;
++
++	memcpy(buf, http_response + tx_offs, len);
++
++	return len;
++}
++
++static void httpd_on_snd_una_update(struct tcp_stream *tcp, u32 tx_bytes)
++{
++	/*
++	 * Close once the whole response has been transmitted AND acknowledged.
++	 * Doing this from the tx callback would break the stream (see the
++	 * warning on struct tcp_stream::tx).
++	 */
++	if (tcp->priv == REQ_SEEN && tx_bytes >= strlen(http_response))
++		tcp_stream_close(tcp);
++}
++
++static int httpd_on_create(struct tcp_stream *tcp)
++{
++	if (tcp->lport != HTTPD_PORT)
++		return 0;
++
++	tcp->priv = NULL;
++	tcp->rx = httpd_rx;
++	tcp->tx = httpd_tx;
++	tcp->on_rcv_nxt_update = httpd_on_rcv_nxt_update;
++	tcp->on_snd_una_update = httpd_on_snd_una_update;
++
++	return 1;
++}
++
++void httpd_start_server(void)
++{
++	memset(net_server_ethaddr, 0, 6);
++	tcp_stream_set_on_create_handler(httpd_on_create);
++
++	printf("Using %s device\n", eth_get_name());
++	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
++	printf("Press Ctrl-C to abort\n");
++}
++
++static int do_httpd(struct cmd_tbl *cmdtp, int flag, int argc,
++		    char *const argv[])
++{
++	int err;
++
++	err = net_loop(HTTPD);
++	if (err < 0) {
++		printf("httpd error: %d\n", err);
++		return CMD_RET_FAILURE;
++	}
++
++	return CMD_RET_SUCCESS;
++}
++
++U_BOOT_CMD(
++	httpd,	1,	0,	do_httpd,
++	"start minimal HTTP recovery server",
++	"\n"
++	"    - serve a static page on port 80 (stack validation only)"
++);
+diff -urN a/net/net.c b/net/net.c
+--- a/net/net.c
++++ b/net/net.c
+@@ -508,6 +508,11 @@
+ 			fastboot_tcp_start_server();
+ 			break;
+ #endif
++#if defined(CONFIG_CMD_HTTPD)
++		case HTTPD:
++			httpd_start_server();
++			break;
++#endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+ 			bootp_reset();
+@@ -1510,6 +1515,7 @@
+ 	case FASTBOOT_UDP:
+ 	case FASTBOOT_TCP:
+ 	case TFTPSRV:
++	case HTTPD:
+ 		if (IS_ENABLED(CONFIG_IPV6) && use_ip6) {
+ 			if (!memcmp(&net_link_local_ip6, &net_null_addr_ip6,
+ 				    sizeof(struct in6_addr))) {
