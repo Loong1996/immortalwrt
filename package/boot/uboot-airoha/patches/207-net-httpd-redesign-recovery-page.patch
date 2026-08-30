@@ -26,6 +26,23 @@ tool rather than a debug stub:
     20 MB body for part boundaries.  That gap gets its own message rather
     than a full bar and nothing happening.
 
+  - A summary of what is about to be written, built from the picked files,
+    plus a sanity check on their names.  Three identical file inputs are
+    easy to mix up and the consequences are not symmetric: a wrong file in
+    the firmware slot leaves a board that still serves this page, while a
+    wrong file in the BL2 slot lands at flash 0x800, the BootROM finds no
+    FIP, and the only way back is serial xmodem.  The check warns, it does
+    not block -- names get renamed.
+
+  - The flashing page lists the write plan, in the order httpd_flash()
+    actually runs it, with "rebuild UBI" called out as the slow step.  The
+    browser knows what was picked and the response is a static string that
+    does not, so the list is filled in after document.write() from the same
+    script context -- U-Boot only carries the empty placeholder.  This is
+    the one screen where a user is most likely to reach for the power
+    switch, and an erase of 256 MiB with no explanation is exactly what
+    makes them do it.
+
   - The panel LED legend moves into a table on the page itself.  It is the
     only status channel once the upload finishes -- the browser cannot show
     flashing progress, because by then U-Boot has left the network loop.
@@ -41,7 +58,7 @@ tool rather than a debug stub:
     the common case (flash firmware) is a single visible field.
 
 Everything is inline: the CSP of a rescue page is "there is no network
-beyond this device".  Both pages together add about 10.5 KB of rodata.
+beyond this device".  Both pages together add about 13 KB of rodata.
 
 --- a/net/httpd.c
 +++ b/net/httpd.c
@@ -70,7 +87,7 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
  #define MAX_PARTS		6
  
  /*
-@@ -87,42 +96,229 @@
+@@ -87,42 +96,286 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -127,14 +144,26 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"button:disabled{opacity:.5;cursor:progress}"
 +	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
 +	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".pb{height:100%;width:0;border-radius:99px;background:var(--ac);"
++	".sum{margin-top:1rem;border-top:1px solid var(--line);padding-top:.75rem;"
++	"font-size:.87rem}"
++	".sum:empty{display:none}"
++	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
++	".sr .k{color:var(--mut)}"
++	".sr .v{font-variant-numeric:tabular-nums}"
++	".bad{color:#a35a00}"
++	"[data-t=dark] .bad{color:#e8a33d}"
++	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
++	".steps li{padding:.18rem 0}"
++	".steps .hot{color:var(--fg);font-weight:600}"
++	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
 +	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
 +	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
 +	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
-+	"background-size:1rem 1rem;animation:st 1s linear infinite;"
-+	"transition:width .25s ease-out}"
++	"background-size:1rem 1rem}"
++	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
 +	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
-+	".pb.ind{width:100%;animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	".pb.ind,.pbi{width:100%;"
++	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
 +	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
 +	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
 +	"font-variant-numeric:tabular-nums}"
@@ -179,7 +208,8 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
 +	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
 +	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
-+	"</details></div>"
++	"</details>"
++	"<div class=sum id=sum></div></div>"
 +	"<button id=go type=submit>上传并刷写</button>"
 +	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
 +	"<p class=ps id=ps hidden></p>"
@@ -204,6 +234,35 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
 +	"d.setAttribute('data-t',n);"
 +	"try{localStorage.setItem('xgtheme',n)}catch(e){}}"
++	"var SEL={};"
++	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB'"
++	":(n/1024).toFixed(0)+' KiB';}"
++	"function nameok(k,n){n=n.toLowerCase();"
++	"return k=='firmware'?n.indexOf('.itb')>0"
++	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
++	":n.slice(-4)=='.fip';}"
++	"function scan(){"
++	"var f=document.forms[0],o='',"
++	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
++	"SEL={};"
++	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
++	"n=i.files[0].name;SEL[k]=1;"
++	"o+='<div class=sr><span class=k>'+L[k]+'</span><span class=v>'+"
++	"sz(i.files[0].size)+(nameok(k,n)?''"
++	":' <span class=bad>· 名字不像 '+L[k]+'</span>')+'</span></div>';}"
++	"SEL.fmt=f.format.checked;"
++	"if(SEL.fmt)o+='<div class=sr><span class=k>重建 UBI</span>'+"
++	"'<span class=v><span class=bad>擦掉 MAC 与全部设置</span></span></div>';"
++	"document.getElementById('sum').innerHTML=o;}"
++	"function steps(){"
++	"var e=document.getElementById('steps'),a=[];if(!e)return;"
++	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
++	"if(SEL.fmt)a.push('<span class=hot>重建 UBI —— 擦除约 256 MiB，"
++	"这一步最慢，别以为它卡住了</span>');"
++	"if(SEL.fip)a.push('写入 U-Boot 到 fip 卷');"
++	"if(SEL.firmware)a.push('写入固件到 fit 卷');"
++	"a.push('自动重启');"
++	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';}"
 +	"function up(f){"
 +	"var x=new XMLHttpRequest(),"
 +	"b=document.getElementById('go'),w=document.getElementById('pw'),"
@@ -217,11 +276,12 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"x.upload.onload=function(){p.className='pb ind';"
 +	"s.textContent='上传完毕，设备正在校验…';};"
 +	"x.onload=function(){document.open();document.write(x.responseText);"
-+	"document.close();};"
++	"document.close();steps();};"
 +	"x.onerror=function(){s.textContent='连接中断，请刷新页面重试';"
 +	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;"
 +	"p.className='pb';p.style.width='0';};"
 +	"x.open('POST','/');x.send(new FormData(f));return false;}"
++	"document.forms[0].addEventListener('change',scan);"
 +	"</script>"
 +	"</div></body></html>";
  
@@ -274,14 +334,26 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"button:disabled{opacity:.5;cursor:progress}"
 +	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
 +	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".pb{height:100%;width:0;border-radius:99px;background:var(--ac);"
++	".sum{margin-top:1rem;border-top:1px solid var(--line);padding-top:.75rem;"
++	"font-size:.87rem}"
++	".sum:empty{display:none}"
++	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
++	".sr .k{color:var(--mut)}"
++	".sr .v{font-variant-numeric:tabular-nums}"
++	".bad{color:#a35a00}"
++	"[data-t=dark] .bad{color:#e8a33d}"
++	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
++	".steps li{padding:.18rem 0}"
++	".steps .hot{color:var(--fg);font-weight:600}"
++	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
 +	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
 +	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
 +	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
-+	"background-size:1rem 1rem;animation:st 1s linear infinite;"
-+	"transition:width .25s ease-out}"
++	"background-size:1rem 1rem}"
++	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
 +	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
-+	".pb.ind{width:100%;animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	".pb.ind,.pbi{width:100%;"
++	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
 +	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
 +	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
 +	"font-variant-numeric:tabular-nums}"
@@ -313,7 +385,9 @@ beyond this device".  Both pages together add about 10.5 KB of rodata.
 +	"<div class=c><table>"
 +	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
 +	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
-+	"</table></div>"
++	"</table>"
++	"<div class=pw><div class=pbi></div></div>"
++	"<ol class=steps id=steps></ol></div>"
 +	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
 +	"网线现在拔掉也没关系，写入不经过网络。"
 +	"<b>唯一要紧的是别断电。</b></div>"
