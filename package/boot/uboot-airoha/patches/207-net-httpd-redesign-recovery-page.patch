@@ -35,7 +35,13 @@ tool rather than a debug stub:
     not block -- names get renamed.
 
   - The flashing page lists the write plan, in the order httpd_flash()
-    actually runs it, with "rebuild UBI" called out as the slow step.  The
+    actually runs it, labelled as a plan and paired with a line saying the
+    page receives nothing during the write.  It is a plan and not progress:
+    net_loop() has already returned by then and run_command() blocks, so
+    there is no channel left to report on.  Nothing in the list is
+    emphasised as "current" -- an emphasised row in a step list reads as
+    the step being executed, which is precisely the wrong thing to suggest
+    here.  "Rebuild UBI" carries a warning about its duration instead.  The
     browser knows what was picked and the response is a static string that
     does not, so the list is filled in after document.write() from the same
     script context -- U-Boot only carries the empty placeholder.  This is
@@ -87,7 +93,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
  #define MAX_PARTS		6
  
  /*
-@@ -87,42 +96,286 @@
+@@ -87,42 +96,288 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -154,7 +160,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"[data-t=dark] .bad{color:#e8a33d}"
 +	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
 +	".steps li{padding:.18rem 0}"
-+	".steps .hot{color:var(--fg);font-weight:600}"
++	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
 +	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
 +	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
 +	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
@@ -257,8 +263,8 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"function steps(){"
 +	"var e=document.getElementById('steps'),a=[];if(!e)return;"
 +	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
-+	"if(SEL.fmt)a.push('<span class=hot>重建 UBI —— 擦除约 256 MiB，"
-+	"这一步最慢，别以为它卡住了</span>');"
++	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
++	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
 +	"if(SEL.fip)a.push('写入 U-Boot 到 fip 卷');"
 +	"if(SEL.firmware)a.push('写入固件到 fit 卷');"
 +	"a.push('自动重启');"
@@ -344,7 +350,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"[data-t=dark] .bad{color:#e8a33d}"
 +	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
 +	".steps li{padding:.18rem 0}"
-+	".steps .hot{color:var(--fg);font-weight:600}"
++	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
 +	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
 +	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
 +	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
@@ -387,6 +393,8 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
 +	"</table>"
 +	"<div class=pw><div class=pbi></div></div>"
++	"<p class=ps>写入期间页面收不到任何消息，进度以面板灯为准</p>"
++	"<p class=plan>接下来会依次做：</p>"
 +	"<ol class=steps id=steps></ol></div>"
 +	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
 +	"网线现在拔掉也没关系，写入不经过网络。"
