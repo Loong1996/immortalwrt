@@ -31,8 +31,17 @@ tool rather than a debug stub:
     easy to mix up and the consequences are not symmetric: a wrong file in
     the firmware slot leaves a board that still serves this page, while a
     wrong file in the BL2 slot lands at flash 0x800, the BootROM finds no
-    FIP, and the only way back is serial xmodem.  The check warns, it does
-    not block -- names get renamed.
+    FIP, and the only way back is serial xmodem.  The check warns rather
+    than blocks -- names get renamed.
+
+    That warning is repeated as a confirm() on submit, together with one
+    for "rebuild UBI", and only ever for those two.  A blanket "are you
+    sure" would be noise here: reaching this button already takes holding
+    reset through a power cycle, a cable, a browser and a file picker, so
+    nobody arrives by accident.  These two are different because they are
+    the cases a second attempt cannot fix -- a bad firmware image still
+    leaves a board that serves this page, while a misplaced BL2 or an
+    erased ri volume does not.
 
   - The flashing page lists the write plan, in the order httpd_flash()
     actually runs it, labelled as a plan and paired with a line saying the
@@ -93,7 +102,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
  #define MAX_PARTS		6
  
  /*
-@@ -87,42 +96,288 @@
+@@ -87,42 +96,293 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -240,7 +249,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
 +	"d.setAttribute('data-t',n);"
 +	"try{localStorage.setItem('xgtheme',n)}catch(e){}}"
-+	"var SEL={};"
++	"var SEL={},BAD=[];"
 +	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB'"
 +	":(n/1024).toFixed(0)+' KiB';}"
 +	"function nameok(k,n){n=n.toLowerCase();"
@@ -250,12 +259,13 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"function scan(){"
 +	"var f=document.forms[0],o='',"
 +	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
-+	"SEL={};"
++	"SEL={};BAD=[];"
 +	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
 +	"n=i.files[0].name;SEL[k]=1;"
 +	"o+='<div class=sr><span class=k>'+L[k]+'</span><span class=v>'+"
 +	"sz(i.files[0].size)+(nameok(k,n)?''"
-+	":' <span class=bad>· 名字不像 '+L[k]+'</span>')+'</span></div>';}"
++	":' <span class=bad>· 名字不像 '+L[k]+'</span>')+'</span></div>';"
++	"if(!nameok(k,n))BAD.push(L[k]);}"
 +	"SEL.fmt=f.format.checked;"
 +	"if(SEL.fmt)o+='<div class=sr><span class=k>重建 UBI</span>'+"
 +	"'<span class=v><span class=bad>擦掉 MAC 与全部设置</span></span></div>';"
@@ -270,6 +280,10 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"a.push('自动重启');"
 +	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';}"
 +	"function up(f){"
++	"var W=[];"
++	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，写错位置可能只能靠串口救回');"
++	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
++	"if(W.length&&!confirm(W.join('；')+'。确定继续？'))return false;"
 +	"var x=new XMLHttpRequest(),"
 +	"b=document.getElementById('go'),w=document.getElementById('pw'),"
 +	"p=document.getElementById('pb'),s=document.getElementById('ps');"
