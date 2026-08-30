@@ -8,9 +8,12 @@ tool rather than a debug stub:
   - Chinese copy, since that is who this build is for, with the file names
     kept verbatim so they can be matched against the release assets.
 
-  - Responsive layout and a dark-mode palette via prefers-color-scheme.
-    Recovery often happens on a phone, plugged into the LAN port, with no
-    other machine around.
+  - Responsive layout and a manual light/dark switch.  Recovery often
+    happens on a phone, plugged into the LAN port, with no other machine
+    around.  The theme is a deliberate toggle rather than
+    prefers-color-scheme; the choice is remembered in localStorage and
+    applied from a <head> script, so it survives the page swap that follows
+    an upload without flashing the wrong palette first.
 
   - An upload progress bar, driven by XMLHttpRequest.upload.onprogress.
     A 20 MB upload over 100BASE-TX takes long enough that a motionless page
@@ -28,14 +31,17 @@ tool rather than a debug stub:
     flashing progress, because by then U-Boot has left the network loop.
 
   - U_BOOT_VERSION in the footer, so a user reporting a problem can say
-    which build they are looking at without a serial console.
+    which build they are looking at without a serial console, plus a
+    WEB_VERSION badge next to the heading for the page itself.  The page
+    and the U-Boot it ships in are versioned separately because they change
+    for different reasons.
 
   - The "rebuild UBI" checkbox is now inside a warning box that spells out
     what it erases, and the whole bootloader section stays folded away, so
     the common case (flash firmware) is a single visible field.
 
 Everything is inline: the CSP of a rescue page is "there is no network
-beyond this device".  Both pages together add about 7.5 KB of rodata.
+beyond this device".  Both pages together add about 10.5 KB of rodata.
 
 --- a/net/httpd.c
 +++ b/net/httpd.c
@@ -54,7 +60,17 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
  #define HTTPD_PORT		80
  
  /* Enough for the request line + headers of any sane browser. */
-@@ -87,42 +93,172 @@
+@@ -72,6 +78,9 @@
+ #define FIELD_FIT		"firmware"
+ #define FIELD_FORMAT		"format"
+ 
++/* Version of the recovery page itself, shown next to the heading. */
++#define WEB_VERSION		"0.1.0"
++
+ #define MAX_PARTS		6
+ 
+ /*
+@@ -87,42 +96,229 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -75,15 +91,17 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 -	"Rebuild UBI first &mdash; erases every volume, settings included"
 -	"</label></p></details>"
 -	"<p><button type=submit>Upload and flash</button></p>"
-+	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
++	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
++	"<script>try{var t=localStorage.getItem('xgtheme');"
++	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
 +	"<meta name=viewport content='width=device-width,initial-scale=1'>"
 +	"<title>XG-040G-MD 固件恢复</title>"
 +	"<style>"
 +	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
 +	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
-+	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
++	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
 +	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
-+	"--wbg:#2a2312;--wln:#8a6d1f}}"
++	"--wbg:#2a2312;--wln:#8a6d1f}"
 +	"*{box-sizing:border-box}"
 +	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
 +	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
@@ -107,10 +125,29 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
 +	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
 +	"button:disabled{opacity:.5;cursor:progress}"
-+	".pw{height:8px;background:var(--line);border-radius:4px;overflow:hidden;"
-+	"margin-top:.9rem}"
-+	".pb{height:100%;width:0;background:var(--ac);transition:width .15s linear}"
-+	".ps{text-align:center;margin:.5rem 0 0;color:var(--mut);font-size:.85rem}"
++	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
++	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
++	".pb{height:100%;width:0;border-radius:99px;background:var(--ac);"
++	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
++	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
++	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
++	"background-size:1rem 1rem;animation:st 1s linear infinite;"
++	"transition:width .25s ease-out}"
++	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
++	".pb.ind{width:100%;animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
++	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
++	"font-variant-numeric:tabular-nums}"
++	".top{display:flex;align-items:flex-start;justify-content:space-between;"
++	"gap:1rem;margin-bottom:1.4rem}"
++	".top .sub{margin-bottom:0}"
++	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
++	"line-height:1.3;background:transparent;color:var(--mut);"
++	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
++	".tb:hover{color:var(--fg);border-color:var(--mut)}"
++	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
++	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
++	"white-space:nowrap;letter-spacing:.02em}"
 +	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
 +	"td{padding:.3rem 0;vertical-align:top}"
 +	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
@@ -121,8 +158,11 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
 +	"</style>"
 +	"</head><body><div class=w>"
-+	"<h1>固件恢复</h1>"
-+	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p>"
++	"<div class=top><div>"
++	"<h1>固件恢复 <span class=ver>Web " WEB_VERSION "</span></h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
++	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
++	"</div>"
 +	"<form method=post enctype=multipart/form-data "
 +	"onsubmit='try{return up(this)}catch(e){return true}'>"
 +	"<div class=c>"
@@ -160,6 +200,10 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
 +	"</footer>"
 +	"<script>"
++	"function tg(){var d=document.documentElement,"
++	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
++	"d.setAttribute('data-t',n);"
++	"try{localStorage.setItem('xgtheme',n)}catch(e){}}"
 +	"function up(f){"
 +	"var x=new XMLHttpRequest(),"
 +	"b=document.getElementById('go'),w=document.getElementById('pw'),"
@@ -170,12 +214,13 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"var v=e.loaded/e.total*100;p.style.width=v.toFixed(1)+'%';"
 +	"s.textContent='已上传 '+(e.loaded/1048576).toFixed(1)+' / '"
 +	"+(e.total/1048576).toFixed(1)+' MiB（'+v.toFixed(0)+'%）';};"
-+	"x.upload.onload=function(){p.style.width='100%';"
++	"x.upload.onload=function(){p.className='pb ind';"
 +	"s.textContent='上传完毕，设备正在校验…';};"
 +	"x.onload=function(){document.open();document.write(x.responseText);"
 +	"document.close();};"
 +	"x.onerror=function(){s.textContent='连接中断，请刷新页面重试';"
-+	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;};"
++	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;"
++	"p.className='pb';p.style.width='0';};"
 +	"x.open('POST','/');x.send(new FormData(f));return false;}"
 +	"</script>"
 +	"</div></body></html>";
@@ -193,15 +238,17 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 -	"write is running, and the device reboots on its own when it is done. "
 -	"<b>Do not power it off.</b> Unplugging the network cable is safe.</p>"
 -	"</body></html>";
-+	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
++	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
++	"<script>try{var t=localStorage.getItem('xgtheme');"
++	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
 +	"<meta name=viewport content='width=device-width,initial-scale=1'>"
 +	"<title>正在写入</title>"
 +	"<style>"
 +	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
 +	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
-+	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
++	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
 +	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
-+	"--wbg:#2a2312;--wln:#8a6d1f}}"
++	"--wbg:#2a2312;--wln:#8a6d1f}"
 +	"*{box-sizing:border-box}"
 +	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
 +	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
@@ -225,10 +272,29 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
 +	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
 +	"button:disabled{opacity:.5;cursor:progress}"
-+	".pw{height:8px;background:var(--line);border-radius:4px;overflow:hidden;"
-+	"margin-top:.9rem}"
-+	".pb{height:100%;width:0;background:var(--ac);transition:width .15s linear}"
-+	".ps{text-align:center;margin:.5rem 0 0;color:var(--mut);font-size:.85rem}"
++	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
++	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
++	".pb{height:100%;width:0;border-radius:99px;background:var(--ac);"
++	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
++	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
++	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
++	"background-size:1rem 1rem;animation:st 1s linear infinite;"
++	"transition:width .25s ease-out}"
++	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
++	".pb.ind{width:100%;animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
++	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
++	"font-variant-numeric:tabular-nums}"
++	".top{display:flex;align-items:flex-start;justify-content:space-between;"
++	"gap:1rem;margin-bottom:1.4rem}"
++	".top .sub{margin-bottom:0}"
++	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
++	"line-height:1.3;background:transparent;color:var(--mut);"
++	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
++	".tb:hover{color:var(--fg);border-color:var(--mut)}"
++	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
++	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
++	"white-space:nowrap;letter-spacing:.02em}"
 +	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
 +	"td{padding:.3rem 0;vertical-align:top}"
 +	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
@@ -239,8 +305,11 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
 +	"</style>"
 +	"</head><body><div class=w>"
-+	"<h1>已收到</h1>"
-+	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p>"
++	"<div class=top><div>"
++	"<h1>已收到 <span class=ver>Web " WEB_VERSION "</span></h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
++	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
++	"</div>"
 +	"<div class=c><table>"
 +	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
 +	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
@@ -252,6 +321,10 @@ beyond this device".  Both pages together add about 7.5 KB of rodata.
 +	"网页救砖 &middot; "
 +	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
 +	"</footer>"
++	"<script>function tg(){var d=document.documentElement,"
++	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
++	"d.setAttribute('data-t',n);"
++	"try{localStorage.setItem('xgtheme',n)}catch(e){}}</script>"
 +	"</div></body></html>";
  
  static const char resp_400[] =
