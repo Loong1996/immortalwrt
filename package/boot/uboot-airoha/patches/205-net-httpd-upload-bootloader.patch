@@ -1,0 +1,555 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] net: httpd: accept the bootloader too, and blink while writing
+
+Three changes, all aimed at the same thing: making a first-time migration
+survivable without a serial console.
+
+  - The form now takes BL2 and the U-Boot FIP alongside the firmware, plus a
+    "rebuild UBI" checkbox.  Without this a board that has never run this
+    U-Boot needs two rounds of xmodem -- the first one only gets far enough
+    to erase the flash before _firstboot resets it.  With it, one xmodem
+    round brings up a RAM-resident U-Boot and everything else arrives over
+    the network.  The parts are flashed in place, so a 64 MB upload still
+    needs no second copy in RAM, and the bootloader is written before the
+    firmware so a migration that dies halfway still leaves a recoverable
+    board.
+
+  - Flashing blinks all panel LEDs together instead of holding them solid.
+    A solid panel is indistinguishable from a hung board, which is the one
+    thing the LEDs exist to rule out.  net_loop()'s timeout handler is gone
+    by then, so the blink is driven by the cyclic framework: the SPI-NAND
+    layer calls schedule() once per written page, which keeps it ticking
+    even in the middle of a multi-megabyte write.
+
+  - A successful flash reboots on its own.  Previously it fell back into
+    boot_httpd_forever and served the form again, which reads as "nothing
+    happened".  A failed flash deliberately does not reboot, so the user
+    gets the form back and can retry.
+
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -2,10 +2,11 @@
+ /*
+  * HTTP recovery server for U-Boot.
+  *
+- * Serves an upload form on GET and accepts a firmware image via
+- * multipart/form-data on POST.  The received image is placed at $loadaddr and
+- * the flashing itself is delegated to the board's existing environment
+- * scripts (ubi_write_production and friends), so no flash logic is
++ * Serves an upload form on GET and accepts one or more images via
++ * multipart/form-data on POST: the firmware, and -- for a first-time
++ * migration -- the bootloader (BL2 and the U-Boot FIP) as well.  Each part is
++ * flashed where the TCP stream left it, and the flashing itself is delegated
++ * to the board's existing environment scripts, so no flash logic is
+  * duplicated here.
+  *
+  * Built on U-Boot's own TCP stack (net/tcp.c), modelled on net/fastboot_tcp.c.
+@@ -15,6 +16,7 @@
+ 
+ #include <command.h>
+ #include <console.h>
++#include <cyclic.h>
+ #include <dm.h>
+ #include <env.h>
+ #include <led.h>
+@@ -35,9 +37,33 @@
+ #define CONN_GET		((void *)1)
+ #define CONN_POST		((void *)2)
+ 
+-/* Command run after the response has been flushed and net_loop() returned. */
+-#define FLASH_CMD		"run ubi_write_production"
++/*
++ * Commands run after the response has been flushed and net_loop() returned.
++ * Keeping them in the environment means a user can inspect and override the
++ * flashing steps from the U-Boot console without rebuilding.
++ */
++#define CMD_WRITE_BL2		"run httpd_write_bl2"
++#define CMD_FORMAT_UBI		"run httpd_format_ubi"
++#define CMD_ATTACH_UBI		"ubi part ubi"
++#define CMD_WRITE_FIP		"run ubi_write_fip"
++#define CMD_WRITE_FIT		"run ubi_write_production"
+ 
++/* Form field names.  Everything except the firmware is optional. */
++#define FIELD_BL2		"bl2"
++#define FIELD_FIP		"fip"
++#define FIELD_FIT		"firmware"
++#define FIELD_FORMAT		"format"
++
++#define MAX_PARTS		6
++
++/*
++ * Parts are flashed in place, so their start address is wherever the form
++ * data happened to land.  Align it down for the NAND layer; a multipart part
++ * header is never shorter than ~90 bytes, so the bytes stepped on belong to
++ * that header and never to the previous part's payload.
++ */
++#define FLASH_ALIGN		64
++
+ static const char resp_form[] =
+ 	"HTTP/1.0 200 OK\r\n"
+ 	"Content-Type: text/html; charset=utf-8\r\n"
+@@ -48,13 +74,23 @@
+ 	"<title>U-Boot recovery</title></head><body "
+ 	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
+ 	"<h1>Firmware recovery</h1>"
+-	"<form method=\"post\" enctype=\"multipart/form-data\">"
+-	"<p><input type=\"file\" name=\"firmware\" required></p>"
+-	"<p><button type=\"submit\">Upload and flash</button></p>"
++	"<form method=post enctype=\"multipart/form-data\">"
++	"<p><label>Firmware &mdash; ...-squashfs-sysupgrade.itb<br>"
++	"<input type=file name=" FIELD_FIT "></label></p>"
++	"<details><summary>Bootloader (first-time migration only)</summary>"
++	"<p><label>BL2 &mdash; ...-preloader.bin<br>"
++	"<input type=file name=" FIELD_BL2 "></label></p>"
++	"<p><label>U-Boot &mdash; ...-bl31-uboot.fip<br>"
++	"<input type=file name=" FIELD_FIP "></label></p>"
++	"<p><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
++	"Rebuild UBI first &mdash; erases every volume, settings included"
++	"</label></p></details>"
++	"<p><button type=submit>Upload and flash</button></p>"
+ 	"</form>"
+ 	"<p style=\"background:#fffbe6;border:1px solid #f0c36d;padding:.8em\">"
+-	"Do not power off during flashing. The device reboots when done.</p>"
+-	"</body></html>";
++	"The LEDs chase while waiting and <b>blink together while writing</b>. "
++	"Do not power off until they stop; the device reboots on its own."
++	"</p></body></html>";
+ 
+ static const char resp_done[] =
+ 	"HTTP/1.0 200 OK\r\n"
+@@ -64,9 +100,11 @@
+ 	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+ 	"<title>Flashing</title></head><body "
+ 	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
+-	"<h1>Image received</h1>"
+-	"<p>Writing to flash now. The device reboots when done. "
+-	"Do not power it off.</p></body></html>";
++	"<h1>Upload received</h1>"
++	"<p>Writing to flash. The front LEDs <b>blink together</b> while the "
++	"write is running, and the device reboots on its own when it is done. "
++	"<b>Do not power it off.</b> Unplugging the network cable is safe.</p>"
++	"</body></html>";
+ 
+ static const char resp_400[] =
+ 	"HTTP/1.0 400 Bad Request\r\n"
+@@ -82,12 +120,22 @@
+ static int	up_ready;	/* image complete and moved to $loadaddr */
+ static u32	up_body;	/* stream offset of the first image byte */
+ static u32	up_total;	/* total request length (headers + body) */
+-static u32	up_size;	/* image length */
++static u32	up_size;	/* total payload bytes across all parts */
+ static char	up_bound[80];	/* "\r\n--" + multipart boundary */
+ static struct tcp_stream *up_owner;	/* owns the staging area */
+ static int	up_bound_len;
+-static int	flash_pending;	/* run FLASH_CMD after net_loop() returns */
++static int	flash_pending;	/* flash after net_loop() returns */
+ 
++/* One uploaded form field whose payload is non-empty. */
++struct up_part {
++	char	name[24];
++	ulong	addr;
++	u32	size;
++};
++
++static struct up_part	up_parts[MAX_PARTS];
++static int		up_nparts;
++
+ /*
+  * Cached once per httpd invocation: env_get_hex() walks the whole environment,
+  * and rx() is called for every single segment of a multi-megabyte upload.
+@@ -109,23 +157,35 @@
+ };
+ 
+ #define LED_TICK_MS	120
++#define LED_BLINK_US	250000
+ 
+ static int led_pos;
++static int led_blink_on;
++static struct udevice *led_dev[ARRAY_SIZE(led_chase)];
++static struct cyclic_info led_cyclic;
+ 
+-static void led_write(const char *label, enum led_state_t state)
++/* Looking devices up by label once keeps the cyclic callback cheap. */
++static void led_probe(void)
+ {
+-	struct udevice *dev;
++	unsigned int i;
+ 
+-	if (!led_get_by_label(label, &dev))
+-		led_set_state(dev, state);
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		if (led_get_by_label(led_chase[i], &led_dev[i]))
++			led_dev[i] = NULL;
+ }
+ 
++static void led_one(unsigned int i, enum led_state_t state)
++{
++	if (led_dev[i])
++		led_set_state(led_dev[i], state);
++}
++
+ static void led_all(enum led_state_t state)
+ {
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
+-		led_write(led_chase[i], state);
++		led_one(i, state);
+ }
+ 
+ /* Re-arms itself: net_loop() clears the handler before calling it. */
+@@ -134,8 +194,7 @@
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
+-		led_write(led_chase[i], i == (unsigned int)led_pos ?
+-					LEDST_ON : LEDST_OFF);
++		led_one(i, i == (unsigned int)led_pos ? LEDST_ON : LEDST_OFF);
+ 
+ 	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
+ 	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
+@@ -143,6 +202,7 @@
+ 
+ static void httpd_led_start(void)
+ {
++	led_probe();
+ 	led_pos = 0;
+ 	httpd_led_tick();
+ }
+@@ -152,9 +212,37 @@
+ 	net_set_timeout_handler(0, NULL);
+ 	led_all(LEDST_OFF);
+ }
++
++/*
++ * Flashing is synchronous, so net_loop()'s timeout handler is no longer
++ * running and the chase above cannot drive the panel.  The SPI-NAND layer
++ * calls schedule() once per written page, and that is what ticks the cyclic
++ * framework -- so this keeps blinking even in the middle of a 64 MB write.
++ */
++static void httpd_blink(struct cyclic_info *c)
++{
++	(void)c;
++
++	led_blink_on = !led_blink_on;
++	led_all(led_blink_on ? LEDST_ON : LEDST_OFF);
++}
++
++static void httpd_blink_start(void)
++{
++	led_blink_on = 0;
++	cyclic_register(&led_cyclic, httpd_blink, LED_BLINK_US, "httpd-flash");
++}
++
++static void httpd_blink_stop(void)
++{
++	cyclic_unregister(&led_cyclic);
++	led_all(LEDST_OFF);
++}
+ #else
+ static inline void httpd_led_start(void) { }
+ static inline void httpd_led_stop(void) { }
++static inline void httpd_blink_start(void) { }
++static inline void httpd_blink_stop(void) { }
+ static inline void led_all(int state) { }
+ #define LEDST_ON	0
+ #define LEDST_OFF	0
+@@ -317,16 +405,17 @@
+ }
+ 
+ /*
+- * Parse the request headers plus the first multipart part header, both of
+- * which sit at the very beginning of the stream (already stored at
+- * $loadaddr).  Only called once enough contiguous bytes have arrived.
++ * Parse the request headers, which sit at the very beginning of the stream
++ * (already stored at $loadaddr).  Only called once enough contiguous bytes
++ * have arrived.  The individual parts are located later, in one pass over the
++ * complete body.
+  */
+ static void httpd_parse(u32 rx_bytes)
+ {
+ 	char hdr[HDRBUF_SZ];
+ 	const char *base = (const char *)up_base;
+ 	char *p, *q;
+-	int n, hdr_end, part_end, blen;
++	int n, hdr_end, blen;
+ 	ulong clen;
+ 
+ 	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
+@@ -378,62 +467,94 @@
+ 		up_failed = 1;
+ 		return;
+ 	}
+-	/* The image ends right before CRLF + "--" + boundary. */
++	/* Each part ends right before CRLF + "--" + boundary. */
+ 	memcpy(up_bound, "\r\n--", 4);
+ 	memcpy(up_bound + 4, p, blen);
+ 	up_bound_len = blen + 4;
+ 
+-	/* The part header ends at the next CRLFCRLF after the request headers. */
+-	part_end = mem_find(hdr + hdr_end, n - hdr_end, "\r\n\r\n", 4);
+-	if (part_end < 0) {
+-		if (n >= HDRBUF_SZ - 1)
+-			up_failed = 1;	/* absurdly long part header */
+-		return;
+-	}
+-
+-	up_body = hdr_end + part_end + 4;
++	up_body = hdr_end;
+ 	up_total = hdr_end + clen;
+ 	up_parsed = 1;
+ 
+-	printf("httpd: expecting %lu bytes, image starts at +%u\n",
+-	       clen, up_body);
++	printf("httpd: expecting %lu body bytes at +%u\n", clen, up_body);
+ }
+ 
+-/* Image fully received: trim the trailer and move it to $loadaddr. */
++/*
++ * Body fully received: walk the multipart stream once and record where each
++ * form field's payload landed.  Nothing is copied -- the parts are flashed in
++ * place, which is what stops a 64 MB upload from needing a second 64 MB.
++ */
+ static void httpd_finish(void)
+ {
+ 	char *base = (char *)up_base;
+-	u32 scan_from, scan_len, pos;
+-	u32 end;
++	const char *sep = up_bound + 2;		/* "--" + boundary */
++	int seplen = up_bound_len - 2;
++	u32 pos = up_body;
+ 
+-	/* Locate the closing boundary near the end of the stream. */
+-	scan_len = up_total - up_body;
+-	if (scan_len > TAIL_SCAN)
+-		scan_from = up_total - TAIL_SCAN;
+-	else
+-		scan_from = up_body;
+-	scan_len = up_total - scan_from;
+-
+-	pos = mem_find(base + scan_from, scan_len, up_bound, up_bound_len);
+-	if (pos < 0) {
+-		printf("httpd: closing boundary not found\n");
+-		up_failed = 1;
+-		return;
++	up_nparts = 0;
++	up_size = 0;
++
++	while (up_nparts < MAX_PARTS && pos < up_total) {
++		char ph[512];
++		struct up_part *part;
++		const char *q;
++		int off, hoff, dlen, n;
++
++		off = mem_find(base + pos, up_total - pos, sep, seplen);
++		if (off < 0)
++			break;
++		pos += off + seplen;
++
++		/* "--" right after the delimiter closes the body. */
++		if (up_total - pos >= 2 && !memcmp(base + pos, "--", 2))
++			break;
++		if (up_total - pos >= 2 && !memcmp(base + pos, "\r\n", 2))
++			pos += 2;
++
++		n = up_total - pos;
++		if (n > (int)sizeof(ph) - 1)
++			n = sizeof(ph) - 1;
++		hoff = mem_find(base + pos, n, "\r\n\r\n", 4);
++		if (hoff < 0)
++			break;
++		memcpy(ph, base + pos, hoff);
++		ph[hoff] = '\0';
++		pos += hoff + 4;
++
++		dlen = mem_find(base + pos, up_total - pos, up_bound,
++				up_bound_len);
++		if (dlen < 0)
++			break;
++
++		/* An untouched <input type=file> arrives with an empty body. */
++		q = strstr(ph, "name=\"");
++		if (q && dlen > 0) {
++			part = &up_parts[up_nparts];
++			q += 6;
++			for (n = 0; n < (int)sizeof(part->name) - 1 &&
++				    q[n] && q[n] != '"'; n++)
++				part->name[n] = q[n];
++			part->name[n] = '\0';
++			part->addr = (ulong)(base + pos);
++			part->size = dlen;
++
++			up_size += dlen;
++			up_nparts++;
++
++			printf("httpd: \"%s\": %u bytes at 0x%lx\n",
++			       part->name, part->size, part->addr);
++		}
++
++		pos += dlen;		/* now sitting on the next delimiter */
+ 	}
+-	end = scan_from + pos;
+ 
+-	if (end <= up_body) {
+-		printf("httpd: empty image\n");
++	if (!up_nparts) {
++		printf("httpd: no usable form fields in upload\n");
+ 		up_failed = 1;
+ 		return;
+ 	}
+ 
+-	up_size = end - up_body;
+-	memmove(base, base + up_body, up_size);
+-	env_set_hex("filesize", up_size);
+ 	up_ready = 1;
+-
+-	printf("httpd: received %u bytes at %p\n", up_size, base);
+ }
+ 
+ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
+@@ -593,6 +714,7 @@
+ 	up_body = 0;
+ 	up_total = 0;
+ 	up_size = 0;
++	up_nparts = 0;
+ 	up_bound_len = 0;
+ 	flash_pending = 0;
+ 	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
+@@ -606,12 +728,95 @@
+ 	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
+ 	printf("Handing out DHCP leases from %pI4\n", &net_ip);
+ 	printf("Press Ctrl-C to abort\n");
++}
++
++static struct up_part *part_find(const char *name)
++{
++	int i;
++
++	for (i = 0; i < up_nparts; i++)
++		if (!strcmp(up_parts[i].name, name))
++			return &up_parts[i];
++
++	return NULL;
++}
++
++/*
++ * Move a part down to an aligned address so the NAND layer never sees an
++ * awkwardly aligned source.  See FLASH_ALIGN on why stepping back is safe.
++ */
++static ulong part_align(struct up_part *part)
++{
++	ulong aligned = part->addr & ~(ulong)(FLASH_ALIGN - 1);
++
++	if (aligned != part->addr && aligned >= up_base) {
++		memmove((void *)aligned, (void *)part->addr, part->size);
++		part->addr = aligned;
++	}
++
++	return part->addr;
+ }
+ 
++static int flash_part(const char *what, struct up_part *part, const char *cmd)
++{
++	printf("httpd: writing %s, %u bytes (%s)\n", what, part->size, cmd);
++
++	env_set_hex("loadaddr", part_align(part));
++	env_set_hex("filesize", part->size);
++
++	if (run_command(cmd, 0)) {
++		printf("httpd: writing %s FAILED\n", what);
++		return -1;
++	}
++
++	return 0;
++}
++
++/*
++ * The bootloader is written before the firmware so that a migration which
++ * dies halfway still leaves a board that can be recovered over the network.
++ */
++static int httpd_flash(void)
++{
++	struct up_part *bl2 = part_find(FIELD_BL2);
++	struct up_part *fip = part_find(FIELD_FIP);
++	struct up_part *fit = part_find(FIELD_FIT);
++	int format = part_find(FIELD_FORMAT) != NULL;
++	int ret = -1;
++
++	httpd_blink_start();
++
++	if (bl2 && flash_part("BL2", bl2, CMD_WRITE_BL2))
++		goto out;
++
++	if (fip || fit) {
++		const char *cmd = format ? CMD_FORMAT_UBI : CMD_ATTACH_UBI;
++
++		printf("httpd: %s\n", cmd);
++		if (run_command(cmd, 0)) {
++			printf("httpd: attaching UBI FAILED\n");
++			goto out;
++		}
++	}
++
++	if (fip && flash_part("U-Boot FIP", fip, CMD_WRITE_FIP))
++		goto out;
++
++	if (fit && flash_part("firmware", fit, CMD_WRITE_FIT))
++		goto out;
++
++	ret = 0;
++out:
++	httpd_blink_stop();
++	env_set_hex("loadaddr", up_base);
++
++	return ret;
++}
++
+ static int do_httpd(struct cmd_tbl *cmdtp, int flag, int argc,
+ 		    char *const argv[])
+ {
+-	int err, ret;
++	int err;
+ 
+ 	err = net_loop(HTTPD);
+ 
+@@ -622,18 +827,21 @@
+ 		return CMD_RET_FAILURE;
+ 	}
+ 
+-	if (flash_pending) {
+-		flash_pending = 0;
+-		/* Solid instead of chasing: do not power off now. */
+-		led_all(LEDST_ON);
+-		printf("httpd: flashing %u bytes with \"%s\"\n",
+-		       up_size, FLASH_CMD);
+-		ret = run_command(FLASH_CMD, 0);
+-		led_all(LEDST_OFF);
++	if (!flash_pending)
++		return CMD_RET_SUCCESS;
+ 
+-		return ret ? CMD_RET_FAILURE : CMD_RET_SUCCESS;
++	flash_pending = 0;
++	if (httpd_flash()) {
++		/*
++		 * Deliberately no reset: the caller loops back into httpd so
++		 * the user can retry without touching the power.
++		 */
++		return CMD_RET_FAILURE;
+ 	}
+ 
++	printf("httpd: flashing done, rebooting\n");
++	run_command("reset", 0);
++
+ 	return CMD_RET_SUCCESS;
+ }
+ 
+@@ -641,6 +849,7 @@
+ 	httpd,	1,	0,	do_httpd,
+ 	"start HTTP recovery server",
+ 	"\n"
+-	"    - serve an upload form on port 80; the uploaded image is written\n"
+-	"      to $loadaddr and flashed with \"" FLASH_CMD "\""
++	"    - serve an upload form on port 80 and hand out one DHCP lease;\n"
++	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
++	"      flashed by the matching httpd_* / ubi_write_* env scripts"
+ );
