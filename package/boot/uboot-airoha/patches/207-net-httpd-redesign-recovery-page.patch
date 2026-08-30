@@ -1,0 +1,197 @@
+From: Loong <galletzeynep481@gmail.com>
+Subject: [PATCH] net: httpd: redesign the recovery page
+
+The page a user meets while their router is bricked was a bare heading and
+an unstyled file input.  Rework it into something that reads as a finished
+tool rather than a debug stub:
+
+  - Chinese copy, since that is who this build is for, with the file names
+    kept verbatim so they can be matched against the release assets.
+
+  - Responsive layout and a dark-mode palette via prefers-color-scheme.
+    Recovery often happens on a phone, plugged into the LAN port, with no
+    other machine around.
+
+  - The panel LED legend moves into a table on the page itself.  It is the
+    only status channel once the upload finishes -- the browser cannot show
+    flashing progress, because by then U-Boot has left the network loop.
+
+  - Submitting disables the button and says so.  A 20 MB upload takes long
+    enough that a second click is tempting, and a second POST is rejected
+    by the one-upload-at-a-time guard without the user seeing why.
+
+  - The "rebuild UBI" checkbox is now inside a warning box that spells out
+    what it erases, and the whole bootloader section stays folded away, so
+    the common case (flash firmware) is a single visible field.
+
+Everything is inline: the CSP of a rescue page is "there is no network
+beyond this device".  Both pages together add about 6 KB of rodata.
+
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -87,42 +87,136 @@
+ 	"Content-Type: text/html; charset=utf-8\r\n"
+ 	"Connection: close\r\n"
+ 	"\r\n"
+-	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+-	"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+-	"<title>U-Boot recovery</title></head><body "
+-	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
+-	"<h1>Firmware recovery</h1>"
+-	"<form method=post enctype=\"multipart/form-data\">"
+-	"<p><label>Firmware &mdash; ...-squashfs-sysupgrade.itb<br>"
+-	"<input type=file name=" FIELD_FIT "></label></p>"
+-	"<details><summary>Bootloader (first-time migration only)</summary>"
+-	"<p><label>BL2 &mdash; ...-preloader.bin<br>"
+-	"<input type=file name=" FIELD_BL2 "></label></p>"
+-	"<p><label>U-Boot &mdash; ...-bl31-uboot.fip<br>"
+-	"<input type=file name=" FIELD_FIP "></label></p>"
+-	"<p><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
+-	"Rebuild UBI first &mdash; erases every volume, settings included"
+-	"</label></p></details>"
+-	"<p><button type=submit>Upload and flash</button></p>"
++	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
++	"<meta name=viewport content='width=device-width,initial-scale=1'>"
++	"<title>XG-040G-MD 固件恢复</title>"
++"<style>"
++	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
++	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
++	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
++	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
++	"--wbg:#2a2312;--wln:#8a6d1f}}"
++	"*{box-sizing:border-box}"
++	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
++	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
++	"'PingFang SC','Microsoft YaHei',sans-serif}"
++	".w{max-width:33rem;margin:0 auto}"
++	"h1{font-size:1.35rem;margin:0 0 .15rem}"
++	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
++	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
++	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
++	".f{display:block;margin-bottom:1.1rem}"
++	".f:last-child{margin-bottom:0}"
++	".n{font-weight:600}"
++	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
++	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
++	"font-size:.87rem;color:var(--mut)}"
++	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
++	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
++	"b{white-space:nowrap}"
++	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
++	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
++	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
++	"button:disabled{opacity:.5;cursor:progress}"
++	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
++	"td{padding:.3rem 0;vertical-align:top}"
++	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem}"
++	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
++	"</style>"
++	"</head><body><div class=w>"
++	"<h1>固件恢复</h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p>"
++	"<form method=post enctype=multipart/form-data "
++	"onsubmit='var b=document.getElementById(&quot;go&quot;);"
++	"b.disabled=true;b.textContent=&quot;上传中，请勿关闭页面…&quot;'>"
++	"<div class=c>"
++	"<label class=f><span class=n>固件</span><br>"
++	"<span class=h>…-squashfs-sysupgrade.itb</span>"
++	"<input type=file name=" FIELD_FIT "></label>"
++	"<details><summary>引导程序（仅首次迁移需要）</summary>"
++	"<label class=f><span class=n>BL2</span><br>"
++	"<span class=h>…-preloader.bin</span>"
++	"<input type=file name=" FIELD_BL2 "></label>"
++	"<label class=f><span class=n>U-Boot</span><br>"
++	"<span class=h>…-bl31-uboot.fip</span>"
++	"<input type=file name=" FIELD_FIP "></label>"
++	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
++	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
++	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
++	"</details></div>"
++	"<button id=go type=submit>上传并刷写</button>"
+ 	"</form>"
+-	"<p style=\"background:#fffbe6;border:1px solid #f0c36d;padding:.8em\">"
+-	"The LEDs chase while waiting and <b>blink together while writing</b>. "
+-	"Do not power off until they stop; the device reboots on its own."
+-	"</p></body></html>";
++	"<div class=c><table>"
++	"<tr><td>流水</td><td>正在等待上传</td></tr>"
++	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
++	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
++	"</table></div>"
++	"<p class=sub>刷写会清空 rootfs_data，相当于恢复出厂设置。"
++	"系统还能进的话，请优先用 sysupgrade。</p>"
++	"<footer>U-Boot ç½é¡µæç  &middot; "
++	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
++	"</footer>"
++	"</div></body></html>";
+ 
+ static const char resp_done[] =
+ 	"HTTP/1.0 200 OK\r\n"
+ 	"Content-Type: text/html; charset=utf-8\r\n"
+ 	"Connection: close\r\n"
+ 	"\r\n"
+-	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+-	"<title>Flashing</title></head><body "
+-	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
+-	"<h1>Upload received</h1>"
+-	"<p>Writing to flash. The front LEDs <b>blink together</b> while the "
+-	"write is running, and the device reboots on its own when it is done. "
+-	"<b>Do not power it off.</b> Unplugging the network cable is safe.</p>"
+-	"</body></html>";
++	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
++	"<meta name=viewport content='width=device-width,initial-scale=1'>"
++	"<title>正在写入</title>"
++"<style>"
++	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
++	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
++	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
++	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
++	"--wbg:#2a2312;--wln:#8a6d1f}}"
++	"*{box-sizing:border-box}"
++	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
++	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
++	"'PingFang SC','Microsoft YaHei',sans-serif}"
++	".w{max-width:33rem;margin:0 auto}"
++	"h1{font-size:1.35rem;margin:0 0 .15rem}"
++	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
++	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
++	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
++	".f{display:block;margin-bottom:1.1rem}"
++	".f:last-child{margin-bottom:0}"
++	".n{font-weight:600}"
++	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
++	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
++	"font-size:.87rem;color:var(--mut)}"
++	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
++	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
++	"b{white-space:nowrap}"
++	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
++	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
++	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
++	"button:disabled{opacity:.5;cursor:progress}"
++	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
++	"td{padding:.3rem 0;vertical-align:top}"
++	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem}"
++	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
++	"</style>"
++	"</head><body><div class=w>"
++	"<h1>已收到</h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p>"
++	"<div class=c><table>"
++	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
++	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
++	"</table></div>"
++	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
++	"网线现在拔掉也没关系，写入不经过网络。"
++	"<b>唯一要紧的是别断电。</b></div>"
++	"<footer>U-Boot ç½é¡µæç  &middot; "
++	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
++	"</footer>"
++	"</div></body></html>";
+ 
+ static const char resp_400[] =
+ 	"HTTP/1.0 400 Bad Request\r\n"
