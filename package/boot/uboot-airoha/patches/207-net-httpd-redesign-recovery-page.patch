@@ -12,24 +12,49 @@ tool rather than a debug stub:
     Recovery often happens on a phone, plugged into the LAN port, with no
     other machine around.
 
+  - An upload progress bar, driven by XMLHttpRequest.upload.onprogress.
+    A 20 MB upload over 100BASE-TX takes long enough that a motionless page
+    reads as a hang, and a second click posts again -- which the
+    one-upload-at-a-time guard rejects without the user seeing why.  The
+    form falls back to a plain submit if anything in the script throws, so
+    a browser that dislikes the JS still flashes.
+
+  - The bar reaching 100% is not the end: the board still has to scan a
+    20 MB body for part boundaries.  That gap gets its own message rather
+    than a full bar and nothing happening.
+
   - The panel LED legend moves into a table on the page itself.  It is the
     only status channel once the upload finishes -- the browser cannot show
     flashing progress, because by then U-Boot has left the network loop.
 
-  - Submitting disables the button and says so.  A 20 MB upload takes long
-    enough that a second click is tempting, and a second POST is rejected
-    by the one-upload-at-a-time guard without the user seeing why.
+  - U_BOOT_VERSION in the footer, so a user reporting a problem can say
+    which build they are looking at without a serial console.
 
   - The "rebuild UBI" checkbox is now inside a warning box that spells out
     what it erases, and the whole bootloader section stays folded away, so
     the common case (flash firmware) is a single visible field.
 
 Everything is inline: the CSP of a rescue page is "there is no network
-beyond this device".  Both pages together add about 6 KB of rodata.
+beyond this device".  Both pages together add about 7.5 KB of rodata.
 
 --- a/net/httpd.c
 +++ b/net/httpd.c
-@@ -87,42 +87,136 @@
+@@ -23,8 +23,14 @@
+ #include <net.h>
+ #include <net/tcp.h>
+ #include <linux/string.h>
++#include <version.h>
+ #include <vsprintf.h>
+ 
++/* Generated at build time; keep the page buildable if it ever moves. */
++#ifndef U_BOOT_VERSION
++#define U_BOOT_VERSION		"U-Boot"
++#endif
++
+ #define HTTPD_PORT		80
+ 
+ /* Enough for the request line + headers of any sane browser. */
+@@ -87,42 +93,172 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -53,7 +78,7 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
 +	"<meta name=viewport content='width=device-width,initial-scale=1'>"
 +	"<title>XG-040G-MD 固件恢复</title>"
-+"<style>"
++	"<style>"
 +	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
 +	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
 +	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
@@ -82,18 +107,24 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
 +	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
 +	"button:disabled{opacity:.5;cursor:progress}"
++	".pw{height:8px;background:var(--line);border-radius:4px;overflow:hidden;"
++	"margin-top:.9rem}"
++	".pb{height:100%;width:0;background:var(--ac);transition:width .15s linear}"
++	".ps{text-align:center;margin:.5rem 0 0;color:var(--mut);font-size:.85rem}"
 +	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
 +	"td{padding:.3rem 0;vertical-align:top}"
 +	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-+	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
++	"line-height:1.5}"
++	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
++	"word-break:break-all}"
 +	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
 +	"</style>"
 +	"</head><body><div class=w>"
 +	"<h1>固件恢复</h1>"
 +	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p>"
 +	"<form method=post enctype=multipart/form-data "
-+	"onsubmit='var b=document.getElementById(&quot;go&quot;);"
-+	"b.disabled=true;b.textContent=&quot;上传中，请勿关闭页面…&quot;'>"
++	"onsubmit='try{return up(this)}catch(e){return true}'>"
 +	"<div class=c>"
 +	"<label class=f><span class=n>固件</span><br>"
 +	"<span class=h>…-squashfs-sysupgrade.itb</span>"
@@ -110,6 +141,8 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
 +	"</details></div>"
 +	"<button id=go type=submit>上传并刷写</button>"
++	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
++	"<p class=ps id=ps hidden></p>"
  	"</form>"
 -	"<p style=\"background:#fffbe6;border:1px solid #f0c36d;padding:.8em\">"
 -	"The LEDs chase while waiting and <b>blink together while writing</b>. "
@@ -122,9 +155,29 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"</table></div>"
 +	"<p class=sub>刷写会清空 rootfs_data，相当于恢复出厂设置。"
 +	"系统还能进的话，请优先用 sysupgrade。</p>"
-+	"<footer>U-Boot ç½é¡µæç  &middot; "
++	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
++	"网页救砖 &middot; "
 +	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
 +	"</footer>"
++	"<script>"
++	"function up(f){"
++	"var x=new XMLHttpRequest(),"
++	"b=document.getElementById('go'),w=document.getElementById('pw'),"
++	"p=document.getElementById('pb'),s=document.getElementById('ps');"
++	"b.disabled=true;b.textContent='上传中…';w.hidden=false;s.hidden=false;"
++	"x.upload.onprogress=function(e){"
++	"if(!e.lengthComputable)return;"
++	"var v=e.loaded/e.total*100;p.style.width=v.toFixed(1)+'%';"
++	"s.textContent='已上传 '+(e.loaded/1048576).toFixed(1)+' / '"
++	"+(e.total/1048576).toFixed(1)+' MiB（'+v.toFixed(0)+'%）';};"
++	"x.upload.onload=function(){p.style.width='100%';"
++	"s.textContent='上传完毕，设备正在校验…';};"
++	"x.onload=function(){document.open();document.write(x.responseText);"
++	"document.close();};"
++	"x.onerror=function(){s.textContent='连接中断，请刷新页面重试';"
++	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;};"
++	"x.open('POST','/');x.send(new FormData(f));return false;}"
++	"</script>"
 +	"</div></body></html>";
  
  static const char resp_done[] =
@@ -143,7 +196,7 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"<!DOCTYPE html><html lang=zh><head><meta charset=utf-8>"
 +	"<meta name=viewport content='width=device-width,initial-scale=1'>"
 +	"<title>正在写入</title>"
-+"<style>"
++	"<style>"
 +	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
 +	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
 +	"@media(prefers-color-scheme:dark){:root{--bg:#0d1117;--fg:#e6edf3;"
@@ -172,10 +225,17 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
 +	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
 +	"button:disabled{opacity:.5;cursor:progress}"
++	".pw{height:8px;background:var(--line);border-radius:4px;overflow:hidden;"
++	"margin-top:.9rem}"
++	".pb{height:100%;width:0;background:var(--ac);transition:width .15s linear}"
++	".ps{text-align:center;margin:.5rem 0 0;color:var(--mut);font-size:.85rem}"
 +	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
 +	"td{padding:.3rem 0;vertical-align:top}"
 +	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-+	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
++	"line-height:1.5}"
++	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
++	"word-break:break-all}"
 +	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
 +	"</style>"
 +	"</head><body><div class=w>"
@@ -188,7 +248,8 @@ beyond this device".  Both pages together add about 6 KB of rodata.
 +	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
 +	"网线现在拔掉也没关系，写入不经过网络。"
 +	"<b>唯一要紧的是别断电。</b></div>"
-+	"<footer>U-Boot ç½é¡µæç  &middot; "
++	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
++	"网页救砖 &middot; "
 +	"<a href='https://github.com/Loong1996' target=_blank rel=noopener>Loong</a>"
 +	"</footer>"
 +	"</div></body></html>";
