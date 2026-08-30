@@ -26,16 +26,22 @@ tool rather than a debug stub:
     20 MB body for part boundaries.  That gap gets its own message rather
     than a full bar and nothing happening.
 
-  - A summary of what is about to be written, built from the picked files,
-    plus a sanity check on their names.  Three identical file inputs are
+  - A confirm dialog listing exactly what is about to be written, built
+    from the picked files, plus a sanity check on their names.  The list
+    lives in the dialog rather than under the button because that is the
+    moment the decision is made -- next to a file picker it is something to
+    skim while filling the form, in front of the button it is the last
+    thing read before committing.  An in-page dialog, not confirm(): it
+    can show a table, and it survives the environments that swallow native
+    modals.  Three identical file inputs are
     easy to mix up and the consequences are not symmetric: a wrong file in
     the firmware slot leaves a board that still serves this page, while a
     wrong file in the BL2 slot lands at flash 0x800, the BootROM finds no
     FIP, and the only way back is serial xmodem.  The check warns rather
     than blocks -- names get renamed.
 
-    That warning is repeated as a confirm() on submit, together with one
-    for "rebuild UBI", and only ever for those two.  A blanket "are you
+    The dialog raises its confirm button to a warning style for those two
+    cases, and only those two.  A blanket "are you
     sure" would be noise here: reaching this button already takes holding
     reset through a power cycle, a cable, a browser and a file picker, so
     nobody arrives by accident.  These two are different because they are
@@ -102,7 +108,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
  #define MAX_PARTS		6
  
  /*
-@@ -87,42 +96,293 @@
+@@ -87,42 +96,335 @@
  	"Content-Type: text/html; charset=utf-8\r\n"
  	"Connection: close\r\n"
  	"\r\n"
@@ -159,9 +165,22 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"button:disabled{opacity:.5;cursor:progress}"
 +	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
 +	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".sum{margin-top:1rem;border-top:1px solid var(--line);padding-top:.75rem;"
-+	"font-size:.87rem}"
-+	".sum:empty{display:none}"
++	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
++	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
++	".mask[data-on]{display:flex}"
++	".dlg{background:var(--card);border:1px solid var(--line);"
++	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
++	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
++	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
++	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
++	".none{color:var(--mut);font-size:.9rem;margin:0}"
++	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
++	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
++	".btns button{flex:1}"
++	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
++	".danger{background:#b45309}"
++	"[data-t=dark] .danger{background:#a35a00}"
 +	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
 +	".sr .k{color:var(--mut)}"
 +	".sr .v{font-variant-numeric:tabular-nums}"
@@ -223,8 +242,7 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
 +	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
 +	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
-+	"</details>"
-+	"<div class=sum id=sum></div></div>"
++	"</details></div>"
 +	"<button id=go type=submit>上传并刷写</button>"
 +	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
 +	"<p class=ps id=ps hidden></p>"
@@ -233,6 +251,12 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 -	"The LEDs chase while waiting and <b>blink together while writing</b>. "
 -	"Do not power off until they stop; the device reboots on its own."
 -	"</p></body></html>";
++	"<div class=mask id=mask><div class=dlg>"
++	"<h2>确认写入</h2><div id=dl></div>"
++	"<div class=btns>"
++	"<button type=button class=no onclick=hide()>取消</button>"
++	"<button type=button id=yes onclick=go2()>开始写入</button>"
++	"</div></div></div>"
 +	"<div class=c><table>"
 +	"<tr><td>流水</td><td>正在等待上传</td></tr>"
 +	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
@@ -264,12 +288,10 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"n=i.files[0].name;SEL[k]=1;"
 +	"o+='<div class=sr><span class=k>'+L[k]+'</span><span class=v>'+"
 +	"sz(i.files[0].size)+(nameok(k,n)?''"
-+	":' <span class=bad>· 名字不像 '+L[k]+'</span>')+'</span></div>';"
++	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
 +	"if(!nameok(k,n))BAD.push(L[k]);}"
 +	"SEL.fmt=f.format.checked;"
-+	"if(SEL.fmt)o+='<div class=sr><span class=k>重建 UBI</span>'+"
-+	"'<span class=v><span class=bad>擦掉 MAC 与全部设置</span></span></div>';"
-+	"document.getElementById('sum').innerHTML=o;}"
++	"return o;}"
 +	"function steps(){"
 +	"var e=document.getElementById('steps'),a=[];if(!e)return;"
 +	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
@@ -279,11 +301,23 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"if(SEL.firmware)a.push('写入固件到 fit 卷');"
 +	"a.push('自动重启');"
 +	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';}"
-+	"function up(f){"
-+	"var W=[];"
-+	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，写错位置可能只能靠串口救回');"
++	"function hide(){"
++	"document.getElementById('mask').removeAttribute('data-on');}"
++	"function ask(){"
++	"var o=scan(),W=[],y=document.getElementById('yes'),h,i;"
++	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，"
++	"写错位置可能只能靠串口救回');"
 +	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
-+	"if(W.length&&!confirm(W.join('；')+'。确定继续？'))return false;"
++	"h=o?'<div class=list>'+o+'</div>'"
++	":'<p class=none>还没有选择任何文件。</p>';"
++	"for(i=0;i<W.length;i++)h+='<div class=wr>'+W[i]+'</div>';"
++	"document.getElementById('dl').innerHTML=h;"
++	"y.hidden=!o;y.textContent=W.length?'仍要写入':'开始写入';"
++	"y.className=W.length?'danger':'';"
++	"document.getElementById('mask').setAttribute('data-on','');}"
++	"function up(f){ask();return false;}"
++	"function go2(){hide();send(document.forms[0]);}"
++	"function send(f){"
 +	"var x=new XMLHttpRequest(),"
 +	"b=document.getElementById('go'),w=document.getElementById('pw'),"
 +	"p=document.getElementById('pb'),s=document.getElementById('ps');"
@@ -301,7 +335,8 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;"
 +	"p.className='pb';p.style.width='0';};"
 +	"x.open('POST','/');x.send(new FormData(f));return false;}"
-+	"document.forms[0].addEventListener('change',scan);"
++	"document.addEventListener('keydown',function(e){"
++	"if(e.key=='Escape')hide();});"
 +	"</script>"
 +	"</div></body></html>";
  
@@ -354,9 +389,22 @@ beyond this device".  Both pages together add about 13 KB of rodata.
 +	"button:disabled{opacity:.5;cursor:progress}"
 +	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
 +	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".sum{margin-top:1rem;border-top:1px solid var(--line);padding-top:.75rem;"
-+	"font-size:.87rem}"
-+	".sum:empty{display:none}"
++	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
++	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
++	".mask[data-on]{display:flex}"
++	".dlg{background:var(--card);border:1px solid var(--line);"
++	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
++	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
++	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
++	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
++	".none{color:var(--mut);font-size:.9rem;margin:0}"
++	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
++	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
++	".btns button{flex:1}"
++	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
++	".danger{background:#b45309}"
++	"[data-t=dark] .danger{background:#a35a00}"
 +	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
 +	".sr .k{color:var(--mut)}"
 +	".sr .v{font-variant-numeric:tabular-nums}"
