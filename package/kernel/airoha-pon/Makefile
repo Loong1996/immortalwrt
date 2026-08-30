@@ -59,7 +59,10 @@ PON_INCLUDE_FLAGS:= \
 	-I$(PON_BSP_DIR)/include/global_inc \
 	-I$(PON_BSP_DIR)/include/global_inc/version \
 	-I$(PON_BSP_DIR)/an7583/pon_pma/inc \
-	-I$(PON_BSP_DIR)/qdma
+	-I$(PON_BSP_DIR)/qdma \
+	-Wno-error=implicit-function-declaration \
+	-Wno-error=int-conversion \
+	-Wno-error=incompatible-pointer-types
 PON_V2_CPU_CFLAGS:= \
 	-D__IMEM= \
 	-DTCSUPPORT_CPU_ARMV8=1 \
