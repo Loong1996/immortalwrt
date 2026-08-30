@@ -14,6 +14,13 @@ survivable without a serial console.
     firmware so a migration that dies halfway still leaves a recoverable
     board.
 
+    Every flashing step prefers its environment script but carries a
+    built-in equivalent.  The saved environment is itself something recovery
+    has to survive: a board whose ubootenv volume predates these scripts
+    shadows the defaults compiled into this image, and would fail on the
+    very first step with "httpd_write_bl2" not defined -- precisely when
+    there is no other way in.
+
   - Flashing blinks all panel LEDs together instead of holding them solid.
     A solid panel is indistinguishable from a hung board, which is the one
     thing the LEDs exist to rule out.  net_loop()'s timeout handler is gone
@@ -52,7 +59,7 @@ survivable without a serial console.
  #include <dm.h>
  #include <env.h>
  #include <led.h>
-@@ -35,9 +37,33 @@
+@@ -35,9 +37,51 @@
  #define CONN_GET		((void *)1)
  #define CONN_POST		((void *)2)
  
@@ -62,13 +69,31 @@ survivable without a serial console.
 + * Commands run after the response has been flushed and net_loop() returned.
 + * Keeping them in the environment means a user can inspect and override the
 + * flashing steps from the U-Boot console without rebuilding.
++ *
++ * Each one has a built-in equivalent, because the saved environment is itself
++ * something recovery has to survive: a board carrying an older ubootenv
++ * volume shadows the defaults compiled into this image, and would fail at the
++ * first step -- precisely when there is no other way in.
 + */
-+#define CMD_WRITE_BL2		"run httpd_write_bl2"
-+#define CMD_FORMAT_UBI		"run httpd_format_ubi"
-+#define CMD_ATTACH_UBI		"ubi part ubi"
-+#define CMD_WRITE_FIP		"run ubi_write_fip"
-+#define CMD_WRITE_FIT		"run ubi_write_production"
++#define ENV_WRITE_BL2		"httpd_write_bl2"
++#define ENV_FORMAT_UBI		"httpd_format_ubi"
++#define ENV_WRITE_FIP		"ubi_write_fip"
++#define ENV_WRITE_FIT		"ubi_write_production"
  
++#define DEF_WRITE_BL2		"mtd erase bl2 && " \
++				"mtd write bl2 $loadaddr 0x800 $filesize"
++#define DEF_FORMAT_UBI		"ubi detach ; mtd erase ubi && ubi part ubi"
++#define DEF_WRITE_FIP		"ubi check rootfs_data && ubi remove rootfs_data ; " \
++				"ubi check fip && ubi remove fip ; " \
++				"ubi create fip 0x100000 static && " \
++				"ubi write $loadaddr fip $filesize"
++#define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
++				"ubi check rootfs_data && ubi remove rootfs_data ; " \
++				"ubi create fit $filesize dynamic && " \
++				"ubi write $loadaddr fit $filesize"
++
++#define CMD_ATTACH_UBI		"ubi part ubi"
++
 +/* Form field names.  Everything except the firmware is optional. */
 +#define FIELD_BL2		"bl2"
 +#define FIELD_FIP		"fip"
@@ -88,7 +113,7 @@ survivable without a serial console.
  static const char resp_form[] =
  	"HTTP/1.0 200 OK\r\n"
  	"Content-Type: text/html; charset=utf-8\r\n"
-@@ -48,13 +74,23 @@
+@@ -48,13 +92,23 @@
  	"<title>U-Boot recovery</title></head><body "
  	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
  	"<h1>Firmware recovery</h1>"
@@ -117,7 +142,7 @@ survivable without a serial console.
  
  static const char resp_done[] =
  	"HTTP/1.0 200 OK\r\n"
-@@ -64,9 +100,11 @@
+@@ -64,9 +118,11 @@
  	"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
  	"<title>Flashing</title></head><body "
  	"style=\"font:14px/1.6 sans-serif;max-width:36em;margin:3em auto;padding:0 1em\">"
@@ -132,7 +157,7 @@ survivable without a serial console.
  
  static const char resp_400[] =
  	"HTTP/1.0 400 Bad Request\r\n"
-@@ -82,12 +120,22 @@
+@@ -82,12 +138,22 @@
  static int	up_ready;	/* image complete and moved to $loadaddr */
  static u32	up_body;	/* stream offset of the first image byte */
  static u32	up_total;	/* total request length (headers + body) */
@@ -157,7 +182,7 @@ survivable without a serial console.
  /*
   * Cached once per httpd invocation: env_get_hex() walks the whole environment,
   * and rx() is called for every single segment of a multi-megabyte upload.
-@@ -109,23 +157,35 @@
+@@ -109,23 +175,35 @@
  };
  
  #define LED_TICK_MS	120
@@ -198,7 +223,7 @@ survivable without a serial console.
  }
  
  /* Re-arms itself: net_loop() clears the handler before calling it. */
-@@ -134,8 +194,7 @@
+@@ -134,8 +212,7 @@
  	unsigned int i;
  
  	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
@@ -208,7 +233,7 @@ survivable without a serial console.
  
  	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
  	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
-@@ -143,6 +202,7 @@
+@@ -143,6 +220,7 @@
  
  static void httpd_led_start(void)
  {
@@ -216,7 +241,7 @@ survivable without a serial console.
  	led_pos = 0;
  	httpd_led_tick();
  }
-@@ -152,9 +212,37 @@
+@@ -152,9 +230,37 @@
  	net_set_timeout_handler(0, NULL);
  	led_all(LEDST_OFF);
  }
@@ -254,7 +279,7 @@ survivable without a serial console.
  static inline void led_all(int state) { }
  #define LEDST_ON	0
  #define LEDST_OFF	0
-@@ -317,16 +405,17 @@
+@@ -317,16 +423,17 @@
  }
  
  /*
@@ -276,7 +301,7 @@ survivable without a serial console.
  	ulong clen;
  
  	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
-@@ -378,62 +467,94 @@
+@@ -378,62 +485,94 @@
  		up_failed = 1;
  		return;
  	}
@@ -326,21 +351,24 @@ survivable without a serial console.
 -	else
 -		scan_from = up_body;
 -	scan_len = up_total - scan_from;
--
++	up_nparts = 0;
++	up_size = 0;
+ 
 -	pos = mem_find(base + scan_from, scan_len, up_bound, up_bound_len);
 -	if (pos < 0) {
 -		printf("httpd: closing boundary not found\n");
 -		up_failed = 1;
 -		return;
-+	up_nparts = 0;
-+	up_size = 0;
-+
+-	}
+-	end = scan_from + pos;
 +	while (up_nparts < MAX_PARTS && pos < up_total) {
 +		char ph[512];
 +		struct up_part *part;
 +		const char *q;
 +		int off, hoff, dlen, n;
-+
+ 
+-	if (end <= up_body) {
+-		printf("httpd: empty image\n");
 +		off = mem_find(base + pos, up_total - pos, sep, seplen);
 +		if (off < 0)
 +			break;
@@ -387,11 +415,8 @@ survivable without a serial console.
 +		}
 +
 +		pos += dlen;		/* now sitting on the next delimiter */
- 	}
--	end = scan_from + pos;
- 
--	if (end <= up_body) {
--		printf("httpd: empty image\n");
++	}
++
 +	if (!up_nparts) {
 +		printf("httpd: no usable form fields in upload\n");
  		up_failed = 1;
@@ -407,7 +432,7 @@ survivable without a serial console.
  }
  
  static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
-@@ -593,6 +714,7 @@
+@@ -593,6 +732,7 @@
  	up_body = 0;
  	up_total = 0;
  	up_size = 0;
@@ -415,7 +440,7 @@ survivable without a serial console.
  	up_bound_len = 0;
  	flash_pending = 0;
  	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
-@@ -606,12 +728,95 @@
+@@ -606,12 +746,118 @@
  	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
  	printf("Handing out DHCP leases from %pI4\n", &net_ip);
  	printf("Press Ctrl-C to abort\n");
@@ -446,16 +471,32 @@ survivable without a serial console.
 +	}
 +
 +	return part->addr;
++}
++
++/* Run $var if the environment defines it, otherwise the built-in fallback. */
++static int run_step(const char *var, const char *builtin)
++{
++	char buf[64];
++
++	if (env_get(var)) {
++		snprintf(buf, sizeof(buf), "run %s", var);
++		return run_command(buf, 0);
++	}
++
++	printf("httpd: $%s not set, using built-in\n", var);
++
++	return run_command(builtin, 0);
  }
  
-+static int flash_part(const char *what, struct up_part *part, const char *cmd)
++static int flash_part(const char *what, struct up_part *part, const char *var,
++		      const char *builtin)
 +{
-+	printf("httpd: writing %s, %u bytes (%s)\n", what, part->size, cmd);
++	printf("httpd: writing %s, %u bytes\n", what, part->size);
 +
 +	env_set_hex("loadaddr", part_align(part));
 +	env_set_hex("filesize", part->size);
 +
-+	if (run_command(cmd, 0)) {
++	if (run_step(var, builtin)) {
 +		printf("httpd: writing %s FAILED\n", what);
 +		return -1;
 +	}
@@ -477,23 +518,30 @@ survivable without a serial console.
 +
 +	httpd_blink_start();
 +
-+	if (bl2 && flash_part("BL2", bl2, CMD_WRITE_BL2))
++	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
 +		goto out;
 +
 +	if (fip || fit) {
-+		const char *cmd = format ? CMD_FORMAT_UBI : CMD_ATTACH_UBI;
++		int err;
 +
-+		printf("httpd: %s\n", cmd);
-+		if (run_command(cmd, 0)) {
++		if (format) {
++			printf("httpd: rebuilding UBI\n");
++			err = run_step(ENV_FORMAT_UBI, DEF_FORMAT_UBI);
++		} else {
++			printf("httpd: %s\n", CMD_ATTACH_UBI);
++			err = run_command(CMD_ATTACH_UBI, 0);
++		}
++
++		if (err) {
 +			printf("httpd: attaching UBI FAILED\n");
 +			goto out;
 +		}
 +	}
 +
-+	if (fip && flash_part("U-Boot FIP", fip, CMD_WRITE_FIP))
++	if (fip && flash_part("U-Boot FIP", fip, ENV_WRITE_FIP, DEF_WRITE_FIP))
 +		goto out;
 +
-+	if (fit && flash_part("firmware", fit, CMD_WRITE_FIT))
++	if (fit && flash_part("firmware", fit, ENV_WRITE_FIT, DEF_WRITE_FIT))
 +		goto out;
 +
 +	ret = 0;
@@ -512,7 +560,7 @@ survivable without a serial console.
  
  	err = net_loop(HTTPD);
  
-@@ -622,18 +827,21 @@
+@@ -622,18 +868,21 @@
  		return CMD_RET_FAILURE;
  	}
  
@@ -543,7 +591,7 @@ survivable without a serial console.
  	return CMD_RET_SUCCESS;
  }
  
-@@ -641,6 +849,7 @@
+@@ -641,6 +890,8 @@
  	httpd,	1,	0,	do_httpd,
  	"start HTTP recovery server",
  	"\n"
@@ -551,5 +599,6 @@ survivable without a serial console.
 -	"      to $loadaddr and flashed with \"" FLASH_CMD "\""
 +	"    - serve an upload form on port 80 and hand out one DHCP lease;\n"
 +	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
-+	"      flashed by the matching httpd_* / ubi_write_* env scripts"
++	"      flashed by the matching httpd_* / ubi_write_* env scripts,\n"
++	"      or by a built-in equivalent when those are not defined"
  );
