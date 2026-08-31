@@ -1,0 +1,48 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] airoha-pon: stub SDK delay1ms and include vmalloc.h for phy_10g
+
+phy_10g.ko 在 Linux 6.18 上编过 C 之后，modpost 报两个未定义符号：
+
+  delay1ms  —— EcoNet SDK 定时函数，源码包没带实现。en7581.c 的
+              phy_delay1ms() 在 TCSUPPORT_CPU_ARMV8 下直接调用它。
+  vmalloc   —— 6.10+ 把 vmalloc() 收成 vmalloc_noprof() 宏，必须
+              #include <linux/vmalloc.h> 才会展开。en7581.c 的
+              pma_fifo_check() 没带这个头，隐式调用了已经不导出的
+              旧符号。
+
+xpon_10g 已经用 -include xpon_compat.h 补 SDK 缺口；phy_10g 缺同样
+一层。加 phy_compat.h，把 delay1ms/delay1us 映射到 mdelay/udelay，
+并带上 vmalloc.h。
+
+Signed-off-by: Loong <1031313955@qq.com>
+---
+--- /dev/null
++++ b/xpon-en757x/xpon_phy_10g/inc/phy_compat.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _PHY_COMPAT_H_
++#define _PHY_COMPAT_H_
++
++#include <linux/delay.h>
++#include <linux/vmalloc.h>
++
++static inline void delay1ms(int ms)
++{
++	mdelay(ms);
++}
++
++static inline void delay1us(int us)
++{
++	udelay(us);
++}
++
++#endif /* _PHY_COMPAT_H_ */
+--- a/xpon-en757x/xpon_phy_10g/Makefile
++++ b/xpon-en757x/xpon_phy_10g/Makefile
+@@ -1,5 +1,6 @@
+ KERNELDIR=$(KERNEL_DIR)
+ ccflags-y += -DWAN2LAN
++ccflags-y += -include $(MODULES_PHY_10G_DIR)/inc/phy_compat.h
+ 
+ INCDIR		:= inc
+ SRCDIR		:= src
