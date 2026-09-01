@@ -1,0 +1,391 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] xg-040g-md: let the recovery page put the factory image back
+
+Going back to stock was the one direction the page could not go.  The ways
+out were tcboot's own web interface -- which is gone the moment you migrate
+away from it -- or a serial console with a TFTP server, which is exactly the
+setup this page exists to avoid needing.
+
+A partition map does not live on the flash.  It comes from the device tree,
+and the device tree arrives with the bootloader and the kernel, so restoring
+the factory bytes at the factory offsets brings the factory map back with
+them.  That is why this can work at all from a U-Boot whose own map is just
+bl2 + ubi: "mtd write" on the raw device takes byte offsets and never asks
+what a partition is called.  It has to be the raw device for the same reason
+-- bl2 ends at 0x20000 and ubi begins there, so neither can reach offset 0
+with a factory-sized write.
+
+Two modes, because they answer different questions:
+
+  - whole chip, for actually going back.  all_flash.bin is 235.625 MiB and
+    its length is checked before anything is erased, since a short file here
+    means erasing the board and then discovering it;
+
+  - one partition, which is the common case and the safe one.  Restoring ri
+    is how a board gets its factory MAC back after "rebuild UBI" wiped it --
+    without this, the only copy left is the label on the case.
+
+kernel_slave and rootfs_slave are deliberately not offered: their sizes are
+the lengths of the images that were registered, not erase-block multiples,
+so neither can be erased alone.  nsb_slave spans both.  nsb_master is left
+out because it is not a partition but a second window onto kernel+rootfs,
+and writing it would write those twice.
+
+UPLOAD_MAX becomes a computed ceiling.  The upload lands at $loadaddr and is
+flashed from where it landed, so what fits is however much DRAM sits above
+it: on a 512 MiB board a factory image leaves about 20 MiB of headroom.  A
+fixed 96 MiB limit would have refused it outright, and simply raising the
+constant would let a larger file run off the end of RAM.
+
+The two paths never share a session -- the form refuses to submit a stock
+restore alongside any of the UBI-side fields, and httpd_flash() returns
+after either rather than falling through into the bl2/fip/fit sequence.
+
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -22,7 +22,9 @@
+ #include <led.h>
+ #include <net.h>
+ #include <net/tcp.h>
++#include <linux/kernel.h>
+ #include <linux/string.h>
++#include <asm/global_data.h>
+ #include <version.h>
+ #include <vsprintf.h>
+ 
+@@ -31,6 +33,8 @@
+ #define U_BOOT_VERSION		"U-Boot"
+ #endif
+ 
++DECLARE_GLOBAL_DATA_PTR;
++
+ #define HTTPD_PORT		80
+ 
+ /* Enough for the request line + headers of any sane browser. */
+@@ -78,10 +82,62 @@
+ #define FIELD_FIT		"firmware"
+ #define FIELD_FORMAT		"format"
+ 
++/* Going back to stock.  Mutually exclusive with the three fields above. */
++#define FIELD_STOCK		"stock"		/* whole-chip all_flash.bin */
++#define FIELD_PARTFILE		"partfile"	/* one factory partition */
++#define FIELD_PARTNAME		"partname"	/* which one it is */
++
++/*
++ * The factory partition map.  This is emphatically not the map this U-Boot
++ * runs on -- ours is bl2 + ubi and nothing else -- but a partition map does
++ * not live on the flash at all: it comes from the device tree, and the device
++ * tree arrives with the bootloader and the kernel.  "mtd write" on the raw
++ * device works in byte offsets and never consults a partition name, so
++ * putting the factory bytes back at the factory offsets brings the factory
++ * map back along with them.
++ *
++ * kernel_slave and rootfs_slave are deliberately missing: their sizes are the
++ * length of the images that were registered, not erase-block multiples, so
++ * neither can be erased on its own.  nsb_slave spans both and is the unit to
++ * use.  nsb_master is absent for a different reason -- it is not a partition
++ * but a second window onto kernel+rootfs, and writing it would write those
++ * twice.
++ */
++struct stock_part {
++	const char	*name;
++	u32		off;
++	u32		size;
++};
++
++static const struct stock_part stock_map[] = {
++	{ "bootloader",	0x0000000, 0x0080000 },
++	{ "romfile",	0x0080000, 0x0040000 },
++	{ "kernel",	0x00c0000, 0x0480000 },
++	{ "rootfs",	0x0540000, 0x2400000 },
++	{ "nsb_slave",	0x2940000, 0x2880000 },
++	{ "bosa",	0x51c0000, 0x0040000 },
++	{ "ri",		0x5200000, 0x0040000 },
++	{ "flag",	0x5240000, 0x0040000 },
++	{ "flagback",	0x5280000, 0x0040000 },
++	{ "config",	0x52c0000, 0x0a00000 },
++	{ "data",	0x5cc0000, 0x80e0000 },
++	{ "oopsfs",	0xdda0000, 0x0400000 },
++	{ "log",	0xe1a0000, 0x0a00000 },
++};
++
++/* all_flash: everything the factory map covers, 235.625 MiB. */
++#define STOCK_TOTAL		0xeba0000
++
++/*
++ * The raw device rather than one of our partitions: bl2 stops at 0x20000 and
++ * ubi starts there, so neither can reach offset 0 with a factory-sized write.
++ */
++#define STOCK_MTD		"spi-nand0"
++
+ /* Version of the recovery page itself, shown next to the heading. */
+ #define WEB_VERSION		"0.1.1"
+ 
+-#define MAX_PARTS		6
++#define MAX_PARTS		10
+ 
+ /*
+  * Parts are flashed in place, so their start address is wherever the form
+@@ -178,6 +234,9 @@ static const char resp_form[] =
+ 	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
+ 	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
+ 	"white-space:nowrap;letter-spacing:.02em}"
++	"select{display:block;width:100%;margin-top:.45rem;padding:.45rem;"
++	"border:1px solid var(--line);border-radius:.4rem;"
++	"background:var(--card);color:var(--fg);font:inherit}"
+ 	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
+ 	"td{padding:.3rem 0;vertical-align:top}"
+ 	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
+@@ -209,6 +268,34 @@ static const char resp_form[] =
+ 	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
+ 	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
+ 	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
++	"</details>"
++	"<details><summary>退回原厂（会擦掉网页救砖本身）</summary>"
++	"<div class=warn>刷回原厂后这个页面就不存在了 —— 要再回 OpenWrt，"
++	"得重新走一次 USB-TTL 串口迁移。<b>写入期间断电必砖</b>；"
++	"整片 235 MiB，比刷固件慢得多，别当成卡死。"
++	"镜像必须是<b>你自己这台</b>备份的，别人的带着他的 MAC 与 GPON SN。</div>"
++	"<label class=f><span class=n>整片恢复</span><br>"
++	"<span class=h>all_flash.bin · 235.6 MiB</span>"
++	"<input type=file name=" FIELD_STOCK "></label>"
++	"<label class=f><span class=n>或者只恢复一个分区</span><br>"
++	"<span class=h>出厂 MAC 丢了就选 ri</span>"
++	"<select name=" FIELD_PARTNAME ">"
++	"<option value=''>— 不恢复分区 —</option>"
++	"<option value=ri>ri · 出厂 MAC · 256 KiB</option>"
++	"<option value=romfile>romfile · 256 KiB</option>"
++	"<option value=bosa>bosa · 256 KiB</option>"
++	"<option value=flag>flag · 256 KiB</option>"
++	"<option value=flagback>flagback · 256 KiB</option>"
++	"<option value=bootloader>bootloader · 512 KiB</option>"
++	"<option value=kernel>kernel · 4.5 MiB</option>"
++	"<option value=rootfs>rootfs · 36 MiB</option>"
++	"<option value=nsb_slave>nsb_slave · 40.5 MiB</option>"
++	"<option value=config>config · 10 MiB</option>"
++	"<option value=oopsfs>oopsfs · 4 MiB</option>"
++	"<option value=log>log · 10 MiB</option>"
++	"<option value=data>data · 128.9 MiB</option>"
++	"</select>"
++	"<input type=file name=" FIELD_PARTFILE "></label>"
+ 	"</details></div>"
+ 	"<button id=go type=submit>上传并刷写</button>"
+ 	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
+@@ -242,10 +329,12 @@ static const char resp_form[] =
+ 	"function nameok(k,n){n=n.toLowerCase();"
+ 	"return k=='firmware'?n.indexOf('.itb')>0"
+ 	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
++	":k=='stock'||k=='partfile'?n.slice(-4)=='.bin'"
+ 	":n.slice(-4)=='.fip';}"
+ 	"function scan(){"
+ 	"var f=document.forms[0],o='',"
+-	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
++	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot',"
++	"stock:'整片原厂',partfile:'原厂分区'},k,i,n;"
+ 	"SEL={};BAD=[];"
+ 	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
+ 	"n=i.files[0].name;SEL[k]=1;"
+@@ -254,9 +343,19 @@ static const char resp_form[] =
+ 	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
+ 	"if(!nameok(k,n))BAD.push(L[k]);}"
+ 	"SEL.fmt=f.format.checked;"
++	"SEL.part=f.partname.value;"
+ 	"return o;}"
+ 	"function steps(){"
+ 	"var e=document.getElementById('steps'),a=[];if(!e)return;"
++	"if(SEL.stock){a.push('擦除整片 flash');"
++	"a.push('写入原厂镜像 235.6 MiB —— '+"
++	"'<span class=bad>最慢的一步，别断电</span>');"
++	"a.push('自动重启，之后就是原厂系统');"
++	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';return;}"
++	"if(SEL.partfile){a.push('擦除 '+SEL.part+' 分区');"
++	"a.push('写回 '+SEL.part+' 的原厂内容');"
++	"a.push('自动重启');"
++	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';return;}"
+ 	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
+ 	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
+ 	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
+@@ -267,15 +366,29 @@ static const char resp_form[] =
+ 	"function hide(){"
+ 	"document.getElementById('mask').removeAttribute('data-on');}"
+ 	"function ask(){"
+-	"var o=scan(),W=[],y=document.getElementById('yes'),h,i;"
++	"var o=scan(),W=[],E=[],y=document.getElementById('yes'),h,i;"
+ 	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，"
+ 	"写错位置可能只能靠串口救回');"
+ 	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
++	"if(SEL.stock&&SEL.partfile)"
++	"E.push('整片恢复和单分区恢复只能选一个');"
++	"if((SEL.stock||SEL.partfile)&&(SEL.firmware||SEL.bl2||SEL.fip||SEL.fmt))"
++	"E.push('退回原厂不能和刷 OpenWrt 固件同时进行，请只留一边');"
++	"if(SEL.partfile&&!SEL.part)"
++	"E.push('选了分区文件，但没选是哪个分区');"
++	"if(SEL.part&&!SEL.partfile)"
++	"E.push('选了分区，但没有选文件');"
++	"if(SEL.stock)W.push('整片恢复之后这个救砖页面就没有了；'+"
++	"'要回 OpenWrt 得重新走一次 USB-TTL 串口迁移');"
++	"if(SEL.partfile)W.push('写的是原厂布局的偏移，'+"
++	"'当前 OpenWrt 的 UBI 卷会被这段覆盖掉');"
+ 	"h=o?'<div class=list>'+o+'</div>'"
+ 	":'<p class=none>还没有选择任何文件。</p>';"
++	"for(i=0;i<E.length;i++)h+='<div class=wr><b>'+E[i]+'</b></div>';"
+ 	"for(i=0;i<W.length;i++)h+='<div class=wr>'+W[i]+'</div>';"
+ 	"document.getElementById('dl').innerHTML=h;"
+-	"y.hidden=!o;y.textContent=W.length?'仍要写入':'开始写入';"
++	"y.hidden=!o||E.length>0;"
++	"y.textContent=W.length?'仍要写入':'开始写入';"
+ 	"y.className=W.length?'danger':'';"
+ 	"document.getElementById('mask').setAttribute('data-on','');}"
+ 	"function up(f){ask();return false;}"
+@@ -462,8 +575,26 @@ static int		up_nparts;
+  */
+ static ulong up_base;
+ 
++static ulong upload_max(void)
++{
++	ulong top = gd->ram_base + gd->ram_size;
++
++	if (up_base + UPLOAD_MARGIN >= top)
++		return 0;
++
++	return top - up_base - UPLOAD_MARGIN;
++}
++
++
+ /* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
+-#define UPLOAD_MAX	(96 << 20)
++/*
++ * The upload lands at $loadaddr and is flashed from where it landed, so the
++ * ceiling is however much DRAM sits above that.  A factory all_flash.bin is
++ * 235.6 MiB, which on a 512 MiB board leaves around 20 MiB of headroom -- it
++ * fits, but only just, and a fixed limit would either forbid it outright or
++ * let a larger file run off the end of RAM.  Work it out instead.
++ */
++#define UPLOAD_MARGIN	(2 << 20)
+ 
+ /*
+  * Panel feedback.  Recovery is a mode the user enters without a serial
+@@ -762,8 +893,9 @@ static void httpd_parse(u32 rx_bytes)
+ 	while (*p == ' ' || *p == '\t')
+ 		p++;
+ 	clen = simple_strtoul(p, NULL, 10);
+-	if (!clen || clen > UPLOAD_MAX) {
+-		printf("httpd: refusing %lu byte upload\n", clen);
++	if (!clen || clen > upload_max()) {
++		printf("httpd: refusing %lu byte upload (max %lu)\n",
++		       clen, upload_max());
+ 		up_failed = 1;
+ 		return;
+ 	}
+@@ -1100,6 +1232,55 @@ static int run_step(const char *var, const char *builtin)
+ 	return run_command(builtin, 0);
+ }
+ 
++/*
++ * The <select> arrives as an ordinary multipart field, so its value is a run
++ * of bytes in the upload buffer rather than a C string -- compare by length.
++ */
++static const struct stock_part *stock_find(const struct up_part *sel)
++{
++	int i;
++
++	if (!sel)
++		return NULL;
++
++	for (i = 0; i < ARRAY_SIZE(stock_map); i++) {
++		size_t len = strlen(stock_map[i].name);
++
++		if (sel->size == len &&
++		    !memcmp((void *)sel->addr, stock_map[i].name, len))
++			return &stock_map[i];
++	}
++
++	return NULL;
++}
++
++/*
++ * No environment script for these: the stock layout is not something the
++ * environment knows about, and by the time this runs the environment may be
++ * about to be erased along with everything else.
++ */
++static int flash_stock(ulong addr, u32 off, u32 size, const char *what)
++{
++	char cmd[80];
++
++	printf("httpd: erasing %s, %u bytes at 0x%x\n", what, size, off);
++	snprintf(cmd, sizeof(cmd), "mtd erase " STOCK_MTD " 0x%x 0x%x", off, size);
++	if (run_command(cmd, 0)) {
++		printf("httpd: erasing %s FAILED\n", what);
++		return -1;
++	}
++
++	printf("httpd: writing %s\n", what);
++	snprintf(cmd, sizeof(cmd), "mtd write " STOCK_MTD " 0x%lx 0x%x 0x%x",
++		 addr, off, size);
++	if (run_command(cmd, 0)) {
++		printf("httpd: writing %s FAILED\n", what);
++		return -1;
++	}
++
++	return 0;
++}
++
+ static int flash_part(const char *what, struct up_part *part, const char *var,
+ 		      const char *builtin)
+ {
+@@ -1125,11 +1306,55 @@ static int httpd_flash(void)
+ 	struct up_part *bl2 = part_find(FIELD_BL2);
+ 	struct up_part *fip = part_find(FIELD_FIP);
+ 	struct up_part *fit = part_find(FIELD_FIT);
++	struct up_part *stock = part_find(FIELD_STOCK);
++	struct up_part *pfile = part_find(FIELD_PARTFILE);
+ 	int format = part_find(FIELD_FORMAT) != NULL;
+ 	int ret = -1;
+ 
+ 	httpd_blink_start();
+ 
++	/*
++	 * Going back to stock replaces the layout wholesale, so it never
++	 * shares a session with the UBI-side writes; the form keeps the two
++	 * apart and this returns either way rather than falling through.
++	 */
++	if (stock) {
++		if (stock->size != STOCK_TOTAL) {
++			printf("httpd: all_flash is %u bytes, expected %u\n",
++			       stock->size, STOCK_TOTAL);
++			goto out;
++		}
++
++		if (flash_stock(part_align(stock), 0, STOCK_TOTAL,
++				"factory image"))
++			goto out;
++
++		ret = 0;
++		goto out;
++	}
++
++	if (pfile) {
++		const struct stock_part *sp;
++
++		sp = stock_find(part_find(FIELD_PARTNAME));
++		if (!sp) {
++			printf("httpd: no such factory partition\n");
++			goto out;
++		}
++
++		if (pfile->size != sp->size) {
++			printf("httpd: %s is %u bytes, expected %u\n",
++			       sp->name, pfile->size, sp->size);
++			goto out;
++		}
++
++		if (flash_stock(part_align(pfile), sp->off, sp->size, sp->name))
++			goto out;
++
++		ret = 0;
++		goto out;
++	}
++
+ 	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
+ 		goto out;
+ 
