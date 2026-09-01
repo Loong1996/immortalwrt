@@ -83,6 +83,14 @@ imports whatever is compiled into the *running* U-Boot, so refreshing while
 flashing a new FIP would install the outgoing defaults and leave the menu one
 version behind forever.  The new U-Boot has to be the one that does it.
 
+Re-importing bootmenu_title also means putting $ver back by hand.  The env
+script that normally appends it, _bootmenu_update_title, deletes itself the
+first time it runs -- it is there for the one-time setup of a fresh
+environment -- so after a refresh nothing would be left to do it and the menu
+would advertise no version at all.  The two never double up: a rebuilt
+environment runs the script and already matches envver, while an upgrade
+fires the spy long after the script is gone.
+
 The spy lands in the shared an7581 board file, which is fine: the other
 boards have no envver in their default environment and return early.  Saving
 is best-effort -- a first-time migration gets here before _init_env has made
@@ -103,7 +111,7 @@ the env volumes, and is running off the defaults anyway.
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -14,3 +20,104 @@ int board_init(void)
+@@ -14,3 +20,129 @@ int board_init(void)
  
  	return 0;
  }
@@ -173,6 +181,30 @@ the env volumes, and is running off the defaults anyway.
 +	"show_about",
 +};
 +
++/*
++ * _bootmenu_update_title is what appends $ver to the title, and it deletes
++ * itself the first time it runs -- it exists for the one-time setup of a
++ * fresh environment.  So after re-importing bootmenu_title below there is
++ * nothing left to put the version back, and the menu would go on showing no
++ * version at all.  Do it here instead.
++ *
++ * The two never double up: a rebuilt environment runs the script and matches
++ * envver (so this does not fire), while a firmware upgrade fires this and the
++ * script is long gone.
++ */
++static void append_version_to_title(void)
++{
++	const char *title = env_get("bootmenu_title");
++	const char *ver = env_get("ver");
++	char buf[256];
++
++	if (!title || !ver)
++		return;
++
++	snprintf(buf, sizeof(buf), "%s       \033[33m%s\033[0m", title, ver);
++	env_set("bootmenu_title", buf);
++}
++
 +static int refresh_boot_menu(void)
 +{
 +	char want[16];
@@ -186,6 +218,7 @@ the env volumes, and is running off the defaults anyway.
 +			       want);
 +			env_set_default_vars(ARRAY_SIZE(menu_vars), menu_vars,
 +					     H_INTERACTIVE);
++			append_version_to_title();
 +			dirty = 1;
 +		}
 +	}
@@ -224,7 +257,7 @@ the env volumes, and is running off the defaults anyway.
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+envver=1
++envver=2
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
