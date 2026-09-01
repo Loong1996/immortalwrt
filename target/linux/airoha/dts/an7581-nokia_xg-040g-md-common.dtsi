@@ -283,3 +283,23 @@
 		#trigger-source-cells = <0>;
 	};
 };
+
+/*
+ * PON 光口（实验中，需配合 kmod-airoha-xpon-en757x）。
+ *
+ * 这是第 2 步：只启用地址不与上游驱动冲突的 xpon_mac / pon_phy，先看这两个
+ * 能不能 probe 起来。原厂 DTB 里另外还有两个节点没在这里启用：
+ *
+ *   econet,ecnt-scu          reg[0]=0x1fb00000，撞上游 scuclk(clock-controller@1fb00000)
+ *   airoha,serdes_common_phy reg[0..2]=0x1fa5a000/b/c，撞上游 pciephy(phy@1fa5a000)
+ *
+ * 那两个驱动都用 devm_ioremap_resource()，会 request_mem_region，地址被上游
+ * 占着就直接 -EBUSY。要怎么处置得看这一步 probe 出来的实际报错再定。
+ */
+&xpon_mac {
+	status = "okay";
+};
+
+&pon_phy {
+	status = "okay";
+};

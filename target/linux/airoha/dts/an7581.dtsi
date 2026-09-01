@@ -614,6 +614,36 @@
 			#phy-cells = <1>;
 		};
 
+		/*
+		 * PON MAC 与 PON PHY。寄存器地址、reg 分段与中断号均取自原厂固件
+		 * DTB（econet,ecnt-* 那套 vendor 驱动就是按这个布局写的），不是照
+		 * 文档推测的。注意 pon_phy 原厂确实没有 interrupts —— GIC_SPI 43
+		 * 是给 serdes_common_phy 的。
+		 *
+		 * 只有装了 kmod-airoha-xpon-en757x 才有驱动认领，故默认 disabled。
+		 */
+		xpon_mac: xpon@1fb64000 {
+			compatible = "econet,ecnt-xpon";
+			reg = <0x0 0x1fb64000 0x0 0x3e8>,
+			      <0x0 0x1fb66000 0x0 0x23c>,
+			      <0x0 0x1fb65000 0x0 0xff8>;
+
+			interrupts = <GIC_SPI 42 IRQ_TYPE_LEVEL_HIGH>,  /* XPON MAC */
+				     <GIC_SPI 34 IRQ_TYPE_LEVEL_HIGH>;  /* DYING GASP */
+
+			status = "disabled";
+		};
+
+		pon_phy: pon-phy@1faf0000 {
+			compatible = "econet,ecnt-pon_phy";
+			reg = <0x0 0x1faf0000 0x0 0x1fff>,
+			      <0x0 0x1fa2ff24 0x0 0x4>,
+			      <0x0 0x1faf3000 0x0 0xfff>,
+			      <0x0 0x1faf4000 0x0 0xfff>;
+
+			status = "disabled";
+		};
+
 		crypto@1fb70000 {
 			compatible = "inside-secure,safexcel-eip93ies";
 			reg = <0x0 0x1fb70000 0x0 0x1000>;
