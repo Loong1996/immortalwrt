@@ -1,0 +1,73 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] xg-040g-md: name the web recovery build in the bootmenu
+
+The board boots a U-Boot that serves its own recovery page, but nothing on
+screen says so.  The menu is indistinguishable from a stock UBI build, and a
+user who ends up in it has no way back to the project that produced it.
+
+  - the banner carries the recovery page's version, so a bug report names the
+    build it came from;
+
+  - entry 9 starts httpd by hand.  Until now the server was only reachable by
+    holding reset at power-on, or by failing to boot from NAND -- neither is
+    available to someone already sitting at the menu.  Drawn red like the two
+    entries that write the bootloader: it is a flashing entry, and it takes
+    the board off the menu until it is aborted;
+
+  - entry 10 carries the project page.  U-Boot's bootmenu only has single
+    character shortcuts (1-9, then a-z, 0 reserved for Exit), so it is drawn
+    as "a."  The URL sits in the title rather than behind the keypress: the
+    point is to be readable without pressing anything.  Selecting it prints
+    the author page as well;
+
+  - httpd prints the same line on the console, for the serial user who never
+    sees the page.
+
+The version appears twice, in bootmenu_title and in WEB_VERSION: the env file
+is plain text and cannot see the macro.  Both live in this patch so that they
+move together.
+
+Note that neither the new entries nor the new title reach a board whose
+ubootenv volume was written by an earlier build -- a saved environment
+shadows the one compiled in.  Those boards need "Reset all settings to
+factory defaults" once, or a web flash with "rebuild UBI" ticked.
+
+--- a/defenvs/an7581_nokia_xg-040g-md_env
++++ b/defenvs/an7581_nokia_xg-040g-md_env
+@@ -13,7 +13,7 @@ bootled_status=green:power
+ bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+ bootmenu_default=0
+ bootmenu_delay=0
+-bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
++bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt-Web 0.1.0[0;34m ) ) )
+ bootmenu_0=Initialize environment.=run _firstboot
+ bootmenu_0d=Run default boot command.=run boot_default
+ bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
+@@ -23,6 +23,8 @@ bootmenu_4=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND[0m=run boot_tf
+ bootmenu_5=[31mLoad BL2 preloader via TFTP then write to NAND[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+ bootmenu_6=Reboot=reset
+ bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
++bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
++bootmenu_9=About - github.com/Loong1996/ImmortalWrt-XG-040G-MD=run show_about ; run bootmenu_confirm_return
+ boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+ boot_default=run bootcmd ; run boot_tftp_forever
+ boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
+@@ -36,6 +38,7 @@ boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr +
+ boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
+ preboot=led $bootled_status on
+ check_buttons=if button reset ; then httpd ; fi
++show_about=echo ; echo Web recovery U-Boot by Loong ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
+ ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
+ part_default=production
+ reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -1044,6 +1044,8 @@ void httpd_start_server(void)
+ 	net_set_udp_handler(httpd_dhcp_rx);
+ 	httpd_led_start();
+ 
++	printf("Web recovery " WEB_VERSION " by Loong -- "
++	       "https://github.com/Loong1996/ImmortalWrt-XG-040G-MD\n");
+ 	printf("Using %s device\n", eth_get_name());
+ 	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
+ 	printf("Handing out DHCP leases from %pI4\n", &net_ip);
