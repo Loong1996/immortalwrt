@@ -43,14 +43,123 @@ The version appears twice, in bootmenu_title and in WEB_VERSION: the env file
 is plain text and cannot see the macro.  Both live in this patch so that they
 move together.
 
-Note that neither the new entries nor the new title reach a board whose
-ubootenv volume was written by an earlier build -- a saved environment
-shadows the one compiled in.  Those boards need "Reset all settings to
-factory defaults" once, or a web flash with "rebuild UBI" ticked.
+A saved environment shadows the one compiled in, so none of this would reach
+a board that has already been set up: ubootenv holds a complete copy, and a
+new FIP cannot get a word in.  Telling people to "Reset all settings to
+factory defaults" works but throws out ethaddr with it, which is exactly the
+failure above.
 
+So the default environment gains an envver, and an EVT_POST_PREBOOT spy
+re-imports just the menu variables when the saved copy is behind -- after
+preboot has run, before bootdelay_process() and autoboot_command() draw the
+menu.  The list deliberately excludes everything the running system owns:
+bootdelay and bootmenu_delay (raised 0 -> 3 by _switch_to_menu), bootmenu_0
+(swapped for bootmenu_0d on init), and ethaddr, which is not in the default
+environment at all and therefore cannot be clobbered by an import.
+
+Doing it here rather than at flash time is what makes it exact: "env default"
+imports whatever is compiled into the *running* U-Boot, so refreshing while
+flashing a new FIP would install the outgoing defaults and leave the menu one
+version behind forever.  The new U-Boot has to be the one that does it.
+
+The spy lands in the shared an7581 board file, which is fine: the other
+boards have no envver in their default environment and return early.  Saving
+is best-effort -- a first-time migration gets here before _init_env has made
+the env volumes, and is running off the defaults anyway.
+
+--- a/board/airoha/an7581/an7581_rfb.c
++++ b/board/airoha/an7581/an7581_rfb.c
+@@ -4,6 +4,12 @@
+  */
+ 
+ #include <asm/global_data.h>
++#include <env.h>
++#include <event.h>
++#include <search.h>
++#include <stdio.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -14,3 +20,60 @@ int board_init(void)
+ 
+ 	return 0;
+ }
++
++/*
++ * A new FIP ships a new default environment, but the saved one shadows it
++ * completely: ubootenv holds a full copy, so menu entries added since the
++ * board was first initialised never appear, and the title goes on advertising
++ * the version it was installed with.
++ *
++ * The blunt answer -- "Reset all settings to factory defaults" -- also clears
++ * ethaddr, and on a board whose ri volume was rebuilt that is the only copy of
++ * the MAC left.  So instead the default environment carries an envver, and
++ * this re-imports just the variables that spell out the menu whenever the
++ * saved copy is behind.
++ *
++ * Everything the running system owns is deliberately left out of that list:
++ * bootdelay and bootmenu_delay (raised from 0 to 3 by _switch_to_menu),
++ * bootmenu_0 (swapped for bootmenu_0d once the board is initialised), and
++ * ethaddr, which is not in the default environment at all.
++ *
++ * A board that was never initialised has no saved environment to be behind:
++ * env_get() is already answering out of the compiled-in default, so the
++ * versions match and nothing happens.  Other an7581 boards have no envver in
++ * their default environment and return early.
++ */
++static char * const menu_vars[] = {
++	"envver",
++	"bootmenu_title",
++	"bootmenu_1", "bootmenu_2", "bootmenu_3", "bootmenu_4", "bootmenu_5",
++	"bootmenu_6", "bootmenu_7", "bootmenu_8", "bootmenu_9",
++	"show_about",
++};
++
++static int refresh_boot_menu(void)
++{
++	char want[16];
++	const char *have;
++
++	if (env_get_default_into("envver", want, sizeof(want)) < 0 || !want[0])
++		return 0;
++
++	have = env_get("envver");
++	if (have && !strcmp(have, want))
++		return 0;
++
++	printf("Boot menu: refreshing saved environment for v%s\n", want);
++	env_set_default_vars(ARRAY_SIZE(menu_vars), menu_vars, H_INTERACTIVE);
++
++	/*
++	 * Saving is best-effort on purpose.  A first-time migration reaches
++	 * here before _init_env has created the env volumes, and it does not
++	 * need the write anyway -- it is already running off the defaults.
++	 */
++	if (env_save())
++		printf("Boot menu: not saved, refresh applies to this boot only\n");
++
++	return 0;
++}
++EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, refresh_boot_menu);
+--- a/configs/an7581_nokia_xg-040g-md_defconfig
++++ b/configs/an7581_nokia_xg-040g-md_defconfig
+@@ -27,6 +27,7 @@ CONFIG_SYS_MAXARGS=8
+ CONFIG_CMD_CPU=y
+ CONFIG_CMD_LICENSE=y
+ CONFIG_CMD_BOOTMENU=y
++CONFIG_EVENT=y
+ CONFIG_CMD_ASKENV=y
+ CONFIG_CMD_ERASEENV=y
+ CONFIG_CMD_ENV_FLAGS=y
 --- a/defenvs/an7581_nokia_xg-040g-md_env
 +++ b/defenvs/an7581_nokia_xg-040g-md_env
-@@ -13,7 +13,7 @@ bootled_status=green:power
+@@ -10,10 +10,11 @@ bootfile_bl2=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
+ bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
+ bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
+ bootled_status=green:power
++envver=1
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
@@ -59,7 +168,7 @@ factory defaults" once, or a web flash with "rebuild UBI" ticked.
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
-@@ -23,6 +23,8 @@ bootmenu_4=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND[0m=run boot_tf
+@@ -23,6 +24,8 @@ bootmenu_4=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND[0m=run boot_tf
  bootmenu_5=[31mLoad BL2 preloader via TFTP then write to NAND[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
  bootmenu_6=Reboot=reset
  bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
@@ -68,7 +177,7 @@ factory defaults" once, or a web flash with "rebuild UBI" ticked.
  boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
  boot_default=run bootcmd ; run boot_tftp_forever
  boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
-@@ -36,7 +38,8 @@ boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr +
+@@ -36,7 +39,8 @@ boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr +
  boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
  preboot=led $bootled_status on
  check_buttons=if button reset ; then httpd ; fi
