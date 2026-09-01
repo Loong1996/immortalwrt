@@ -181,7 +181,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +#define FIELD_FORMAT		"format"
 +
 +/* Version of the recovery page itself, shown next to the heading. */
-+#define WEB_VERSION		"0.1.0"
++#define WEB_VERSION		"0.1.1"
 +
 +#define MAX_PARTS		6
 +

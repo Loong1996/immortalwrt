@@ -18,10 +18,14 @@ user who ends up in it has no way back to the project that produced it.
     character shortcuts (1-9, then a-z, 0 reserved for Exit), so it is drawn
     as "a."  The URL sits in the title rather than behind the keypress: the
     point is to be readable without pressing anything.  Selecting it prints
-    the author page as well;
+    the guide and author pages as well;
 
-  - httpd prints the same line on the console, for the serial user who never
-    sees the page.
+  - httpd prints the same on the console, for the serial user who never sees
+    the page, and prints the MAC while it is at it.  net_check_prereq() only
+    validates the MAC for BOOTP/DHCP/LINKLOCAL, not for HTTPD, so a board
+    that came up with a random or empty ethaddr still announces "Listening
+    for HTTP" and still answers nothing -- the browser is talking to whatever
+    ARP learned last time.  That failure is invisible without this line.
 
 The version appears twice, in bootmenu_title and in WEB_VERSION: the env file
 is plain text and cannot see the macro.  Both live in this patch so that they
@@ -39,7 +43,7 @@ factory defaults" once, or a web flash with "rebuild UBI" ticked.
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt-Web 0.1.0[0;34m ) ) )
++bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt-Web 0.1.1[0;34m ) ) )
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
@@ -56,18 +60,26 @@ factory defaults" once, or a web flash with "rebuild UBI" ticked.
  boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
  preboot=led $bootled_status on
  check_buttons=if button reset ; then httpd ; fi
-+show_about=echo ; echo Web recovery U-Boot by Loong ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
++show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
  ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
 --- a/net/httpd.c
 +++ b/net/httpd.c
-@@ -1044,6 +1044,8 @@ void httpd_start_server(void)
+@@ -1044,7 +1044,15 @@ void httpd_start_server(void)
  	net_set_udp_handler(httpd_dhcp_rx);
  	httpd_led_start();
  
-+	printf("Web recovery " WEB_VERSION " by Loong -- "
-+	       "https://github.com/Loong1996/ImmortalWrt-XG-040G-MD\n");
- 	printf("Using %s device\n", eth_get_name());
+-	printf("Using %s device\n", eth_get_name());
++	printf("Web recovery " WEB_VERSION " by Loong\n");
++	printf("Guide   https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html\n");
++	printf("Project https://github.com/Loong1996/ImmortalWrt-XG-040G-MD\n");
++	/*
++	 * The MAC is worth a line of its own: a board that lost its factory
++	 * MAC still serves the page just fine, but every browser on the
++	 * segment is still talking to whatever ARP learned last time.
++	 */
++	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
  	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
  	printf("Handing out DHCP leases from %pI4\n", &net_ip);
+ 	printf("Press Ctrl-C to abort\n");
