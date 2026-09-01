@@ -6,7 +6,10 @@ screen says so.  The menu is indistinguishable from a stock UBI build, and a
 user who ends up in it has no way back to the project that produced it.
 
   - the banner carries the recovery page's version, so a bug report names the
-    build it came from;
+    build it came from.  The three pairs of parentheses around it are gone:
+    the title is drawn from column 3 and _bootmenu_update_title appends the
+    full $ver, so those twelve columns were the difference between seeing
+    the revision and hash or having them cut off;
 
   - entry 9 starts httpd by hand.  Until now the server was only reachable by
     holding reset at power-on, or by failing to boot from NAND -- neither is
@@ -226,7 +229,7 @@ the env volumes, and is running off the defaults anyway.
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt-Web 0.1.1[0;34m ) ) )
++bootmenu_title=      [1;39mOpenWrt-Web 0.1.1[0m
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
