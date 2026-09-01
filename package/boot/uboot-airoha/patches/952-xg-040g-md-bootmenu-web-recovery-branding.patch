@@ -37,7 +37,12 @@ still works (it is broadcast anyway) while every unicast reply is dropped by
 the peer, which is exactly as confusing as it sounds.
 
 It now reads into a scratch variable and only assigns when what came back is
-usable.  Deciding on the value read rather than on whether ethaddr is already
+usable.  That variable is named rimac rather than anything starting with an
+underscore: hush only begins a variable name on an alpha character
+(cli_hush.c, "if (isalpha(ch))"), so $_mac would have been passed through
+literally -- and then rejected by the MAC type check on ethaddr, which is how
+this was found.  The existing _firstboot and friends are fine because they
+only ever appear as arguments to run and setenv, never expanded.  Deciding on the value read rather than on whether ethaddr is already
 set is the part that matters: _firstboot runs from the bootmenu, which is well
 after initr_net(), and a board with no MAC has by then been given a generated
 one that eth-uclass wrote into the environment.  A guard of the "skip if
@@ -240,7 +245,7 @@ the env volumes, and is running off the defaults anyway.
  check_buttons=if button reset ; then httpd ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
 +show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
-+ethaddr_factory=ubi read 0x90000000 ri && env readmem -b _mac 0x9000003e 0x6 ; if test "$_mac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv _mac ; fi ; if test -n "$_mac" ; then setenv ethaddr "$_mac" ; fi ; setenv _mac ; setenv ethaddr_factory
++ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
  mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
