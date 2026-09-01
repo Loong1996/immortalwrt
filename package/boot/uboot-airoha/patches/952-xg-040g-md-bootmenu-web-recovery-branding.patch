@@ -27,17 +27,24 @@ user who ends up in it has no way back to the project that produced it.
     for HTTP" and still answers nothing -- the browser is talking to whatever
     ARP learned last time.  That failure is invisible without this line.
 
-ethaddr_factory gets two guards while we are here.  It used to write whatever
-it read at ri+0x3e into ethaddr unconditionally, so a board whose ri volume was
+ethaddr_factory is reworked while we are here.  It used to write whatever it
+read at ri+0x3e into ethaddr unconditionally, so a board whose ri volume was
 recreated empty -- anything that went through "rebuild UBI" -- came up with
 ff:ff:ff:ff:ff:ff, an erased-NAND page read as a MAC.  eth-uclass.c only tests
 the environment MAC for is_zero_ethaddr(), never is_valid_ethaddr(), so the
 broadcast address sails straight through and is used as a source address: DHCP
 still works (it is broadcast anyway) while every unicast reply is dropped by
-the peer, which is exactly as confusing as it sounds.  Now an erased read
-clears ethaddr instead, and U-Boot's own random-MAC path takes over with the
-warning it prints.  The second guard skips the read when ethaddr is already
-set, so a MAC put there by hand survives a later "Initialize environment."
+the peer, which is exactly as confusing as it sounds.
+
+It now reads into a scratch variable and only assigns when what came back is
+usable.  Deciding on the value read rather than on whether ethaddr is already
+set is the part that matters: _firstboot runs from the bootmenu, which is well
+after initr_net(), and a board with no MAC has by then been given a generated
+one that eth-uclass wrote into the environment.  A guard of the "skip if
+ethaddr exists" kind therefore always fires, and the real address in ri would
+never be read back after a factory reset.  Keying on the value instead means a
+populated ri wins over the generated address, while an erased one leaves it
+alone -- which is also what protects a MAC set by hand.
 
 The version appears twice, in bootmenu_title and in WEB_VERSION: the env file
 is plain text and cannot see the macro.  Both live in this patch so that they
@@ -233,7 +240,7 @@ the env volumes, and is running off the defaults anyway.
  check_buttons=if button reset ; then httpd ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
 +show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
-+ethaddr_factory=if env exists ethaddr ; then else ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; fi ; if test "$ethaddr" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv ethaddr ; fi ; setenv ethaddr_factory
++ethaddr_factory=ubi read 0x90000000 ri && env readmem -b _mac 0x9000003e 0x6 ; if test "$_mac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv _mac ; fi ; if test -n "$_mac" ; then setenv ethaddr "$_mac" ; fi ; setenv _mac ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
  mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
