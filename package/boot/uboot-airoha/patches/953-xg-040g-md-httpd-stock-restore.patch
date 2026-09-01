@@ -237,10 +237,19 @@ after either rather than falling through into the bl2/fip/fit sequence.
  	"y.className=W.length?'danger':'';"
  	"document.getElementById('mask').setAttribute('data-on','');}"
  	"function up(f){ask();return false;}"
-@@ -462,8 +575,26 @@ static int		up_nparts;
+@@ -462,8 +575,27 @@ static int		up_nparts;
   */
  static ulong up_base;
  
++/*
++ * The upload lands at $loadaddr and is flashed from where it landed, so the
++ * ceiling is however much DRAM sits above that.  A factory all_flash.bin is
++ * 235.6 MiB, which on a 512 MiB board leaves around 20 MiB of headroom -- it
++ * fits, but only just, and a fixed limit would either forbid it outright or
++ * let a larger file run off the end of RAM.  Work it out instead.
++ */
++#define UPLOAD_MARGIN	(2 << 20)
++
 +static ulong upload_max(void)
 +{
 +	ulong top = gd->ram_base + gd->ram_size;
@@ -254,18 +263,10 @@ after either rather than falling through into the bl2/fip/fit sequence.
 +
  /* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
 -#define UPLOAD_MAX	(96 << 20)
-+/*
-+ * The upload lands at $loadaddr and is flashed from where it landed, so the
-+ * ceiling is however much DRAM sits above that.  A factory all_flash.bin is
-+ * 235.6 MiB, which on a 512 MiB board leaves around 20 MiB of headroom -- it
-+ * fits, but only just, and a fixed limit would either forbid it outright or
-+ * let a larger file run off the end of RAM.  Work it out instead.
-+ */
-+#define UPLOAD_MARGIN	(2 << 20)
  
  /*
   * Panel feedback.  Recovery is a mode the user enters without a serial
-@@ -762,8 +893,9 @@ static void httpd_parse(u32 rx_bytes)
+@@ -762,8 +894,9 @@ static void httpd_parse(u32 rx_bytes)
  	while (*p == ' ' || *p == '\t')
  		p++;
  	clen = simple_strtoul(p, NULL, 10);
@@ -277,7 +278,7 @@ after either rather than falling through into the bl2/fip/fit sequence.
  		up_failed = 1;
  		return;
  	}
-@@ -1100,6 +1232,55 @@ static int run_step(const char *var, const char *builtin)
+@@ -1100,6 +1233,55 @@ static int run_step(const char *var, const char *builtin)
  	return run_command(builtin, 0);
  }
  
@@ -333,7 +334,7 @@ after either rather than falling through into the bl2/fip/fit sequence.
  static int flash_part(const char *what, struct up_part *part, const char *var,
  		      const char *builtin)
  {
-@@ -1125,11 +1306,55 @@ static int httpd_flash(void)
+@@ -1125,11 +1307,55 @@ static int httpd_flash(void)
  	struct up_part *bl2 = part_find(FIELD_BL2);
  	struct up_part *fip = part_find(FIELD_FIP);
  	struct up_part *fit = part_find(FIELD_FIT);

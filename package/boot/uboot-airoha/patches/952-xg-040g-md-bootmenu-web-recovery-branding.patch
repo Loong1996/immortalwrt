@@ -57,6 +57,12 @@ bootdelay and bootmenu_delay (raised 0 -> 3 by _switch_to_menu), bootmenu_0
 (swapped for bootmenu_0d on init), and ethaddr, which is not in the default
 environment at all and therefore cannot be clobbered by an import.
 
+The same spy file also drops an ethaddr of ff:ff:ff:ff:ff:ff at
+EVT_SETTINGS_R -- after initr_env(), before initr_net(), the one window where
+it still changes what the NIC comes up with.  The env-side guard added
+alongside only runs from _firstboot, so a board that already had the bad
+value saved would never have met it.
+
 Doing it here rather than at flash time is what makes it exact: "env default"
 imports whatever is compiled into the *running* U-Boot, so refreshing while
 flashing a new FIP would install the outgoing defaults and leave the menu one
@@ -82,7 +88,7 @@ the env volumes, and is running off the defaults anyway.
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -14,3 +20,60 @@ int board_init(void)
+@@ -14,3 +20,104 @@ int board_init(void)
  
  	return 0;
  }
@@ -109,6 +115,41 @@ the env volumes, and is running off the defaults anyway.
 + * versions match and nothing happens.  Other an7581 boards have no envver in
 + * their default environment and return early.
 + */
++/*
++ * ethaddr_factory reads six bytes out of the ri volume.  On a board that went
++ * through "rebuild UBI" that volume was recreated empty, so what it reads is
++ * an erased NAND page and what lands in ethaddr is ff:ff:ff:ff:ff:ff.
++ *
++ * eth-uclass only tests the environment MAC with is_zero_ethaddr(), never
++ * is_valid_ethaddr(), so the broadcast address is taken at face value and
++ * then used as a source address -- DHCP still works, being broadcast anyway,
++ * while every unicast reply is dropped by the peer.  The env script now
++ * guards against this, but it only runs from _firstboot, so a board already
++ * carrying the bad value in its saved environment never meets the fix.
++ *
++ * EVT_SETTINGS_R fires after initr_env() and before initr_net(), which is the
++ * one window where clearing it still changes what the NIC comes up with.
++ */
++static int ethaddr_dropped;
++
++static int drop_broken_ethaddr(void)
++{
++	const char *mac = env_get("ethaddr");
++
++	if (!mac || strcmp(mac, "ff:ff:ff:ff:ff:ff"))
++		return 0;
++
++	printf("ethaddr is ff:ff:ff:ff:ff:ff -- an erased ri volume read as a MAC.\n");
++	printf("Dropping it; a generated address will be used and saved.\n");
++	printf("To put the real one back: setenv ethaddr <MAC on the label> ; saveenv\n");
++
++	env_set("ethaddr", NULL);
++	ethaddr_dropped = 1;
++
++	return 0;
++}
++EVENT_SPY_SIMPLE(EVT_SETTINGS_R, drop_broken_ethaddr);
++
 +static char * const menu_vars[] = {
 +	"envver",
 +	"bootmenu_title",
@@ -121,24 +162,33 @@ the env volumes, and is running off the defaults anyway.
 +{
 +	char want[16];
 +	const char *have;
++	int dirty = ethaddr_dropped;
 +
-+	if (env_get_default_into("envver", want, sizeof(want)) < 0 || !want[0])
++	if (env_get_default_into("envver", want, sizeof(want)) >= 0 && want[0]) {
++		have = env_get("envver");
++		if (!have || strcmp(have, want)) {
++			printf("Boot menu: refreshing saved environment for v%s\n",
++			       want);
++			env_set_default_vars(ARRAY_SIZE(menu_vars), menu_vars,
++					     H_INTERACTIVE);
++			dirty = 1;
++		}
++	}
++
++	if (!dirty)
 +		return 0;
-+
-+	have = env_get("envver");
-+	if (have && !strcmp(have, want))
-+		return 0;
-+
-+	printf("Boot menu: refreshing saved environment for v%s\n", want);
-+	env_set_default_vars(ARRAY_SIZE(menu_vars), menu_vars, H_INTERACTIVE);
 +
 +	/*
++	 * By now eth-uclass has replaced a dropped ethaddr with a generated
++	 * one; saving is what stops it being a different address on every
++	 * boot, which would leave every peer holding a stale ARP entry.
++	 *
 +	 * Saving is best-effort on purpose.  A first-time migration reaches
 +	 * here before _init_env has created the env volumes, and it does not
 +	 * need the write anyway -- it is already running off the defaults.
 +	 */
 +	if (env_save())
-+		printf("Boot menu: not saved, refresh applies to this boot only\n");
++		printf("Environment not saved, changes apply to this boot only\n");
 +
 +	return 0;
 +}
