@@ -1,0 +1,1324 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] net: add an HTTP recovery server
+
+The board's documented recovery path is TFTP plus the bootmenu: it needs a
+serial console and a TFTP server on the other machine.  Next to a bricked
+router there is usually just a cable and a browser.
+
+This serves a recovery page on port 80, takes the firmware -- and, for a
+first-time migration, the bootloader -- over multipart/form-data, and hands
+each part to the board's existing environment scripts.
+
+Built on U-Boot's own TCP stack, modelled on net/fastboot_tcp.c.  tcboot,
+the third-party bootloader for this device, embeds uIP 0.9 for the same job
+because the U-Boot it forked from had no TCP; that costs ~4000 lines and a
+second IP stack competing for the NIC.  Here tftpboot / dhcp / bootmenu keep
+working untouched, and CONFIG_CMD_HTTPD defaults to n, so nothing changes for
+boards that do not opt in.
+
+Notable points:
+
+  - rx() receives a stream offset, so the upload lands directly at $loadaddr
+    and a 64 MB image needs no second copy in RAM.  Parts are flashed where
+    they landed, aligned down to 64 bytes first -- the bytes stepped on
+    belong to that part's own multipart header, never to the previous part's
+    payload.
+
+  - Requests are classified in on_rcv_nxt_update() rather than rx(), because
+    the first segment can be shorter than the method name.
+
+  - A minimal DHCP server hands out one fixed lease.  Without it the user has
+    to configure a static address before the page is reachable, which is
+    exactly the kind of step that makes a rescue flow fail.
+
+  - The panel LEDs chase while waiting and blink together while writing.  A
+    solid panel is indistinguishable from a hung board.  Flashing is
+    synchronous, so the blink is driven by the cyclic framework: the SPI-NAND
+    layer calls schedule() once per written page.
+
+  - Each flashing step prefers its environment script but carries a built-in
+    equivalent.  The saved environment is itself something recovery has to
+    survive: a board whose ubootenv volume predates these scripts would
+    otherwise fail on the very first step, precisely when there is no other
+    way in.
+
+  - The bootloader is written before the firmware, so a migration that dies
+    halfway still leaves a board that can be recovered over the network.
+
+  - Flashing progress cannot reach the page: net_loop() has returned by then
+    and run_command() blocks, so there is no channel left.  The page says so
+    and points at the LEDs, and its write plan is labelled a plan, with
+    nothing emphasised as "current".
+
+diff -urN a/include/net-legacy.h b/include/net-legacy.h
+--- a/include/net-legacy.h
++++ b/include/net-legacy.h
+@@ -303,8 +303,11 @@
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, DHCP6, PING, PING6, DNS, NFS, CDP,
+ 	NETCONS, SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT_UDP, FASTBOOT_TCP,
+-	WOL, UDP, NCSI, WGET, RS
++	WOL, UDP, NCSI, WGET, RS, HTTPD
+ };
++
++/* net/httpd.c */
++void httpd_start_server(void);
+ 
+ /* Indicates whether the file name was specified on the command line */
+ extern bool	net_boot_file_name_explicit;
+diff -urN a/net/Kconfig b/net/Kconfig
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -212,6 +212,15 @@
+ 	  Enable a generic tcp framework that allows defining a custom
+ 	  handler for tcp protocol.
+ 
++config CMD_HTTPD
++	bool "httpd - minimal HTTP recovery server"
++	depends on PROT_TCP
++	help
++	  Start a minimal HTTP server that serves a recovery page on port 80.
++	  Intended for flashing firmware from a browser without a serial
++	  console. Built on U-Boot's own TCP stack; no third-party IP stack
++	  is required.
++
+ config PROT_TCP_SACK
+ 	bool "TCP SACK support"
+ 	depends on PROT_TCP
+diff -urN a/net/Makefile b/net/Makefile
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -25,6 +25,7 @@
+ obj-$(CONFIG_CMD_TFTPBOOT) += tftp.o
+ obj-$(CONFIG_$(PHASE_)UDP_FUNCTION_FASTBOOT)  += fastboot_udp.o
+ obj-$(CONFIG_$(PHASE_)TCP_FUNCTION_FASTBOOT)  += fastboot_tcp.o
++obj-$(CONFIG_CMD_HTTPD) += httpd.o
+ obj-$(CONFIG_CMD_WOL)  += wol.o
+ obj-$(CONFIG_PROT_UDP) += udp.o
+ obj-$(CONFIG_PROT_TCP) += tcp.o
+diff -urN a/net/httpd.c b/net/httpd.c
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -0,0 +1,1199 @@
++// SPDX-License-Identifier: GPL-2.0+
++/*
++ * HTTP recovery server for U-Boot.
++ *
++ * Serves an upload form on GET and accepts one or more images via
++ * multipart/form-data on POST: the firmware, and -- for a first-time
++ * migration -- the bootloader (BL2 and the U-Boot FIP) as well.  Each part is
++ * flashed where the TCP stream left it, and the flashing itself is delegated
++ * to the board's existing environment scripts, so no flash logic is
++ * duplicated here.
++ *
++ * Built on U-Boot's own TCP stack (net/tcp.c), modelled on net/fastboot_tcp.c.
++ * No third-party IP stack is pulled in, so tftpboot / dhcp / bootmenu keep
++ * working unchanged.
++ */
++
++#include <command.h>
++#include <console.h>
++#include <cyclic.h>
++#include <dm.h>
++#include <env.h>
++#include <led.h>
++#include <net.h>
++#include <net/tcp.h>
++#include <linux/string.h>
++#include <version.h>
++#include <vsprintf.h>
++
++/* Generated at build time; keep the page buildable if it ever moves. */
++#ifndef U_BOOT_VERSION
++#define U_BOOT_VERSION		"U-Boot"
++#endif
++
++#define HTTPD_PORT		80
++
++/* Enough for the request line + headers of any sane browser. */
++#define HDRBUF_SZ		2048
++/* The trailing "\r\n--boundary--\r\n" lives within this many bytes. */
++#define TAIL_SCAN		512
++
++/* tcp->priv values: per-connection classification. */
++#define CONN_UNKNOWN		((void *)0)
++#define CONN_GET		((void *)1)
++#define CONN_POST		((void *)2)
++
++/*
++ * Commands run after the response has been flushed and net_loop() returned.
++ * Keeping them in the environment means a user can inspect and override the
++ * flashing steps from the U-Boot console without rebuilding.
++ *
++ * Each one has a built-in equivalent, because the saved environment is itself
++ * something recovery has to survive: a board carrying an older ubootenv
++ * volume shadows the defaults compiled into this image, and would fail at the
++ * first step -- precisely when there is no other way in.
++ */
++#define ENV_WRITE_BL2		"httpd_write_bl2"
++#define ENV_FORMAT_UBI		"httpd_format_ubi"
++#define ENV_WRITE_FIP		"ubi_write_fip"
++#define ENV_WRITE_FIT		"ubi_write_production"
++
++#define DEF_WRITE_BL2		"mtd erase bl2 && " \
++				"mtd write bl2 $loadaddr 0x800 $filesize"
++#define DEF_FORMAT_UBI		"ubi detach ; mtd erase ubi && ubi part ubi"
++#define DEF_WRITE_FIP		"ubi check rootfs_data && ubi remove rootfs_data ; " \
++				"ubi check fip && ubi remove fip ; " \
++				"ubi create fip 0x100000 static && " \
++				"ubi write $loadaddr fip $filesize"
++#define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
++				"ubi check rootfs_data && ubi remove rootfs_data ; " \
++				"ubi create fit $filesize dynamic && " \
++				"ubi write $loadaddr fit $filesize"
++
++#define CMD_ATTACH_UBI		"ubi part ubi"
++
++/* Form field names.  Everything except the firmware is optional. */
++#define FIELD_BL2		"bl2"
++#define FIELD_FIP		"fip"
++#define FIELD_FIT		"firmware"
++#define FIELD_FORMAT		"format"
++
++/* Version of the recovery page itself, shown next to the heading. */
++#define WEB_VERSION		"0.1.1"
++
++#define MAX_PARTS		6
++
++/*
++ * Parts are flashed in place, so their start address is wherever the form
++ * data happened to land.  Align it down for the NAND layer; a multipart part
++ * header is never shorter than ~90 bytes, so the bytes stepped on belong to
++ * that header and never to the previous part's payload.
++ */
++#define FLASH_ALIGN		64
++
++static const char resp_form[] =
++	"HTTP/1.0 200 OK\r\n"
++	"Content-Type: text/html; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
++	"<script>try{var t=localStorage.getItem('xgtheme');"
++	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
++	"<meta name=viewport content='width=device-width,initial-scale=1'>"
++	"<title>XG-040G-MD 固件恢复</title>"
++	"<style>"
++	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
++	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
++	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
++	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
++	"--wbg:#2a2312;--wln:#8a6d1f}"
++	"*{box-sizing:border-box}"
++	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
++	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
++	"'PingFang SC','Microsoft YaHei',sans-serif}"
++	".w{max-width:33rem;margin:0 auto}"
++	"h1{font-size:1.35rem;margin:0 0 .15rem}"
++	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
++	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
++	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
++	".f{display:block;margin-bottom:1.1rem}"
++	".f:last-child{margin-bottom:0}"
++	".n{font-weight:600}"
++	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
++	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
++	"font-size:.87rem;color:var(--mut)}"
++	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
++	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
++	"b{white-space:nowrap}"
++	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
++	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
++	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
++	"button:disabled{opacity:.5;cursor:progress}"
++	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
++	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
++	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
++	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
++	".mask[data-on]{display:flex}"
++	".dlg{background:var(--card);border:1px solid var(--line);"
++	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
++	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
++	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
++	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
++	".none{color:var(--mut);font-size:.9rem;margin:0}"
++	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
++	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
++	".btns button{flex:1}"
++	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
++	".danger{background:#b45309}"
++	"[data-t=dark] .danger{background:#a35a00}"
++	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
++	".sr .k{color:var(--mut)}"
++	".sr .v{font-variant-numeric:tabular-nums}"
++	".bad{color:#a35a00}"
++	"[data-t=dark] .bad{color:#e8a33d}"
++	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
++	".steps li{padding:.18rem 0}"
++	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
++	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
++	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
++	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
++	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
++	"background-size:1rem 1rem}"
++	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
++	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
++	".pb.ind,.pbi{width:100%;"
++	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
++	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
++	"font-variant-numeric:tabular-nums}"
++	".top{display:flex;align-items:flex-start;justify-content:space-between;"
++	"gap:1rem;margin-bottom:1.4rem}"
++	".top .sub{margin-bottom:0}"
++	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
++	"line-height:1.3;background:transparent;color:var(--mut);"
++	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
++	".tb:hover{color:var(--fg);border-color:var(--mut)}"
++	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
++	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
++	"white-space:nowrap;letter-spacing:.02em}"
++	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
++	"td{padding:.3rem 0;vertical-align:top}"
++	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
++	"line-height:1.5}"
++	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
++	"word-break:break-all}"
++	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
++	"</style>"
++	"</head><body><div class=w>"
++	"<div class=top><div>"
++	"<h1>固件恢复 <span class=ver>Web " WEB_VERSION "</span></h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
++	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
++	"</div>"
++	"<form method=post enctype=multipart/form-data "
++	"onsubmit='try{return up(this)}catch(e){return true}'>"
++	"<div class=c>"
++	"<label class=f><span class=n>固件</span><br>"
++	"<span class=h>…-squashfs-sysupgrade.itb</span>"
++	"<input type=file name=" FIELD_FIT "></label>"
++	"<details><summary>引导程序（仅首次迁移需要）</summary>"
++	"<label class=f><span class=n>BL2</span><br>"
++	"<span class=h>…-preloader.bin</span>"
++	"<input type=file name=" FIELD_BL2 "></label>"
++	"<label class=f><span class=n>U-Boot</span><br>"
++	"<span class=h>…-bl31-uboot.fip</span>"
++	"<input type=file name=" FIELD_FIP "></label>"
++	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
++	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
++	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
++	"</details></div>"
++	"<button id=go type=submit>上传并刷写</button>"
++	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
++	"<p class=ps id=ps hidden></p>"
++	"</form>"
++	"<div class=mask id=mask><div class=dlg>"
++	"<h2>确认写入</h2><div id=dl></div>"
++	"<div class=btns>"
++	"<button type=button class=no onclick=hide()>取消</button>"
++	"<button type=button id=yes onclick=go2()>开始写入</button>"
++	"</div></div></div>"
++	"<div class=c><table>"
++	"<tr><td>流水</td><td>正在等待上传</td></tr>"
++	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
++	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
++	"</table></div>"
++	"<p class=sub>刷写会清空 rootfs_data，相当于恢复出厂设置。"
++	"系统还能进的话，请优先用 sysupgrade。</p>"
++	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
++	"网页救砖 &middot; "
++	"<a href='https://github.com/Loong1996/ImmortalWrt-XG-040G-MD' target=_blank rel=noopener>Loong</a>"
++	"</footer>"
++	"<script>"
++	"function tg(){var d=document.documentElement,"
++	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
++	"d.setAttribute('data-t',n);"
++	"try{localStorage.setItem('xgtheme',n)}catch(e){}}"
++	"var SEL={},BAD=[];"
++	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB'"
++	":(n/1024).toFixed(0)+' KiB';}"
++	"function nameok(k,n){n=n.toLowerCase();"
++	"return k=='firmware'?n.indexOf('.itb')>0"
++	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
++	":n.slice(-4)=='.fip';}"
++	"function scan(){"
++	"var f=document.forms[0],o='',"
++	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
++	"SEL={};BAD=[];"
++	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
++	"n=i.files[0].name;SEL[k]=1;"
++	"o+='<div class=sr><span class=k>'+L[k]+'</span><span class=v>'+"
++	"sz(i.files[0].size)+(nameok(k,n)?''"
++	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
++	"if(!nameok(k,n))BAD.push(L[k]);}"
++	"SEL.fmt=f.format.checked;"
++	"return o;}"
++	"function steps(){"
++	"var e=document.getElementById('steps'),a=[];if(!e)return;"
++	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
++	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
++	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
++	"if(SEL.fip)a.push('写入 U-Boot 到 fip 卷');"
++	"if(SEL.firmware)a.push('写入固件到 fit 卷');"
++	"a.push('自动重启');"
++	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';}"
++	"function hide(){"
++	"document.getElementById('mask').removeAttribute('data-on');}"
++	"function ask(){"
++	"var o=scan(),W=[],y=document.getElementById('yes'),h,i;"
++	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，"
++	"写错位置可能只能靠串口救回');"
++	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
++	"h=o?'<div class=list>'+o+'</div>'"
++	":'<p class=none>还没有选择任何文件。</p>';"
++	"for(i=0;i<W.length;i++)h+='<div class=wr>'+W[i]+'</div>';"
++	"document.getElementById('dl').innerHTML=h;"
++	"y.hidden=!o;y.textContent=W.length?'仍要写入':'开始写入';"
++	"y.className=W.length?'danger':'';"
++	"document.getElementById('mask').setAttribute('data-on','');}"
++	"function up(f){ask();return false;}"
++	"function go2(){hide();send(document.forms[0]);}"
++	"function send(f){"
++	"var x=new XMLHttpRequest(),"
++	"b=document.getElementById('go'),w=document.getElementById('pw'),"
++	"p=document.getElementById('pb'),s=document.getElementById('ps');"
++	"b.disabled=true;b.textContent='上传中…';w.hidden=false;s.hidden=false;"
++	"x.upload.onprogress=function(e){"
++	"if(!e.lengthComputable)return;"
++	"var v=e.loaded/e.total*100;p.style.width=v.toFixed(1)+'%';"
++	"s.textContent='已上传 '+(e.loaded/1048576).toFixed(1)+' / '"
++	"+(e.total/1048576).toFixed(1)+' MiB（'+v.toFixed(0)+'%）';};"
++	"x.upload.onload=function(){p.className='pb ind';"
++	"s.textContent='上传完毕，设备正在校验…';};"
++	"x.onload=function(){document.open();document.write(x.responseText);"
++	"document.close();steps();};"
++	"x.onerror=function(){s.textContent='连接中断，请刷新页面重试';"
++	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;"
++	"p.className='pb';p.style.width='0';};"
++	"x.open('POST','/');x.send(new FormData(f));return false;}"
++	"document.addEventListener('keydown',function(e){"
++	"if(e.key=='Escape')hide();});"
++	"</script>"
++	"</div></body></html>";
++
++static const char resp_done[] =
++	"HTTP/1.0 200 OK\r\n"
++	"Content-Type: text/html; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
++	"<script>try{var t=localStorage.getItem('xgtheme');"
++	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
++	"<meta name=viewport content='width=device-width,initial-scale=1'>"
++	"<title>正在写入</title>"
++	"<style>"
++	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
++	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
++	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
++	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
++	"--wbg:#2a2312;--wln:#8a6d1f}"
++	"*{box-sizing:border-box}"
++	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
++	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
++	"'PingFang SC','Microsoft YaHei',sans-serif}"
++	".w{max-width:33rem;margin:0 auto}"
++	"h1{font-size:1.35rem;margin:0 0 .15rem}"
++	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
++	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
++	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
++	".f{display:block;margin-bottom:1.1rem}"
++	".f:last-child{margin-bottom:0}"
++	".n{font-weight:600}"
++	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
++	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
++	"font-size:.87rem;color:var(--mut)}"
++	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
++	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
++	"b{white-space:nowrap}"
++	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
++	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
++	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
++	"button:disabled{opacity:.5;cursor:progress}"
++	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
++	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
++	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
++	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
++	".mask[data-on]{display:flex}"
++	".dlg{background:var(--card);border:1px solid var(--line);"
++	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
++	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
++	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
++	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
++	".none{color:var(--mut);font-size:.9rem;margin:0}"
++	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
++	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
++	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
++	".btns button{flex:1}"
++	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
++	".danger{background:#b45309}"
++	"[data-t=dark] .danger{background:#a35a00}"
++	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
++	".sr .k{color:var(--mut)}"
++	".sr .v{font-variant-numeric:tabular-nums}"
++	".bad{color:#a35a00}"
++	"[data-t=dark] .bad{color:#e8a33d}"
++	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
++	".steps li{padding:.18rem 0}"
++	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
++	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
++	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
++	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
++	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
++	"background-size:1rem 1rem}"
++	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
++	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
++	".pb.ind,.pbi{width:100%;"
++	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
++	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
++	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
++	"font-variant-numeric:tabular-nums}"
++	".top{display:flex;align-items:flex-start;justify-content:space-between;"
++	"gap:1rem;margin-bottom:1.4rem}"
++	".top .sub{margin-bottom:0}"
++	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
++	"line-height:1.3;background:transparent;color:var(--mut);"
++	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
++	".tb:hover{color:var(--fg);border-color:var(--mut)}"
++	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
++	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
++	"white-space:nowrap;letter-spacing:.02em}"
++	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
++	"td{padding:.3rem 0;vertical-align:top}"
++	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
++	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
++	"line-height:1.5}"
++	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
++	"word-break:break-all}"
++	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
++	"</style>"
++	"</head><body><div class=w>"
++	"<div class=top><div>"
++	"<h1>已收到 <span class=ver>Web " WEB_VERSION "</span></h1>"
++	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
++	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
++	"</div>"
++	"<div class=c><table>"
++	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
++	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
++	"</table>"
++	"<div class=pw><div class=pbi></div></div>"
++	"<p class=ps>写入期间页面收不到任何消息，进度以面板灯为准</p>"
++	"<p class=plan>接下来会依次做：</p>"
++	"<ol class=steps id=steps></ol></div>"
++	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
++	"网线现在拔掉也没关系，写入不经过网络。"
++	"<b>唯一要紧的是别断电。</b></div>"
++	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
++	"网页救砖 &middot; "
++	"<a href='https://github.com/Loong1996/ImmortalWrt-XG-040G-MD' target=_blank rel=noopener>Loong</a>"
++	"</footer>"
++	"<script>function tg(){var d=document.documentElement,"
++	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
++	"d.setAttribute('data-t',n);"
++	"try{localStorage.setItem('xgtheme',n)}catch(e){}}</script>"
++	"</div></body></html>";
++
++static const char resp_400[] =
++	"HTTP/1.0 400 Bad Request\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"Could not parse the upload.\n";
++
++/* State of the single in-flight upload. */
++static int	up_active;	/* a POST connection has been accepted */
++static int	up_parsed;	/* headers understood, offsets known */
++static int	up_failed;	/* parse error, answer 400 */
++static int	up_ready;	/* image complete and moved to $loadaddr */
++static u32	up_body;	/* stream offset of the first image byte */
++static u32	up_total;	/* total request length (headers + body) */
++static u32	up_size;	/* total payload bytes across all parts */
++static char	up_bound[80];	/* "\r\n--" + multipart boundary */
++static struct tcp_stream *up_owner;	/* owns the staging area */
++static int	up_bound_len;
++static int	flash_pending;	/* flash after net_loop() returns */
++
++/* One uploaded form field whose payload is non-empty. */
++struct up_part {
++	char	name[24];
++	ulong	addr;
++	u32	size;
++};
++
++static struct up_part	up_parts[MAX_PARTS];
++static int		up_nparts;
++
++/*
++ * Cached once per httpd invocation: env_get_hex() walks the whole environment,
++ * and rx() is called for every single segment of a multi-megabyte upload.
++ */
++static ulong up_base;
++
++/* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
++#define UPLOAD_MAX	(96 << 20)
++
++/*
++ * Panel feedback.  Recovery is a mode the user enters without a serial
++ * console, so the front LEDs are the only way to tell them the board is
++ * waiting for an upload rather than dead.
++ */
++#if CONFIG_IS_ENABLED(LED)
++static const char * const led_chase[] = {
++	"green:power", "green:wan", "green:wan-online",
++	"green:usb-1", "green:usb-2",
++};
++
++#define LED_TICK_MS	120
++#define LED_BLINK_US	250000
++
++static int led_pos;
++static int led_blink_on;
++static struct udevice *led_dev[ARRAY_SIZE(led_chase)];
++static struct cyclic_info led_cyclic;
++
++/* Looking devices up by label once keeps the cyclic callback cheap. */
++static void led_probe(void)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		if (led_get_by_label(led_chase[i], &led_dev[i]))
++			led_dev[i] = NULL;
++}
++
++static void led_one(unsigned int i, enum led_state_t state)
++{
++	if (led_dev[i])
++		led_set_state(led_dev[i], state);
++}
++
++static void led_all(enum led_state_t state)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		led_one(i, state);
++}
++
++/* Re-arms itself: net_loop() clears the handler before calling it. */
++static void httpd_led_tick(void)
++{
++	unsigned int i;
++
++	for (i = 0; i < ARRAY_SIZE(led_chase); i++)
++		led_one(i, i == (unsigned int)led_pos ? LEDST_ON : LEDST_OFF);
++
++	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
++	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
++}
++
++static void httpd_led_start(void)
++{
++	led_probe();
++	led_pos = 0;
++	httpd_led_tick();
++}
++
++static void httpd_led_stop(void)
++{
++	net_set_timeout_handler(0, NULL);
++	led_all(LEDST_OFF);
++}
++
++/*
++ * Flashing is synchronous, so net_loop()'s timeout handler is no longer
++ * running and the chase above cannot drive the panel.  The SPI-NAND layer
++ * calls schedule() once per written page, and that is what ticks the cyclic
++ * framework -- so this keeps blinking even in the middle of a 64 MB write.
++ */
++static void httpd_blink(struct cyclic_info *c)
++{
++	(void)c;
++
++	led_blink_on = !led_blink_on;
++	led_all(led_blink_on ? LEDST_ON : LEDST_OFF);
++}
++
++static void httpd_blink_start(void)
++{
++	led_blink_on = 0;
++	cyclic_register(&led_cyclic, httpd_blink, LED_BLINK_US, "httpd-flash");
++}
++
++static void httpd_blink_stop(void)
++{
++	cyclic_unregister(&led_cyclic);
++	led_all(LEDST_OFF);
++}
++#else
++static inline void httpd_led_start(void) { }
++static inline void httpd_led_stop(void) { }
++static inline void httpd_blink_start(void) { }
++static inline void httpd_blink_stop(void) { }
++static inline void led_all(int state) { }
++#define LEDST_ON	0
++#define LEDST_OFF	0
++#endif
++
++/*
++ * Minimal DHCP server.
++ *
++ * Without it the user has to configure a static address before the recovery
++ * page is reachable, which is exactly the kind of step that makes a rescue
++ * flow fail.  One fixed lease is handed out; there is no pool and no state to
++ * keep, which is all a single-client rescue link needs.
++ */
++#define DHCP_SERVER_PORT	67
++#define DHCP_CLIENT_PORT	68
++#define DHCP_MAGIC		0x63825363
++#define DHCP_DISCOVER		1
++#define DHCP_OFFER		2
++#define DHCP_REQUEST		3
++#define DHCP_ACK		5
++#define DHCP_MIN_LEN		240
++#define DHCP_LEASE_SECS		3600
++
++struct dhcp_msg {
++	u8	op, htype, hlen, hops;
++	u32	xid;
++	u16	secs, flags;
++	u32	ciaddr, yiaddr, siaddr, giaddr;
++	u8	chaddr[16];
++	u8	sname[64];
++	u8	file[128];
++	u32	cookie;
++	u8	opts[308];
++} __packed;
++
++/* The single address handed to the client: x.x.x.100 on our own subnet. */
++static struct in_addr dhcp_client_ip(void)
++{
++	struct in_addr ip;
++
++	ip.s_addr = (net_ip.s_addr & htonl(0xffffff00)) | htonl(100);
++
++	return ip;
++}
++
++static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
++{
++	unsigned int i, max;
++
++	if (len <= DHCP_MIN_LEN)
++		return 0;
++
++	max = len - DHCP_MIN_LEN;
++	if (max > sizeof(m->opts))
++		max = sizeof(m->opts);
++
++	for (i = 0; i + 1 < max;) {
++		u8 tag = m->opts[i];
++
++		if (tag == 0) {			/* pad */
++			i++;
++			continue;
++		}
++		if (tag == 255)			/* end */
++			break;
++		if (tag == 53)
++			return m->opts[i + 2];
++		i += 2 + m->opts[i + 1];
++	}
++
++	return 0;
++}
++
++static u8 *dhcp_put(u8 *o, u8 tag, u8 len, const void *val)
++{
++	*o++ = tag;
++	*o++ = len;
++	memcpy(o, val, len);
++
++	return o + len;
++}
++
++static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
++			  unsigned int sport, unsigned int len)
++{
++	static const uchar bcast_mac[6] = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
++	const struct dhcp_msg *req = (const struct dhcp_msg *)pkt;
++	struct dhcp_msg *rep;
++	struct in_addr yiaddr, bcast;
++	u32 mask, lease;
++	int type, reply;
++	u8 *o;
++	int n;
++
++	if (dport != DHCP_SERVER_PORT || len < DHCP_MIN_LEN)
++		return;
++	if (req->op != 1 || req->cookie != htonl(DHCP_MAGIC))
++		return;
++
++	type = dhcp_msg_type(req, len);
++	if (type == DHCP_DISCOVER)
++		reply = DHCP_OFFER;
++	else if (type == DHCP_REQUEST)
++		reply = DHCP_ACK;
++	else
++		return;
++
++	yiaddr = dhcp_client_ip();
++
++	rep = (struct dhcp_msg *)(net_tx_packet + net_eth_hdr_size() +
++				  IP_UDP_HDR_SIZE);
++	memset(rep, 0, sizeof(*rep));
++	rep->op = 2;
++	rep->htype = 1;
++	rep->hlen = 6;
++	rep->xid = req->xid;
++	rep->flags = req->flags;
++	rep->yiaddr = yiaddr.s_addr;
++	rep->siaddr = net_ip.s_addr;
++	memcpy(rep->chaddr, req->chaddr, sizeof(rep->chaddr));
++	rep->cookie = htonl(DHCP_MAGIC);
++
++	mask = htonl(0xffffff00);
++	lease = htonl(DHCP_LEASE_SECS);
++
++	o = rep->opts;
++	*o++ = 53;
++	*o++ = 1;
++	*o++ = (u8)reply;
++	o = dhcp_put(o, 54, 4, &net_ip.s_addr);		/* server id */
++	o = dhcp_put(o, 1, 4, &mask);			/* subnet mask */
++	o = dhcp_put(o, 3, 4, &net_ip.s_addr);		/* router */
++	o = dhcp_put(o, 51, 4, &lease);			/* lease time */
++	*o++ = 255;
++
++	n = (int)((u8 *)o - (u8 *)rep);
++	if (n < 300)					/* keep BOOTP-sized */
++		n = 300;
++
++	bcast.s_addr = 0xffffffff;
++	net_send_udp_packet((uchar *)bcast_mac, bcast, DHCP_CLIENT_PORT,
++			    DHCP_SERVER_PORT, n);
++
++	printf("httpd: DHCP %s -> %pI4\n",
++	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr);
++}
++
++static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
++{
++	int i;
++
++	if (nlen <= 0 || hlen < nlen)
++		return -1;
++
++	for (i = 0; i <= hlen - nlen; i++)
++		if (!memcmp(hay + i, needle, nlen))
++			return i;
++
++	return -1;
++}
++
++/*
++ * Parse the request headers, which sit at the very beginning of the stream
++ * (already stored at $loadaddr).  Only called once enough contiguous bytes
++ * have arrived.  The individual parts are located later, in one pass over the
++ * complete body.
++ */
++static void httpd_parse(u32 rx_bytes)
++{
++	char hdr[HDRBUF_SZ];
++	const char *base = (const char *)up_base;
++	char *p, *q;
++	int n, hdr_end, blen;
++	ulong clen;
++
++	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
++	memcpy(hdr, base, n);
++	hdr[n] = '\0';
++
++	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
++	if (hdr_end < 0)
++		return;			/* headers not complete yet */
++	hdr_end += 4;
++
++	p = strstr(hdr, "Content-Length:");
++	if (!p) {
++		up_failed = 1;
++		return;
++	}
++	p += 15;
++	/*
++	 * Every client sends "Content-Length: N" with a space after the colon,
++	 * and U-Boot's simple_strtoul() -- unlike the C library one -- does not
++	 * skip leading whitespace (lib/strto.c only handles a 0x prefix).  It
++	 * would return 0 here and the upload would be rejected as empty.
++	 */
++	while (*p == ' ' || *p == '\t')
++		p++;
++	clen = simple_strtoul(p, NULL, 10);
++	if (!clen || clen > UPLOAD_MAX) {
++		printf("httpd: refusing %lu byte upload\n", clen);
++		up_failed = 1;
++		return;
++	}
++
++	p = strstr(hdr, "boundary=");
++	if (!p) {
++		up_failed = 1;
++		return;
++	}
++	p += 9;
++	if (*p == '"') {
++		p++;
++		for (q = p; *q && *q != '"'; q++)
++			;
++	} else {
++		for (q = p; *q && *q != '\r' && *q != '\n' && *q != ';'; q++)
++			;
++	}
++	blen = q - p;
++	if (blen <= 0 || blen > (int)sizeof(up_bound) - 5) {
++		up_failed = 1;
++		return;
++	}
++	/* Each part ends right before CRLF + "--" + boundary. */
++	memcpy(up_bound, "\r\n--", 4);
++	memcpy(up_bound + 4, p, blen);
++	up_bound_len = blen + 4;
++
++	up_body = hdr_end;
++	up_total = hdr_end + clen;
++	up_parsed = 1;
++
++	printf("httpd: expecting %lu body bytes at +%u\n", clen, up_body);
++}
++
++/*
++ * Body fully received: walk the multipart stream once and record where each
++ * form field's payload landed.  Nothing is copied -- the parts are flashed in
++ * place, which is what stops a 64 MB upload from needing a second 64 MB.
++ */
++static void httpd_finish(void)
++{
++	char *base = (char *)up_base;
++	const char *sep = up_bound + 2;		/* "--" + boundary */
++	int seplen = up_bound_len - 2;
++	u32 pos = up_body;
++
++	up_nparts = 0;
++	up_size = 0;
++
++	while (up_nparts < MAX_PARTS && pos < up_total) {
++		char ph[512];
++		struct up_part *part;
++		const char *q;
++		int off, hoff, dlen, n;
++
++		off = mem_find(base + pos, up_total - pos, sep, seplen);
++		if (off < 0)
++			break;
++		pos += off + seplen;
++
++		/* "--" right after the delimiter closes the body. */
++		if (up_total - pos >= 2 && !memcmp(base + pos, "--", 2))
++			break;
++		if (up_total - pos >= 2 && !memcmp(base + pos, "\r\n", 2))
++			pos += 2;
++
++		n = up_total - pos;
++		if (n > (int)sizeof(ph) - 1)
++			n = sizeof(ph) - 1;
++		hoff = mem_find(base + pos, n, "\r\n\r\n", 4);
++		if (hoff < 0)
++			break;
++		memcpy(ph, base + pos, hoff);
++		ph[hoff] = '\0';
++		pos += hoff + 4;
++
++		dlen = mem_find(base + pos, up_total - pos, up_bound,
++				up_bound_len);
++		if (dlen < 0)
++			break;
++
++		/* An untouched <input type=file> arrives with an empty body. */
++		q = strstr(ph, "name=\"");
++		if (q && dlen > 0) {
++			part = &up_parts[up_nparts];
++			q += 6;
++			for (n = 0; n < (int)sizeof(part->name) - 1 &&
++				    q[n] && q[n] != '"'; n++)
++				part->name[n] = q[n];
++			part->name[n] = '\0';
++			part->addr = (ulong)(base + pos);
++			part->size = dlen;
++
++			up_size += dlen;
++			up_nparts++;
++
++			printf("httpd: \"%s\": %u bytes at 0x%lx\n",
++			       part->name, part->size, part->addr);
++		}
++
++		pos += dlen;		/* now sitting on the next delimiter */
++	}
++
++	if (!up_nparts) {
++		printf("httpd: no usable form fields in upload\n");
++		up_failed = 1;
++		return;
++	}
++
++	up_ready = 1;
++}
++
++static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
++{
++	/* A GET needs no body; drop whatever follows. */
++	if (tcp->priv == CONN_GET)
++		return len;
++
++	/*
++	 * Exactly one connection at a time may stage data at $loadaddr.  The
++	 * first one to deliver offset 0 claims it; a segment arriving before
++	 * that is refused so it gets retried once the head of the stream is in.
++	 */
++	if (!up_owner) {
++		if (rx_offs != 0)
++			return 0;
++		up_owner = tcp;
++	} else if (up_owner != tcp) {
++		return len;
++	}
++
++	memcpy((char *)up_base + rx_offs, buf, len);
++
++	return len;
++}
++
++static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
++{
++	/*
++	 * Classify here rather than in rx(): the first segment may be shorter
++	 * than the method name, and this callback guarantees that bytes
++	 * [0..rx_bytes-1] are present and contiguous.
++	 */
++	if (tcp->priv == CONN_UNKNOWN) {
++		if (up_owner != tcp || rx_bytes < 4)
++			return;
++		if (!memcmp((const char *)up_base, "POST", 4)) {
++			if (up_active) {
++				tcp->priv = CONN_GET;	/* one upload at a time */
++				up_owner = NULL;
++				return;
++			}
++			up_active = 1;
++			tcp->priv = CONN_POST;
++		} else {
++			tcp->priv = CONN_GET;
++			up_owner = NULL;	/* release the staging area */
++			return;
++		}
++	}
++
++	if (tcp->priv != CONN_POST)
++		return;
++
++	if (!up_parsed && !up_failed)
++		httpd_parse(rx_bytes);
++
++	if (up_parsed && !up_ready && !up_failed && rx_bytes >= up_total)
++		httpd_finish();
++}
++
++static const char *httpd_response(struct tcp_stream *tcp, int *len)
++{
++	const char *s;
++
++	if (tcp->priv == CONN_POST) {
++		if (up_ready)
++			s = resp_done;
++		else if (up_failed)
++			s = resp_400;
++		else
++			s = NULL;	/* still receiving */
++	} else if (tcp->priv == CONN_GET) {
++		s = resp_form;
++	} else {
++		s = NULL;
++	}
++
++	*len = s ? strlen(s) : 0;
++
++	return s;
++}
++
++static int httpd_tx(struct tcp_stream *tcp, u32 tx_offs, void *buf, int maxlen)
++{
++	const char *s;
++	int total, len;
++
++	s = httpd_response(tcp, &total);
++	if (!s || tx_offs >= (u32)total)
++		return 0;
++
++	len = total - tx_offs;
++	if (len > maxlen)
++		len = maxlen;
++
++	memcpy(buf, s + tx_offs, len);
++
++	return len;
++}
++
++static void httpd_on_snd_una_update(struct tcp_stream *tcp, u32 tx_bytes)
++{
++	const char *s;
++	int total;
++
++	s = httpd_response(tcp, &total);
++	if (!s || tx_bytes < (u32)total)
++		return;
++
++	/*
++	 * Response delivered and acknowledged.  Closing from the tx callback
++	 * would break the stream, which is why this lives here.
++	 */
++	tcp_stream_close(tcp);
++
++	if (tcp->priv != CONN_POST)
++		return;
++
++	if (up_ready) {
++		flash_pending = 1;
++		net_set_state(NETLOOP_SUCCESS);
++	} else {
++		/* Let the user retry after a failed upload. */
++		printf("httpd: upload failed, ready for another attempt\n");
++		up_active = 0;
++		up_owner = NULL;
++		up_parsed = 0;
++		up_failed = 0;
++		up_body = 0;
++		up_total = 0;
++		up_bound_len = 0;
++	}
++}
++
++static int httpd_on_create(struct tcp_stream *tcp)
++{
++	if (tcp->lport != HTTPD_PORT)
++		return 0;
++
++	tcp->priv = CONN_UNKNOWN;
++	tcp->rx = httpd_rx;
++	tcp->tx = httpd_tx;
++	tcp->on_rcv_nxt_update = httpd_on_rcv_nxt_update;
++	tcp->on_snd_una_update = httpd_on_snd_una_update;
++
++	return 1;
++}
++
++void httpd_start_server(void)
++{
++	up_active = 0;
++	up_owner = NULL;
++	up_parsed = 0;
++	up_failed = 0;
++	up_ready = 0;
++	up_body = 0;
++	up_total = 0;
++	up_size = 0;
++	up_nparts = 0;
++	up_bound_len = 0;
++	flash_pending = 0;
++	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
++
++	memset(net_server_ethaddr, 0, 6);
++	tcp_stream_set_on_create_handler(httpd_on_create);
++	net_set_udp_handler(httpd_dhcp_rx);
++	httpd_led_start();
++
++	printf("Using %s device\n", eth_get_name());
++	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
++	printf("Handing out DHCP leases from %pI4\n", &net_ip);
++	printf("Press Ctrl-C to abort\n");
++}
++
++static struct up_part *part_find(const char *name)
++{
++	int i;
++
++	for (i = 0; i < up_nparts; i++)
++		if (!strcmp(up_parts[i].name, name))
++			return &up_parts[i];
++
++	return NULL;
++}
++
++/*
++ * Move a part down to an aligned address so the NAND layer never sees an
++ * awkwardly aligned source.  See FLASH_ALIGN on why stepping back is safe.
++ */
++static ulong part_align(struct up_part *part)
++{
++	ulong aligned = part->addr & ~(ulong)(FLASH_ALIGN - 1);
++
++	if (aligned != part->addr && aligned >= up_base) {
++		memmove((void *)aligned, (void *)part->addr, part->size);
++		part->addr = aligned;
++	}
++
++	return part->addr;
++}
++
++/* Run $var if the environment defines it, otherwise the built-in fallback. */
++static int run_step(const char *var, const char *builtin)
++{
++	char buf[64];
++
++	if (env_get(var)) {
++		snprintf(buf, sizeof(buf), "run %s", var);
++		return run_command(buf, 0);
++	}
++
++	printf("httpd: $%s not set, using built-in\n", var);
++
++	return run_command(builtin, 0);
++}
++
++static int flash_part(const char *what, struct up_part *part, const char *var,
++		      const char *builtin)
++{
++	printf("httpd: writing %s, %u bytes\n", what, part->size);
++
++	env_set_hex("loadaddr", part_align(part));
++	env_set_hex("filesize", part->size);
++
++	if (run_step(var, builtin)) {
++		printf("httpd: writing %s FAILED\n", what);
++		return -1;
++	}
++
++	return 0;
++}
++
++/*
++ * The bootloader is written before the firmware so that a migration which
++ * dies halfway still leaves a board that can be recovered over the network.
++ */
++static int httpd_flash(void)
++{
++	struct up_part *bl2 = part_find(FIELD_BL2);
++	struct up_part *fip = part_find(FIELD_FIP);
++	struct up_part *fit = part_find(FIELD_FIT);
++	int format = part_find(FIELD_FORMAT) != NULL;
++	int ret = -1;
++
++	httpd_blink_start();
++
++	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
++		goto out;
++
++	if (fip || fit) {
++		int err;
++
++		if (format) {
++			printf("httpd: rebuilding UBI\n");
++			err = run_step(ENV_FORMAT_UBI, DEF_FORMAT_UBI);
++		} else {
++			printf("httpd: %s\n", CMD_ATTACH_UBI);
++			err = run_command(CMD_ATTACH_UBI, 0);
++		}
++
++		if (err) {
++			printf("httpd: attaching UBI FAILED\n");
++			goto out;
++		}
++	}
++
++	if (fip && flash_part("U-Boot FIP", fip, ENV_WRITE_FIP, DEF_WRITE_FIP))
++		goto out;
++
++	if (fit && flash_part("firmware", fit, ENV_WRITE_FIT, DEF_WRITE_FIT))
++		goto out;
++
++	ret = 0;
++out:
++	httpd_blink_stop();
++	env_set_hex("loadaddr", up_base);
++
++	return ret;
++}
++
++static int do_httpd(struct cmd_tbl *cmdtp, int flag, int argc,
++		    char *const argv[])
++{
++	int err;
++
++	err = net_loop(HTTPD);
++
++	httpd_led_stop();
++
++	if (err < 0) {
++		printf("httpd error: %d\n", err);
++		return CMD_RET_FAILURE;
++	}
++
++	if (!flash_pending)
++		return CMD_RET_SUCCESS;
++
++	flash_pending = 0;
++	if (httpd_flash()) {
++		/*
++		 * Deliberately no reset: the caller loops back into httpd so
++		 * the user can retry without touching the power.
++		 */
++		return CMD_RET_FAILURE;
++	}
++
++	printf("httpd: flashing done, rebooting\n");
++	run_command("reset", 0);
++
++	return CMD_RET_SUCCESS;
++}
++
++U_BOOT_CMD(
++	httpd,	1,	0,	do_httpd,
++	"start HTTP recovery server",
++	"\n"
++	"    - serve an upload form on port 80 and hand out one DHCP lease;\n"
++	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
++	"      flashed by the matching httpd_* / ubi_write_* env scripts,\n"
++	"      or by a built-in equivalent when those are not defined"
++);
+diff -urN a/net/net.c b/net/net.c
+--- a/net/net.c
++++ b/net/net.c
+@@ -508,6 +508,11 @@
+ 			fastboot_tcp_start_server();
+ 			break;
+ #endif
++#if defined(CONFIG_CMD_HTTPD)
++		case HTTPD:
++			httpd_start_server();
++			break;
++#endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+ 			bootp_reset();
+@@ -1510,6 +1515,7 @@
+ 	case FASTBOOT_UDP:
+ 	case FASTBOOT_TCP:
+ 	case TFTPSRV:
++	case HTTPD:
+ 		if (IS_ENABLED(CONFIG_IPV6) && use_ip6) {
+ 			if (!memcmp(&net_link_local_ip6, &net_null_addr_ip6,
+ 				    sizeof(struct in6_addr))) {
