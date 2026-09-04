@@ -67,7 +67,7 @@ rather than falling through into the bl2/fip/fit sequence.
  #define HTTPD_PORT		80
  
  /* Enough for the request line + headers of any sane browser. */
-@@ -78,10 +82,82 @@
+@@ -78,10 +82,91 @@
  #define FIELD_FIT		"firmware"
  #define FIELD_FORMAT		"format"
  
@@ -97,8 +97,16 @@ rather than falling through into the bl2/fip/fit sequence.
 + *       the constants below.
 + */
 +#define FIELD_STOCK		"stock"		/* whole-chip all_flash.bin */
-+#define FIELD_PARTFILE		"partfile"	/* one factory partition */
-+#define FIELD_PARTNAME		"partname"	/* which one it is */
++
++/*
++ * One field per volume rather than a "which one" selector plus a single file
++ * box: the two volumes are independent, a unit that lost both has no reason
++ * to restore them in two passes, and naming the field after the volume drops
++ * the whole class of "picked a file but not a name" mistakes -- the file
++ * cannot arrive without saying what it is.
++ */
++#define FIELD_VOL_RI		"vol_ri"
++#define FIELD_VOL_BOSA		"vol_bosa"
 +
 +/*
 + * ---- board-independent ---------------------------------------------------
@@ -116,13 +124,14 @@ rather than falling through into the bl2/fip/fit sequence.
 + * +0x3e), different container.  So this restores them as volumes.
 + */
 +struct stock_vol {
-+	const char	*name;
++	const char	*name;		/* UBI volume name */
++	const char	*field;		/* form field that carries it */
 +	u32		size;
 +};
 +
 +static const struct stock_vol stock_vols[] = {
-+	{ "ri",		0x40000 },	/* factory MAC at +0x3e */
-+	{ "bosa",	0x40000 },	/* optics calibration */
++	{ "ri",		FIELD_VOL_RI,	0x40000 },	/* factory MAC at +0x3e */
++	{ "bosa",	FIELD_VOL_BOSA,	0x40000 },	/* optics calibration */
 +};
 +
 +/*
@@ -151,7 +160,7 @@ rather than falling through into the bl2/fip/fit sequence.
  
  /*
   * Parts are flashed in place, so their start address is wherever the form
-@@ -178,6 +254,9 @@ static const char resp_form[] =
+@@ -178,6 +263,9 @@ static const char resp_form[] =
  	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
  	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
  	"white-space:nowrap;letter-spacing:.02em}"
@@ -161,7 +170,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
  	"td{padding:.3rem 0;vertical-align:top}"
  	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-@@ -209,6 +288,25 @@ static const char resp_form[] =
+@@ -209,6 +297,23 @@ static const char resp_form[] =
  	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
  	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
  	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
@@ -176,52 +185,53 @@ rather than falling through into the bl2/fip/fit sequence.
 +	"<label class=f><span class=n>整片恢复</span><br>"
 +	"<span class=h>all_flash.bin · 约 235.6 MiB · <b>仅适用 XG-040G-MD</b></span>"
 +	"<input type=file name=" FIELD_STOCK "></label>"
-+	"<label class=f><span class=n>或者只恢复出厂标识</span><br>"
-+	"<span class=h>写的是 UBI 卷，不动其他任何东西</span>"
-+	"<select name=" FIELD_PARTNAME ">"
-+	"<option value=''>— 不恢复 —</option>"
-+	"<option value=ri>ri · 出厂 MAC · 约 256 KiB</option>"
-+	"<option value=bosa>bosa · 光模块参数 · 约 256 KiB</option>"
-+	"</select>"
-+	"<input type=file name=" FIELD_PARTFILE "></label>"
++	"<label class=f><span class=n>或者恢复出厂标识</span><br>"
++	"<span class=h>写的是 UBI 卷，不动引导器和固件；两个可以一起传</span>"
++	"<span class=h>ri · 出厂 MAC · 约 256 KiB</span>"
++	"<input type=file name=" FIELD_VOL_RI ">"
++	"<span class=h>bosa · 光模块参数 · 约 256 KiB</span>"
++	"<input type=file name=" FIELD_VOL_BOSA "></label>"
  	"</details></div>"
  	"<button id=go type=submit>上传并刷写</button>"
  	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
-@@ -242,10 +340,12 @@ static const char resp_form[] =
+@@ -242,10 +347,12 @@ static const char resp_form[] =
  	"function nameok(k,n){n=n.toLowerCase();"
  	"return k=='firmware'?n.indexOf('.itb')>0"
  	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
-+	":k=='stock'||k=='partfile'?n.slice(-4)=='.bin'"
++	":k=='stock'||k.slice(0,4)=='vol_'?n.slice(-4)=='.bin'"
  	":n.slice(-4)=='.fip';}"
  	"function scan(){"
  	"var f=document.forms[0],o='',"
 -	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
 +	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot',"
-+	"stock:'整片原厂',partfile:'出厂标识'},k,i,n;"
++	"stock:'整片原厂',vol_ri:'出厂标识 ri',vol_bosa:'出厂标识 bosa'},k,i,n;"
  	"SEL={};BAD=[];"
  	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
  	"n=i.files[0].name;SEL[k]=1;"
-@@ -254,9 +354,19 @@ static const char resp_form[] =
+@@ -254,9 +361,21 @@ static const char resp_form[] =
  	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
  	"if(!nameok(k,n))BAD.push(L[k]);}"
  	"SEL.fmt=f.format.checked;"
-+	"SEL.part=f.partname.value;"
++	"SEL.vol=SEL.vol_ri||SEL.vol_bosa;"
  	"return o;}"
++	"function vols(){var a=[];if(SEL.vol_ri)a.push('ri');"
++	"if(SEL.vol_bosa)a.push('bosa');return a;}"
  	"function steps(){"
- 	"var e=document.getElementById('steps'),a=[];if(!e)return;"
+-	"var e=document.getElementById('steps'),a=[];if(!e)return;"
++	"var e=document.getElementById('steps'),a=[],V,i;if(!e)return;"
 +	"if(SEL.stock){a.push('擦除整片 flash');"
 +	"a.push('写入原厂镜像 235.6 MiB —— '+"
 +	"'<span class=bad>最慢的一步，别断电</span>');"
 +	"a.push('自动重启，之后就是原厂系统');"
 +	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';return;}"
-+	"if(SEL.partfile){a.push('挂载 UBI');"
-+	"a.push('写回 '+SEL.part+' 卷的出厂内容');"
++	"if(SEL.vol){V=vols();a.push('挂载 UBI');"
++	"for(i=0;i<V.length;i++)a.push('写回 '+V[i]+' 卷的出厂内容');"
 +	"a.push('自动重启');"
 +	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';return;}"
  	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
  	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
  	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
-@@ -267,15 +377,31 @@ static const char resp_form[] =
+@@ -267,15 +386,27 @@ static const char resp_form[] =
  	"function hide(){"
  	"document.getElementById('mask').removeAttribute('data-on');}"
  	"function ask(){"
@@ -230,19 +240,15 @@ rather than falling through into the bl2/fip/fit sequence.
  	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，"
  	"写错位置可能只能靠串口救回');"
  	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
-+	"if(SEL.stock&&SEL.partfile)"
-+	"E.push('整片恢复和单分区恢复只能选一个');"
-+	"if((SEL.stock||SEL.partfile)&&(SEL.firmware||SEL.bl2||SEL.fip||SEL.fmt))"
++	"if(SEL.stock&&SEL.vol)"
++	"E.push('整片恢复和出厂标识恢复只能选一个');"
++	"if((SEL.stock||SEL.vol)&&(SEL.firmware||SEL.bl2||SEL.fip||SEL.fmt))"
 +	"E.push('退回原厂不能和刷 OpenWrt 固件同时进行，请只留一边');"
-+	"if(SEL.partfile&&!SEL.part)"
-+	"E.push('选了分区文件，但没选是哪个分区');"
-+	"if(SEL.part&&!SEL.partfile)"
-+	"E.push('选了分区，但没有选文件');"
 +	"if(SEL.stock)W.push('整片恢复之后这个救砖页面就没有了；'+"
 +	"'要回 OpenWrt 得重新走一次 USB-TTL 串口迁移');"
 +	"if(SEL.stock)W.push('<b>只适用于 XG-040G-MD</b>：写入用的是这一款的原厂'+"
 +	"'分区偏移，别的型号布局不同，会擦错范围且救不回来');"
-+	"if(SEL.partfile)W.push('只会重写 '+SEL.part+' 这一个 UBI 卷，'+"
++	"if(SEL.vol)W.push('只会重写 '+vols().join(' 和 ')+' 卷，'+"
 +	"'引导器与固件不动');"
  	"h=o?'<div class=list>'+o+'</div>'"
  	":'<p class=none>还没有选择任何文件。</p>';"
@@ -255,7 +261,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"y.className=W.length?'danger':'';"
  	"document.getElementById('mask').setAttribute('data-on','');}"
  	"function up(f){ask();return false;}"
-@@ -462,9 +588,27 @@ static ulong up_base;
+@@ -462,8 +593,26 @@ static ulong up_base;
   */
  static ulong up_base;
  
@@ -271,7 +277,7 @@ rather than falling through into the bl2/fip/fit sequence.
 + * either forbid it outright or let a larger file run into U-Boot.
 + */
 +#define UPLOAD_MARGIN	(2 << 20)
- 
++
 +static ulong upload_max(void)
 +{
 +	ulong top = gd->start_addr_sp;
@@ -281,11 +287,10 @@ rather than falling through into the bl2/fip/fit sequence.
 +
 +	return top - up_base - UPLOAD_MARGIN;
 +}
-+
+ 
  /*
   * Panel feedback.  Recovery is a mode the user enters without a serial
-  * console, so the front LEDs are the only way to tell them the board is
-@@ -762,8 +906,9 @@ static void httpd_parse(u32 rx_bytes)
+@@ -762,8 +911,9 @@ static void httpd_parse(u32 rx_bytes)
  	while (*p == ' ' || *p == '\t')
  		p++;
  	clen = simple_strtoul(p, NULL, 10);
@@ -297,7 +302,7 @@ rather than falling through into the bl2/fip/fit sequence.
  		up_failed = 1;
  		return;
  	}
-@@ -1098,8 +1243,73 @@ static int run_step(const char *var, const char *built
+@@ -1098,6 +1248,49 @@ static int run_step(const char *var, const char *built
  	printf("httpd: $%s not set, using built-in\n", var);
  
  	return run_command(builtin, 0);
@@ -307,33 +312,11 @@ rather than falling through into the bl2/fip/fit sequence.
 + * The <select> arrives as an ordinary multipart field, so its value is a run
 + * of bytes in the upload buffer rather than a C string -- compare by length.
 + */
-+static const struct stock_vol *vol_find(const struct up_part *sel)
-+{
-+	int i;
-+
-+	if (!sel)
-+		return NULL;
-+
-+	for (i = 0; i < ARRAY_SIZE(stock_vols); i++) {
-+		size_t len = strlen(stock_vols[i].name);
-+
-+		if (sel->size == len &&
-+		    !memcmp((void *)sel->addr, stock_vols[i].name, len))
-+			return &stock_vols[i];
-+	}
-+
-+	return NULL;
-+}
-+
 +/* Restore one factory volume in place; the rest of the layout is untouched. */
++/* UBI must already be attached; the caller does it once for all volumes. */
 +static int flash_vol(ulong addr, const struct stock_vol *v)
 +{
 +	char cmd[80];
-+
-+	if (run_command(CMD_ATTACH_UBI, 0)) {
-+		printf("httpd: attaching UBI FAILED\n");
-+		return -1;
-+	}
 +
 +	printf("httpd: writing %s volume, %u bytes\n", v->name, v->size);
 +	snprintf(cmd, sizeof(cmd), "ubi write 0x%lx %s 0x%x",
@@ -344,8 +327,8 @@ rather than falling through into the bl2/fip/fit sequence.
 +	}
 +
 +	return 0;
- }
- 
++}
++
 +static int flash_stock(ulong addr, u32 off, u32 size, const char *what)
 +{
 +	char cmd[80];
@@ -366,17 +349,14 @@ rather than falling through into the bl2/fip/fit sequence.
 +	}
 +
 +	return 0;
-+}
-+
+ }
+ 
  static int flash_part(const char *what, struct up_part *part, const char *var,
- 		      const char *builtin)
- {
-@@ -1125,11 +1335,55 @@ static int httpd_flash(void)
+@@ -1125,11 +1318,78 @@ static int httpd_flash(void)
  	struct up_part *bl2 = part_find(FIELD_BL2);
  	struct up_part *fip = part_find(FIELD_FIP);
  	struct up_part *fit = part_find(FIELD_FIT);
 +	struct up_part *stock = part_find(FIELD_STOCK);
-+	struct up_part *pfile = part_find(FIELD_PARTFILE);
  	int format = part_find(FIELD_FORMAT) != NULL;
  	int ret = -1;
  
@@ -402,26 +382,50 @@ rather than falling through into the bl2/fip/fit sequence.
 +		goto out;
 +	}
 +
-+	if (pfile) {
-+		const struct stock_vol *v;
++	/*
++	 * Factory identity volumes.  Either one, or both in the same POST -- a
++	 * unit that lost its UBI lost both, and making that two round trips
++	 * only widens the window where it is running on a random MAC.
++	 *
++	 * Sizes are checked for every volume before the first write: a wrong
++	 * bosa found halfway through must not leave ri already rewritten.
++	 */
++	{
++		int i, n = 0;
 +
-+		v = vol_find(part_find(FIELD_PARTNAME));
-+		if (!v) {
-+			printf("httpd: no such factory volume\n");
-+			goto out;
++		for (i = 0; i < ARRAY_SIZE(stock_vols); i++) {
++			const struct stock_vol *v = &stock_vols[i];
++			struct up_part *up = part_find(v->field);
++
++			if (!up)
++				continue;
++
++			if (up->size != v->size) {
++				printf("httpd: %s is %u bytes, expected %u\n",
++				       v->name, up->size, v->size);
++				goto out;
++			}
++
++			n++;
 +		}
 +
-+		if (pfile->size != v->size) {
-+			printf("httpd: %s is %u bytes, expected %u\n",
-+			       v->name, pfile->size, v->size);
++		if (n) {
++			if (run_command(CMD_ATTACH_UBI, 0)) {
++				printf("httpd: attaching UBI FAILED\n");
++				goto out;
++			}
++
++			for (i = 0; i < ARRAY_SIZE(stock_vols); i++) {
++				const struct stock_vol *v = &stock_vols[i];
++				struct up_part *up = part_find(v->field);
++
++				if (up && flash_vol(part_align(up), v))
++					goto out;
++			}
++
++			ret = 0;
 +			goto out;
 +		}
-+
-+		if (flash_vol(part_align(pfile), v))
-+			goto out;
-+
-+		ret = 0;
-+		goto out;
 +	}
 +
  	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
