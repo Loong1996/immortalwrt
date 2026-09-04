@@ -67,16 +67,42 @@ rather than falling through into the bl2/fip/fit sequence.
  #define HTTPD_PORT		80
  
  /* Enough for the request line + headers of any sane browser. */
-@@ -78,10 +82,49 @@
+@@ -78,10 +82,82 @@
  #define FIELD_FIT		"firmware"
  #define FIELD_FORMAT		"format"
  
-+/* Going back to stock.  Mutually exclusive with the three fields above. */
++/*
++ * Going back to stock.  Mutually exclusive with the three fields above.
++ *
++ * Two operations live under this heading and they are NOT the same thing at
++ * two sizes.  They differ in what they touch, and -- what matters when a
++ * second board shows up -- in how far they carry:
++ *
++ *   factory identity volumes (ri / bosa)      board-independent
++ *       Written as UBI volumes.  Every an758x board that creates them in
++ *       ubi_create_board_data has the same two volumes at the same size:
++ *       XG-040G-MF's defenv carries that line verbatim
++ *       ("ubi create bosa 0x40000 ... ubi create ri 0x40000"), and differs
++ *       from this board's defenv only in four file names.  This half needs
++ *       no per-board constants and carries over unchanged.
++ *
++ *   whole-chip restore (all_flash.bin)        XG-040G-MD only
++ *       Writes factory bytes to raw offsets on the bare flash device.  Its
++ *       constants are measured from THIS model's stock image.  Another
++ *       model's factory layout is a different length at different offsets,
++ *       so reusing these numbers there erases the wrong range and leaves
++ *       nothing bootable -- and this is the one feature whose whole purpose
++ *       is to be used when the machine is already broken.  Supporting
++ *       another board means dumping its stock flash first, never copying
++ *       the constants below.
++ */
 +#define FIELD_STOCK		"stock"		/* whole-chip all_flash.bin */
 +#define FIELD_PARTFILE		"partfile"	/* one factory partition */
 +#define FIELD_PARTNAME		"partname"	/* which one it is */
 +
 +/*
++ * ---- board-independent ---------------------------------------------------
++ *
 + * Per-unit factory data that the ubi layout keeps as UBI volumes.
 + *
 + * These are NOT the stock mtd partitions of the same name.  Stock keeps ri at
@@ -99,6 +125,13 @@ rather than falling through into the bl2/fip/fit sequence.
 +	{ "bosa",	0x40000 },	/* optics calibration */
 +};
 +
++/*
++ * ---- XG-040G-MD only -----------------------------------------------------
++ *
++ * Both constants below are this model's stock geometry.  See the note above
++ * FIELD_STOCK before reusing them on another board.
++ */
++
 +/* all_flash: everything the factory map covers, 235.625 MiB. */
 +#define STOCK_TOTAL		0xeba0000
 +
@@ -118,7 +151,7 @@ rather than falling through into the bl2/fip/fit sequence.
  
  /*
   * Parts are flashed in place, so their start address is wherever the form
-@@ -178,6 +221,9 @@ static const char resp_form[] =
+@@ -178,6 +254,9 @@ static const char resp_form[] =
  	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
  	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
  	"white-space:nowrap;letter-spacing:.02em}"
@@ -128,7 +161,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
  	"td{padding:.3rem 0;vertical-align:top}"
  	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-@@ -209,6 +255,25 @@ static const char resp_form[] =
+@@ -209,6 +288,25 @@ static const char resp_form[] =
  	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
  	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
  	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
@@ -141,7 +174,7 @@ rather than falling through into the bl2/fip/fit sequence.
 +	"丢了出厂 MAC 就用它。<br>"
 +	"两者的文件都必须是<b>你自己这台</b>备份出来的。</div>"
 +	"<label class=f><span class=n>整片恢复</span><br>"
-+	"<span class=h>all_flash.bin · 约 235.6 MiB</span>"
++	"<span class=h>all_flash.bin · 约 235.6 MiB · <b>仅适用 XG-040G-MD</b></span>"
 +	"<input type=file name=" FIELD_STOCK "></label>"
 +	"<label class=f><span class=n>或者只恢复出厂标识</span><br>"
 +	"<span class=h>写的是 UBI 卷，不动其他任何东西</span>"
@@ -154,7 +187,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"</details></div>"
  	"<button id=go type=submit>上传并刷写</button>"
  	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
-@@ -242,10 +307,12 @@ static const char resp_form[] =
+@@ -242,10 +340,12 @@ static const char resp_form[] =
  	"function nameok(k,n){n=n.toLowerCase();"
  	"return k=='firmware'?n.indexOf('.itb')>0"
  	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
@@ -168,7 +201,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"SEL={};BAD=[];"
  	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
  	"n=i.files[0].name;SEL[k]=1;"
-@@ -254,9 +321,19 @@ static const char resp_form[] =
+@@ -254,9 +354,19 @@ static const char resp_form[] =
  	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
  	"if(!nameok(k,n))BAD.push(L[k]);}"
  	"SEL.fmt=f.format.checked;"
@@ -188,7 +221,7 @@ rather than falling through into the bl2/fip/fit sequence.
  	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
  	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
  	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
-@@ -267,15 +344,29 @@ static const char resp_form[] =
+@@ -267,15 +377,31 @@ static const char resp_form[] =
  	"function hide(){"
  	"document.getElementById('mask').removeAttribute('data-on');}"
  	"function ask(){"
@@ -207,6 +240,8 @@ rather than falling through into the bl2/fip/fit sequence.
 +	"E.push('选了分区，但没有选文件');"
 +	"if(SEL.stock)W.push('整片恢复之后这个救砖页面就没有了；'+"
 +	"'要回 OpenWrt 得重新走一次 USB-TTL 串口迁移');"
++	"if(SEL.stock)W.push('<b>只适用于 XG-040G-MD</b>：写入用的是这一款的原厂'+"
++	"'分区偏移，别的型号布局不同，会擦错范围且救不回来');"
 +	"if(SEL.partfile)W.push('只会重写 '+SEL.part+' 这一个 UBI 卷，'+"
 +	"'引导器与固件不动');"
  	"h=o?'<div class=list>'+o+'</div>'"
@@ -220,10 +255,12 @@ rather than falling through into the bl2/fip/fit sequence.
  	"y.className=W.length?'danger':'';"
  	"document.getElementById('mask').setAttribute('data-on','');}"
  	"function up(f){ask();return false;}"
-@@ -462,8 +553,26 @@ static int		up_nparts;
+@@ -462,9 +588,27 @@ static ulong up_base;
   */
  static ulong up_base;
  
+-/* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
+-#define UPLOAD_MAX	(96 << 20)
 +/*
 + * The upload lands at $loadaddr and is flashed from where it landed, so the
 + * ceiling is where U-Boot itself begins -- not the top of DRAM, which is
@@ -234,7 +271,7 @@ rather than falling through into the bl2/fip/fit sequence.
 + * either forbid it outright or let a larger file run into U-Boot.
 + */
 +#define UPLOAD_MARGIN	(2 << 20)
-+
+ 
 +static ulong upload_max(void)
 +{
 +	ulong top = gd->start_addr_sp;
@@ -244,12 +281,11 @@ rather than falling through into the bl2/fip/fit sequence.
 +
 +	return top - up_base - UPLOAD_MARGIN;
 +}
--/* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
--#define UPLOAD_MAX	(96 << 20)
- 
++
  /*
   * Panel feedback.  Recovery is a mode the user enters without a serial
-@@ -762,8 +871,9 @@ static void httpd_parse(u32 rx_bytes)
+  * console, so the front LEDs are the only way to tell them the board is
+@@ -762,8 +906,9 @@ static void httpd_parse(u32 rx_bytes)
  	while (*p == ' ' || *p == '\t')
  		p++;
  	clen = simple_strtoul(p, NULL, 10);
@@ -261,10 +297,12 @@ rather than falling through into the bl2/fip/fit sequence.
  		up_failed = 1;
  		return;
  	}
-@@ -1100,6 +1210,71 @@ static int run_step(const char *var, const char *builtin)
- 	return run_command(builtin, 0);
- }
+@@ -1098,8 +1243,73 @@ static int run_step(const char *var, const char *built
+ 	printf("httpd: $%s not set, using built-in\n", var);
  
+ 	return run_command(builtin, 0);
++}
++
 +/*
 + * The <select> arrives as an ordinary multipart field, so its value is a run
 + * of bytes in the upload buffer rather than a C string -- compare by length.
@@ -306,8 +344,8 @@ rather than falling through into the bl2/fip/fit sequence.
 +	}
 +
 +	return 0;
-+}
-+
+ }
+ 
 +static int flash_stock(ulong addr, u32 off, u32 size, const char *what)
 +{
 +	char cmd[80];
@@ -333,7 +371,7 @@ rather than falling through into the bl2/fip/fit sequence.
  static int flash_part(const char *what, struct up_part *part, const char *var,
  		      const char *builtin)
  {
-@@ -1125,11 +1300,55 @@ static int httpd_flash(void)
+@@ -1125,11 +1335,55 @@ static int httpd_flash(void)
  	struct up_part *bl2 = part_find(FIELD_BL2);
  	struct up_part *fip = part_find(FIELD_FIP);
  	struct up_part *fit = part_find(FIELD_FIT);
