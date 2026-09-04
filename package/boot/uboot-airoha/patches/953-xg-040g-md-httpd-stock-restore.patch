@@ -153,7 +153,7 @@ rather than falling through into the bl2/fip/fit sequence.
 +#define STOCK_MTD		"spi-nand0"
 +
  /* Version of the recovery page itself, shown next to the heading. */
- #define WEB_VERSION		"0.1.1"
+ #define WEB_VERSION		"0.1.2"
  
 -#define MAX_PARTS		6
 +#define MAX_PARTS		10
