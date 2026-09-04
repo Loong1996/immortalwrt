@@ -1,0 +1,26 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] configs: nokia_xg-040g-mf: enable minimal HTTP recovery server
+
+Same three options 950 turns on for xg-040g-md: the TCP stack and the httpd
+command from 202, plus the cyclic framework it uses to keep the panel LEDs
+blinking during a flash write (the SPI-NAND layer calls schedule() once per
+page, which is what drives it).
+
+The server itself is board-independent -- it lives in net/httpd.c and is
+built into U-Boot core -- so enabling it here is all this board needs.
+
+Must sort after 402-add-nokia-xg-040g-mf.patch, which is the patch that
+creates this defconfig in the first place.
+
+--- a/configs/an7583_nokia_xg-040g-mf_defconfig
++++ b/configs/an7583_nokia_xg-040g-mf_defconfig
+@@ -41,6 +41,9 @@ CONFIG_CMD_TFTPSRV=y
+ CONFIG_CMD_MTD_NAND_WRITE_TEST=y
+ CONFIG_CMD_PART=y
+ CONFIG_CMD_TFTPSRV=y
++CONFIG_PROT_TCP=y
++CONFIG_CMD_HTTPD=y
++CONFIG_CYCLIC=y
+ CONFIG_CMD_RARP=y
+ CONFIG_CMD_CDP=y
+ CONFIG_CMD_SNTP=y

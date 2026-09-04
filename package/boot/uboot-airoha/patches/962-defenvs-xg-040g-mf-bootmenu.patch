@@ -1,0 +1,58 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] defenvs: nokia_xg-040g-mf: boot menu entries and the ri MAC guard
+
+The mirror of 952's environment half for xg-040g-mf.  The C half is already
+shared -- 210 moved the two event spies to arch/arm/mach-airoha, where they
+gate themselves on envver -- so this board only needs to declare the
+variables they act on.
+
+Menu.  Entry 9 starts the recovery server by hand; until now the only ways
+in were holding reset at power-on and a failed boot, neither of which helps
+someone already sitting at the menu.  Entry 10 prints the guide and repo
+URLs, so a board that ends up in front of a stranger says where it came
+from.  The title carries the web recovery version, which is what tells you
+whether the FIP predates a fix.
+
+envver shares md's numbering rather than starting over at 1: the menu
+variables it re-imports are identical on both boards, so a change to them
+is a change to both, and one counter is easier to keep honest than two.
+
+ethaddr_factory.  This board still had the upstream version, which trusts
+whatever six bytes come out of the ri volume.  On a unit whose UBI was
+rebuilt that volume is empty, so what it reads is an erased NAND page and
+what lands in ethaddr is ff:ff:ff:ff:ff:ff -- and eth-uclass only tests the
+environment MAC with is_zero_ethaddr(), never is_valid_ethaddr(), so the
+broadcast address is taken at face value and used as a source address.  DHCP
+still works, being broadcast anyway, while every unicast reply is dropped by
+the peer: the recovery page is unreachable while the serial log looks fine.
+Now it reads into a scratch variable and only commits a usable value, same
+as md.
+
+All six variables are byte-identical to the md side.
+
+--- a/defenvs/an7583_nokia_xg-040g-mf_env
++++ b/defenvs/an7583_nokia_xg-040g-mf_env
+@@ -13,9 +13,13 @@ bootmenu_delay=0
+ bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+ bootmenu_default=0
+ bootmenu_delay=0
+-bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
++bootmenu_title=      [1;39mOpenWrt-Web 0.1.2[0m
++envver=3
+ bootmenu_0=Initialize environment.=run _firstboot
+ bootmenu_0d=Run default boot command.=run boot_default
++bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
++bootmenu_9=About - github.com/Loong1996/ImmortalWrt-XG-040G-MD=run show_about ; run bootmenu_confirm_return
++show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
+ bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
+ bootmenu_2=Boot production system from NAND=run boot_production ; run bootmenu_confirm_return
+ bootmenu_3=Load production system via TFTP then write to NAND=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+@@ -39,7 +43,7 @@ httpd_write_fip=if ubi check fip ; then ubi write $loa
+ httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
+ httpd_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
+ httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+-ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
++ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
+ part_default=production
+ reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+ mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
