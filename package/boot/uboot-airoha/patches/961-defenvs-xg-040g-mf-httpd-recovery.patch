@@ -1,0 +1,66 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] defenvs: nokia_xg-040g-mf: reach the recovery page, and flash from it
+
+The mirror of 951 for xg-040g-mf.  Two halves, same as there.
+
+Getting in.  Both paths that used to end in TFTP now end in httpd: holding
+reset at power-on, and a failed boot.  check_buttons is also spliced into
+the front of _firstboot -- on a first migration the environment is not built
+yet, so without it the button is never looked at on the one boot where the
+user is most likely to be holding it.
+
+Flashing.  Two httpd_* scripts next to the board's own ubi_write_*: writing
+BL2 goes through mtd with an offset so mtd itself skips the first 0x800
+bytes (BootROM looks for the FIP there), and formatting UBI is ubi_format
+minus the trailing reset, so the same session can go on to write volumes.
+httpd.c prefers these env scripts and falls back to a built-in equivalent
+when they are missing -- when a board needs rescuing, the env on flash is
+exactly the copy most likely to be stale or broken.
+
+httpd_write_fip is carried over from 954 rather than left to the built-in
+fallback: a routine bootloader update must not evict rootfs_data, and having
+the script present makes that explicit in the board's own environment.
+
+TFTP is untouched -- the bootmenu entries and every boot_tftp* variable stay
+where they are.  Automatic paths go to the browser, manual ones keep TFTP.
+
+Not carried over from the md side: 952's bootmenu branding (menu entry 9 to
+start the server by hand, the About entry, envver-driven refresh) and 953's
+back-to-stock.  The branding needs an equivalent of the EVT_POST_PREBOOT hook
+that currently lives in board/airoha/an7581/, and back-to-stock is measured
+from the md model's factory flash and cannot be reused here at all.  So on
+this board the recovery page is reached by holding reset or by a failed boot,
+not from the menu.
+
+--- a/defenvs/an7583_nokia_xg-040g-mf_env
++++ b/defenvs/an7583_nokia_xg-040g-mf_env
+@@ -26,7 +26,8 @@ boot_production=led $bootled_status on ; run ubi_read_
+ boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+ boot_default=run bootcmd ; run boot_tftp_forever
+ boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
+-boot_ubi=run boot_production ; run boot_tftp_forever
++boot_ubi=run boot_production ; run boot_httpd_forever
++boot_httpd_forever=while true ; do httpd ; sleep 1 ; done
+ boot_tftp_forever=led $bootled_status on ; while true ; do run boot_tftp ; sleep 1 ; done
+ boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run ubi_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+ boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run ubi_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+@@ -34,7 +35,10 @@ preboot=led $bootled_status on
+ boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr + 0x800 ; tftpboot $loadaddr_bl2 $bootfile_bl2 && run mtd_write_bl2
+ boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
+ preboot=led $bootled_status on
+-check_buttons=if button reset ; then run boot_tftp ; fi
++check_buttons=if button reset ; then httpd ; fi
++httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
++httpd_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
++httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+ ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
+ part_default=production
+ reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+@@ -48,6 +52,6 @@ _init_env=setenv _init_env ; run ubi_create_env ; save
+ ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; ubi create fip 0x100000 static && ubi write $loadaddr fip $filesize
+ ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
+ _init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv ; run ubi_create_board_data
+-_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
++_firstboot=setenv _firstboot ; run check_buttons ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
+ _switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
+ _bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"
