@@ -8,3 +8,27 @@
 	compatible = "nokia,xg-040g-md-ubi", "airoha,an7581",
 		     "airoha,en7581";
 };
+
+/*
+ * 共用 dtsi 经 nvmem 从 ubi 中名为 ri 的卷读取原厂 MAC，而该卷
+ * 需刷机时按官方转换流程从原厂 ri 分区转存，不是镜像的一部分。卷不存在时
+ * nvmem provider 永不注册，of_get_ethdev_address() 返回 -EPROBE_DEFER，驱动
+ * 直接 return 而不会退化为随机 MAC，airoha_eth 与其下游的 DSA 交换机就会永久
+ * 停在 deferred probe，整机无网络且日志里没有任何线索：
+ *
+ *	mt7530-mmio 1fb58000.switch: Failed to register DSA switch: -517
+ *	platform 1fb58000.switch: deferred probe pending: (reason unknown)
+ *	platform 1fb50000.ethernet: deferred probe pending: (reason unknown)
+ *
+ * 改由 base-files/lib/preinit/90_xg-040g-md_mac 在用户态读取同一个卷：转存过
+ * ri 的机器拿到的仍是真实硬件 MAC，没转存的则退回随机 MAC，不会锁死网络。
+ */
+&gdm1 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
+
+&gdm4 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
