@@ -257,12 +257,12 @@ the env volumes, and is running off the defaults anyway.
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+envver=2
++envver=3
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [1;39mOpenWrt-Web 0.1.1[0m
++bootmenu_title=      [1;39mOpenWrt-Web 0.1.2[0m
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
