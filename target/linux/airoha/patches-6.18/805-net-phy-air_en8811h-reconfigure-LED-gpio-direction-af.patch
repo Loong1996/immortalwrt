@@ -1,0 +1,72 @@
+From: OpenWrt XG-040G-MD
+Subject: [PATCH] net: phy: air_en8811h: reconfigure LED gpio direction after MCU restart
+
+The EN8811H LED pins are configured as outputs exactly once, in .probe():
+
+	/* Configure led gpio pins as output */
+	ret = air_buckpbus_reg_modify(phydev, EN8811H_GPIO_OUTPUT,
+				      EN8811H_GPIO_OUTPUT_345,
+				      EN8811H_GPIO_OUTPUT_345);
+
+.config_init() restarts the MD32 MCU on every call but the first, and the
+restart resets those pin directions back to input:
+
+	/* If restart happened in .probe(), no need to restart now */
+	if (priv->mcu_needs_restart) {
+		ret = en8811h_restart_mcu(phydev);
+		...
+	} else {
+		priv->mcu_needs_restart = true;
+	}
+
+Nothing ever configures them again. The LEDs therefore work only until the
+PHY is re-attached for the first time and stay dark from then on. On the
+Nokia XG-040G-MD the 2.5G port is attached three times during a normal
+boot, so the LED is already gone by the time userspace is up:
+
+	[    9.854911] lan1: PHY [mt7530-0:0f] driver [Airoha EN8811H] (irq=POLL)
+	[   15.469915] lan1: PHY [mt7530-0:0f] driver [Airoha EN8811H] (irq=POLL)
+	[   21.468161] lan1: PHY [mt7530-0:0f] driver [Airoha EN8811H] (irq=POLL)
+
+Forcing the LED on through sysfs does not help: air_led_brightness_set()
+writes the rules to the PHY registers just fine, but the pins are inputs so
+nothing lights up. Unbinding and rebinding the driver does bring the LED
+back, since that runs .probe() again -- which is what pointed at the pin
+directions in the first place.
+
+Move the pin direction setup into .config_init(), past the MCU restart.
+
+--- a2/drivers/net/phy/air_en8811h.c
++++ b2/drivers/net/phy/air_en8811h.c
+@@ -957,13 +957,6 @@
+ 	if (ret)
+ 		return ret;
+ 
+-	/* Configure led gpio pins as output */
+-	ret = air_buckpbus_reg_modify(phydev, EN8811H_GPIO_OUTPUT,
+-				      EN8811H_GPIO_OUTPUT_345,
+-				      EN8811H_GPIO_OUTPUT_345);
+-	if (ret < 0)
+-		return ret;
+-
+ 	return 0;
+ }
+ 
+@@ -1039,6 +1032,17 @@
+ 		return ret;
+ 
+ 	ret = en8811h_config_serdes_polarity(phydev);
++	if (ret < 0)
++		return ret;
++
++	/* Configure led gpio pins as output. en8811h_restart_mcu() above
++	 * resets the pin directions, so this cannot be done once in .probe()
++	 * as it used to be: every .config_init() after the first one left the
++	 * pins as inputs and the LEDs stayed dark for good.
++	 */
++	ret = air_buckpbus_reg_modify(phydev, EN8811H_GPIO_OUTPUT,
++				      EN8811H_GPIO_OUTPUT_345,
++				      EN8811H_GPIO_OUTPUT_345);
+ 	if (ret < 0)
+ 		return ret;
+ 
