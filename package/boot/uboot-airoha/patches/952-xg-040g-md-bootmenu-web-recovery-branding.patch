@@ -1,0 +1,306 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] xg-040g-md: name the web recovery build in the bootmenu
+
+The board boots a U-Boot that serves its own recovery page, but nothing on
+screen says so.  The menu is indistinguishable from a stock UBI build, and a
+user who ends up in it has no way back to the project that produced it.
+
+  - the banner carries the recovery page's version, so a bug report names the
+    build it came from.  The three pairs of parentheses around it are gone:
+    the title is drawn from column 3 and _bootmenu_update_title appends the
+    full $ver, so those twelve columns were the difference between seeing
+    the revision and hash or having them cut off;
+
+  - entry 9 starts httpd by hand.  Until now the server was only reachable by
+    holding reset at power-on, or by failing to boot from NAND -- neither is
+    available to someone already sitting at the menu.  Drawn red like the two
+    entries that write the bootloader: it is a flashing entry, and it takes
+    the board off the menu until it is aborted;
+
+  - entry 10 carries the project page.  U-Boot's bootmenu only has single
+    character shortcuts (1-9, then a-z, 0 reserved for Exit), so it is drawn
+    as "a."  The URL sits in the title rather than behind the keypress: the
+    point is to be readable without pressing anything.  Selecting it prints
+    the guide and author pages as well;
+
+  - httpd prints the same on the console, for the serial user who never sees
+    the page, and prints the MAC while it is at it.  net_check_prereq() only
+    validates the MAC for BOOTP/DHCP/LINKLOCAL, not for HTTPD, so a board
+    that came up with a random or empty ethaddr still announces "Listening
+    for HTTP" and still answers nothing -- the browser is talking to whatever
+    ARP learned last time.  That failure is invisible without this line.
+
+ethaddr_factory is reworked while we are here.  It used to write whatever it
+read at ri+0x3e into ethaddr unconditionally, so a board whose ri volume was
+recreated empty -- anything that went through "rebuild UBI" -- came up with
+ff:ff:ff:ff:ff:ff, an erased-NAND page read as a MAC.  eth-uclass.c only tests
+the environment MAC for is_zero_ethaddr(), never is_valid_ethaddr(), so the
+broadcast address sails straight through and is used as a source address: DHCP
+still works (it is broadcast anyway) while every unicast reply is dropped by
+the peer, which is exactly as confusing as it sounds.
+
+It now reads into a scratch variable and only assigns when what came back is
+usable.  That variable is named rimac rather than anything starting with an
+underscore: hush only begins a variable name on an alpha character
+(cli_hush.c, "if (isalpha(ch))"), so $_mac would have been passed through
+literally -- and then rejected by the MAC type check on ethaddr, which is how
+this was found.  The existing _firstboot and friends are fine because they
+only ever appear as arguments to run and setenv, never expanded.  Deciding on the value read rather than on whether ethaddr is already
+set is the part that matters: _firstboot runs from the bootmenu, which is well
+after initr_net(), and a board with no MAC has by then been given a generated
+one that eth-uclass wrote into the environment.  A guard of the "skip if
+ethaddr exists" kind therefore always fires, and the real address in ri would
+never be read back after a factory reset.  Keying on the value instead means a
+populated ri wins over the generated address, while an erased one leaves it
+alone -- which is also what protects a MAC set by hand.
+
+The version appears twice, in bootmenu_title and in WEB_VERSION: the env file
+is plain text and cannot see the macro.  Both live in this patch so that they
+move together.
+
+A saved environment shadows the one compiled in, so none of this would reach
+a board that has already been set up: ubootenv holds a complete copy, and a
+new FIP cannot get a word in.  Telling people to "Reset all settings to
+factory defaults" works but throws out ethaddr with it, which is exactly the
+failure above.
+
+So the default environment gains an envver, and an EVT_POST_PREBOOT spy
+re-imports just the menu variables when the saved copy is behind -- after
+preboot has run, before bootdelay_process() and autoboot_command() draw the
+menu.  The list deliberately excludes everything the running system owns:
+bootdelay and bootmenu_delay (raised 0 -> 3 by _switch_to_menu), bootmenu_0
+(swapped for bootmenu_0d on init), and ethaddr, which is not in the default
+environment at all and therefore cannot be clobbered by an import.
+
+The same spy file also drops an ethaddr of ff:ff:ff:ff:ff:ff at
+EVT_SETTINGS_R -- after initr_env(), before initr_net(), the one window where
+it still changes what the NIC comes up with.  The env-side guard added
+alongside only runs from _firstboot, so a board that already had the bad
+value saved would never have met it.
+
+Doing it here rather than at flash time is what makes it exact: "env default"
+imports whatever is compiled into the *running* U-Boot, so refreshing while
+flashing a new FIP would install the outgoing defaults and leave the menu one
+version behind forever.  The new U-Boot has to be the one that does it.
+
+Re-importing bootmenu_title also means putting $ver back by hand.  The env
+script that normally appends it, _bootmenu_update_title, deletes itself the
+first time it runs -- it is there for the one-time setup of a fresh
+environment -- so after a refresh nothing would be left to do it and the menu
+would advertise no version at all.  The two never double up: a rebuilt
+environment runs the script and already matches envver, while an upgrade
+fires the spy long after the script is gone.
+
+The spy lands in the shared an7581 board file, which is fine: the other
+boards have no envver in their default environment and return early.  Saving
+is best-effort -- a first-time migration gets here before _init_env has made
+the env volumes, and is running off the defaults anyway.
+
+--- a/board/airoha/an7581/an7581_rfb.c
++++ b/board/airoha/an7581/an7581_rfb.c
+@@ -4,6 +4,12 @@
+  */
+ 
+ #include <asm/global_data.h>
++#include <env.h>
++#include <event.h>
++#include <search.h>
++#include <stdio.h>
++#include <linux/kernel.h>
++#include <linux/string.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -14,3 +20,129 @@ int board_init(void)
+ 
+ 	return 0;
+ }
++
++/*
++ * A new FIP ships a new default environment, but the saved one shadows it
++ * completely: ubootenv holds a full copy, so menu entries added since the
++ * board was first initialised never appear, and the title goes on advertising
++ * the version it was installed with.
++ *
++ * The blunt answer -- "Reset all settings to factory defaults" -- also clears
++ * ethaddr, and on a board whose ri volume was rebuilt that is the only copy of
++ * the MAC left.  So instead the default environment carries an envver, and
++ * this re-imports just the variables that spell out the menu whenever the
++ * saved copy is behind.
++ *
++ * Everything the running system owns is deliberately left out of that list:
++ * bootdelay and bootmenu_delay (raised from 0 to 3 by _switch_to_menu),
++ * bootmenu_0 (swapped for bootmenu_0d once the board is initialised), and
++ * ethaddr, which is not in the default environment at all.
++ *
++ * A board that was never initialised has no saved environment to be behind:
++ * env_get() is already answering out of the compiled-in default, so the
++ * versions match and nothing happens.  Other an7581 boards have no envver in
++ * their default environment and return early.
++ */
++/*
++ * ethaddr_factory reads six bytes out of the ri volume.  On a board that went
++ * through "rebuild UBI" that volume was recreated empty, so what it reads is
++ * an erased NAND page and what lands in ethaddr is ff:ff:ff:ff:ff:ff.
++ *
++ * eth-uclass only tests the environment MAC with is_zero_ethaddr(), never
++ * is_valid_ethaddr(), so the broadcast address is taken at face value and
++ * then used as a source address -- DHCP still works, being broadcast anyway,
++ * while every unicast reply is dropped by the peer.  The env script now
++ * guards against this, but it only runs from _firstboot, so a board already
++ * carrying the bad value in its saved environment never meets the fix.
++ *
++ * EVT_SETTINGS_R fires after initr_env() and before initr_net(), which is the
++ * one window where clearing it still changes what the NIC comes up with.
++ */
++static int ethaddr_dropped;
++
++static int drop_broken_ethaddr(void)
++{
++	const char *mac = env_get("ethaddr");
++
++	if (!mac || strcmp(mac, "ff:ff:ff:ff:ff:ff"))
++		return 0;
++
++	printf("ethaddr is ff:ff:ff:ff:ff:ff -- an erased ri volume read as a MAC.\n");
++	printf("Dropping it; a generated address will be used and saved.\n");
++	printf("To put the real one back: setenv ethaddr <MAC on the label> ; saveenv\n");
++
++	env_set("ethaddr", NULL);
++	ethaddr_dropped = 1;
++
++	return 0;
++}
++EVENT_SPY_SIMPLE(EVT_SETTINGS_R, drop_broken_ethaddr);
++
++static char * const menu_vars[] = {
++	"envver",
++	"bootmenu_title",
++	"bootmenu_1", "bootmenu_2", "bootmenu_3", "bootmenu_4", "bootmenu_5",
++	"bootmenu_6", "bootmenu_7", "bootmenu_8", "bootmenu_9",
++	"show_about",
++};
++
++/*
++ * _bootmenu_update_title is what appends $ver to the title, and it deletes
++ * itself the first time it runs -- it exists for the one-time setup of a
++ * fresh environment.  So after re-importing bootmenu_title below there is
++ * nothing left to put the version back, and the menu would go on showing no
++ * version at all.  Do it here instead.
++ *
++ * The two never double up: a rebuilt environment runs the script and matches
++ * envver (so this does not fire), while a firmware upgrade fires this and the
++ * script is long gone.
++ */
++static void append_version_to_title(void)
++{
++	const char *title = env_get("bootmenu_title");
++	const char *ver = env_get("ver");
++	char buf[256];
++
++	if (!title || !ver)
++		return;
++
++	snprintf(buf, sizeof(buf), "%s       \033[33m%s\033[0m", title, ver);
++	env_set("bootmenu_title", buf);
++}
++
++static int refresh_boot_menu(void)
++{
++	char want[16];
++	const char *have;
++	int dirty = ethaddr_dropped;
++
++	if (env_get_default_into("envver", want, sizeof(want)) >= 0 && want[0]) {
++		have = env_get("envver");
++		if (!have || strcmp(have, want)) {
++			printf("Boot menu: refreshing saved environment for v%s\n",
++			       want);
++			env_set_default_vars(ARRAY_SIZE(menu_vars), menu_vars,
++					     H_INTERACTIVE);
++			append_version_to_title();
++			dirty = 1;
++		}
++	}
++
++	if (!dirty)
++		return 0;
++
++	/*
++	 * By now eth-uclass has replaced a dropped ethaddr with a generated
++	 * one; saving is what stops it being a different address on every
++	 * boot, which would leave every peer holding a stale ARP entry.
++	 *
++	 * Saving is best-effort on purpose.  A first-time migration reaches
++	 * here before _init_env has created the env volumes, and it does not
++	 * need the write anyway -- it is already running off the defaults.
++	 */
++	if (env_save())
++		printf("Environment not saved, changes apply to this boot only\n");
++
++	return 0;
++}
++EVENT_SPY_SIMPLE(EVT_POST_PREBOOT, refresh_boot_menu);
+--- a/configs/an7581_nokia_xg-040g-md_defconfig
++++ b/configs/an7581_nokia_xg-040g-md_defconfig
+@@ -27,6 +27,7 @@ CONFIG_SYS_MAXARGS=8
+ CONFIG_CMD_CPU=y
+ CONFIG_CMD_LICENSE=y
+ CONFIG_CMD_BOOTMENU=y
++CONFIG_EVENT=y
+ CONFIG_CMD_ASKENV=y
+ CONFIG_CMD_ERASEENV=y
+ CONFIG_CMD_ENV_FLAGS=y
+--- a/defenvs/an7581_nokia_xg-040g-md_env
++++ b/defenvs/an7581_nokia_xg-040g-md_env
+@@ -10,10 +10,11 @@ bootfile_bl2=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
+ bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
+ bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
+ bootled_status=green:power
++envver=2
+ bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+ bootmenu_default=0
+ bootmenu_delay=0
+-bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
++bootmenu_title=      [1;39mOpenWrt-Web 0.1.1[0m
+ bootmenu_0=Initialize environment.=run _firstboot
+ bootmenu_0d=Run default boot command.=run boot_default
+ bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
+@@ -23,6 +24,8 @@ bootmenu_4=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND[0m=run boot_tf
+ bootmenu_5=[31mLoad BL2 preloader via TFTP then write to NAND[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+ bootmenu_6=Reboot=reset
+ bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
++bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
++bootmenu_9=About - github.com/Loong1996/ImmortalWrt-XG-040G-MD=run show_about ; run bootmenu_confirm_return
+ boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+ boot_default=run bootcmd ; run boot_tftp_forever
+ boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
+@@ -36,7 +39,8 @@ boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr +
+ boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
+ preboot=led $bootled_status on
+ check_buttons=if button reset ; then httpd ; fi
+-ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
++show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
++ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
+ part_default=production
+ reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+ mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -1044,7 +1044,15 @@ void httpd_start_server(void)
+ 	net_set_udp_handler(httpd_dhcp_rx);
+ 	httpd_led_start();
+ 
+-	printf("Using %s device\n", eth_get_name());
++	printf("Web recovery " WEB_VERSION " by Loong\n");
++	printf("Guide   https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html\n");
++	printf("Project https://github.com/Loong1996/ImmortalWrt-XG-040G-MD\n");
++	/*
++	 * The MAC is worth a line of its own: a board that lost its factory
++	 * MAC still serves the page just fine, but every browser on the
++	 * segment is still talking to whatever ARP learned last time.
++	 */
++	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
+ 	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
+ 	printf("Handing out DHCP leases from %pI4\n", &net_ip);
+ 	printf("Press Ctrl-C to abort\n");

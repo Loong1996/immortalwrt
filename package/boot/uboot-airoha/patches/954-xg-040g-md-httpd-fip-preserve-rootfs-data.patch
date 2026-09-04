@@ -1,0 +1,101 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] httpd: stop the "U-Boot FIP" upload field from wiping settings
+
+Reported: upgrading from web recovery 0.1.0 to 0.1.1 by uploading just
+preloader.bin and bl31-uboot.fip -- no firmware -- reset every OpenWrt
+setting.  The firmware (fit volume) was never touched; what disappeared was
+the overlay.
+
+The "U-Boot" field reused the board's own ubi_write_fip script, which does:
+
+  run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; \
+      ubi create fip 0x100000 static && ubi write $loadaddr fip $filesize
+
+ubi_remove_rootfs deletes the rootfs_data volume -- the writable overlay
+UBIFS mounts on top of the read-only squashfs inside fit, holding every
+config change made after first boot.  Next boot's ubi_prepare_rootfs sees
+no rootfs_data and creates a fresh empty one, which from OpenWrt's side
+looks exactly like a factory reset.
+
+ubi_write_fip is not this session's code and is not being changed: it is
+the board's original script (defenvs, predates the web recovery feature),
+used by bootmenu entry 4 immediately followed by reset_factory -- a
+deliberate full reset, where losing rootfs_data is part of the intent.  The
+web page borrowed the same script for what is supposed to be a routine
+bootloader swap, which is a different operation with a different meaning
+for rootfs_data.  That borrowing, not ubi_write_fip itself, is the bug.
+
+It was never load-bearing in the first place: fip is created at a fixed
+0x100000 every time, so an in-place "ubi write" on an already-existing fip
+fits inside its own current reservation without freeing anything --
+removing then recreating a same-sized volume nets to zero extra PEBs
+either way (vmt.c: ubi_remove_volume() returns reserved_pebs to
+avail_pebs, ubi_create_volume() then reserves exactly that many back).
+
+Only the very first write, when fip does not exist yet (first migration,
+before rootfs_data exists either), needs to create the volume, and only
+then is evicting rootfs_data harmless -- so that one case reuses
+ubi_write_fip outright (run ubi_write_fip) rather than duplicating its
+create-and-evict logic: at that point ubi_write_fip's own "ubi check fip
+&& ubi remove fip" is a no-op (nothing to remove), so calling it is exactly
+equivalent to what the routine-update branch already established as safe,
+just spelled once instead of twice.
+
+httpd_write_fip is a new, independent env script -- same pattern as the
+existing httpd_write_bl2 next to mtd_write_bl2 -- so a future change to
+either the TFTP-menu reset flow or the web page's routine-update flow
+cannot silently change the other's behaviour.
+
+BL2 (preloader.bin) was never implicated: httpd_write_bl2 is a plain
+"mtd erase bl2 && mtd write bl2", operating on the bl2 mtd partition
+(0x0-0x20000), entirely outside the ubi partition (0x20000 onward) where
+every UBI volume, rootfs_data included, lives.  Flashing BL2 alongside FIP
+during an upgrade carries no risk to settings.
+
+--- a/defenvs/an7581_nokia_xg-040g-md_env
++++ b/defenvs/an7581_nokia_xg-040g-md_env
+@@ -45,6 +45,7 @@
+ reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+ mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
+ httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
++httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+ ubi_create_board_data=ubi check bosa || ubi create bosa 0x40000 || run ubi_format ; ubi check ri || ubi create ri 0x40000 || run ubi_format
+ ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
+ ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
+--- a/net/httpd.c
++++ b/net/httpd.c
+@@ -59,16 +59,29 @@
+  */
+ #define ENV_WRITE_BL2		"httpd_write_bl2"
+ #define ENV_FORMAT_UBI		"httpd_format_ubi"
+-#define ENV_WRITE_FIP		"ubi_write_fip"
++#define ENV_WRITE_FIP		"httpd_write_fip"
+ #define ENV_WRITE_FIT		"ubi_write_production"
+
+ #define DEF_WRITE_BL2		"mtd erase bl2 && " \
+ 				"mtd write bl2 $loadaddr 0x800 $filesize"
+ #define DEF_FORMAT_UBI		"ubi detach ; mtd erase ubi && ubi part ubi"
+-#define DEF_WRITE_FIP		"ubi check rootfs_data && ubi remove rootfs_data ; " \
+-				"ubi check fip && ubi remove fip ; " \
+-				"ubi create fip 0x100000 static && " \
+-				"ubi write $loadaddr fip $filesize"
++/*
++ * A routine bootloader update must not touch rootfs_data (the overlay
++ * holding every OpenWrt setting), and does not need to: fip is always
++ * created at the same fixed 0x100000, so an in-place "ubi write" on an
++ * already-existing fip fits inside its own current reservation with
++ * nothing to free.
++ *
++ * ubi_write_fip -- the board's own script, used by bootmenu entry 4
++ * immediately followed by reset_factory -- is only reached here when fip
++ * does not exist yet (first migration, before rootfs_data exists either).
++ * That is the one case where its unconditional "evict rootfs_data, then
++ * create" is both necessary and harmless, so it is reused rather than
++ * duplicated.
++ */
++#define DEF_WRITE_FIP		"if ubi check fip ; then " \
++				"ubi write $loadaddr fip $filesize ; " \
++				"else run ubi_write_fip ; fi"
+ #define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
+ 				"ubi check rootfs_data && ubi remove rootfs_data ; " \
+ 				"ubi create fit $filesize dynamic && " \
