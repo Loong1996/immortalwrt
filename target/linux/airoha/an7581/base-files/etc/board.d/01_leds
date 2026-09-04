@@ -21,9 +21,13 @@ gemtek,w1700k-ubi)
 	;;
 nokia,xg-040g-md|\
 nokia,xg-040g-md-ubi)
+	ucidef_set_led_netdev "lan1" "lan1" "mt7530-0:0f:green:lan-1" "lan1" "link tx rx"
 	ucidef_set_led_netdev "lan2" "lan2" "mt7530-0:0a:green:lan-2" "lan2" "link tx rx"
 	ucidef_set_led_netdev "lan3" "lan3" "mt7530-0:0b:green:lan-3" "lan3" "link tx rx"
 	ucidef_set_led_netdev "lan4" "lan4" "mt7530-0:0c:green:lan-4" "lan4" "link tx rx"
+
+	# 面板那排是光猫的三个灯 —— 「注册」(green:wan)、「光信号」(red:wan)、
+	# 「上网」(green:wan-online)，当路由器时没有对应状态，一律不接管。
 	;;
 esac
 

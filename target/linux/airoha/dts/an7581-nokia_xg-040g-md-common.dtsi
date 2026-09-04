@@ -132,7 +132,15 @@
 };
 
 &mdio {
-	/* Airoha EN8811 2.5Gbps phy */
+	/*
+	 * 不设 default-state：phy_device.c 里没有这个属性，of_phy_led() 只解析
+	 * active-low / active-high / inactive-high-impedance，PHY LED 上它是死的，
+	 * 留着只会让人误以为亮度被保留了。
+	 *
+	 * LED 规则也不必在这里写。驱动 probe 时就给三路预置了默认触发条件
+	 * （LED0 = link + rx + tx），config_init 里的 air_leds_init() 会写进 PHY。
+	 * 引脚方向被 MCU 重启清掉导致灯常灭的问题见 patches-6.18/805。
+	 */
 	en8811: ethernet-phy@f {
 		compatible = "ethernet-phy-id03a2.a411";
 		reg = <0xf>;
@@ -150,7 +158,6 @@
 				color = <LED_COLOR_ID_GREEN>;
 				function = LED_FUNCTION_LAN;
 				function-enumerator = <1>;
-				default-state = "keep";
 			};
 		};
 	};
