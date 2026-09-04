@@ -15,10 +15,22 @@
 	chosen {
 		bootargs = "console=ttyS0,115200 earlycon";
 		stdout-path = "serial0:115200n8";
+		/*
+		 * 这条只是上限裁剪：内核走 memblock_cap_memory_range()，全是 remove，
+		 * 只能往少了裁、不会凭空多出内存。真正声明容量的是下面的 memory 节点。
+		 * 固定放到 2G，对 512M/1G/2G 任何一种颗粒都不构成裁剪，同时保住起点
+		 * 0x80200000 —— 它比 reserved-memory 的 no-map 更早生效，是上游给 ATF
+		 * 那 2MB 的第一道保护。
+		 */
 		linux,usable-memory-range =
-			<0x0 0x80200000 0x0 0x1fe00000>;
+			<0x0 0x80200000 0x0 0x7fe00000>;
 	};
 
+	/*
+	 * 出厂 512M。换过颗粒的机器由 workflow 的 Patch DRAM Size 改写这里；
+	 * 若引导程序会 fixup /memory（标准 U-Boot 的 bootm 行为），这里的值会被
+	 * 它按实测容量覆盖，改不改都无所谓。
+	 */
 	memory@80000000 {
 		device_type = "memory";
 		reg = <0x0 0x80000000 0x0 0x20000000>;
