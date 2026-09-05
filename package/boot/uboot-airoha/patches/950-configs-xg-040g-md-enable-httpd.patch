@@ -6,17 +6,28 @@ Turns on the TCP stack and the httpd command added by
 keep the panel LEDs blinking during a flash write (the SPI-NAND layer calls
 schedule() once per page, which is what drives it).
 
+HTTPD_FACTORY_VOLS names the two per-unit volumes the ubi layout keeps
+(ubi_create_board_data in the defenv: ri holds the factory MAC at +0x3e,
+bosa the optics calibration, 0x40000 each), so the page can offer to
+restore them from a backup with an exact-size check.
+
+CMD_HTTPD_STOCK_RESTORE opts this board into the raw flash write.  The
+stock all_flash.bin is 0xEBA0000 bytes and starts at offset 0; the page
+checks nothing beyond "fits the chip".
+
 Must sort after 401-add-nokia-xg-040g-md.patch, which is the patch that
 creates this defconfig in the first place.
 
 --- a/configs/an7581_nokia_xg-040g-md_defconfig
 +++ b/configs/an7581_nokia_xg-040g-md_defconfig
-@@ -41,6 +41,9 @@
+@@ -41,6 +41,11 @@
  CONFIG_CMD_MTD_NAND_WRITE_TEST=y
  CONFIG_CMD_PART=y
  CONFIG_CMD_TFTPSRV=y
 +CONFIG_PROT_TCP=y
 +CONFIG_CMD_HTTPD=y
++CONFIG_HTTPD_FACTORY_VOLS="ri:0x40000 bosa:0x40000"
++CONFIG_CMD_HTTPD_STOCK_RESTORE=y
 +CONFIG_CYCLIC=y
  CONFIG_CMD_RARP=y
  CONFIG_CMD_CDP=y

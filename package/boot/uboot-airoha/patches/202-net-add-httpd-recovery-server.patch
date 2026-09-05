@@ -1,31 +1,52 @@
 From: Loong <1031313955@qq.com>
-Subject: [PATCH] net: add an HTTP recovery server
+Subject: [PATCH] net: add the web recovery server (Airoha Web U-Boot)
 
 The board's documented recovery path is TFTP plus the bootmenu: it needs a
 serial console and a TFTP server on the other machine.  Next to a bricked
 router there is usually just a cable and a browser.
 
-This serves a recovery page on port 80, takes the firmware -- and, for a
-first-time migration, the bootloader -- over multipart/form-data, and hands
-each part to the board's existing environment scripts.
+This serves a recovery page on port 80, takes images over
+multipart/form-data, and hands each one to the board's existing environment
+scripts (or a built-in equivalent when the saved environment predates
+them).  One sidebar entry per task:
+
+  - routine flash: the sysupgrade firmware into fit;
+  - bootloader: BL2 and/or the U-Boot FIP, optionally with the firmware and
+    a rebuild of the ubi partition for a first migration.  A routine FIP
+    update writes fip in place and leaves rootfs_data alone;
+  - back to stock (CONFIG_CMD_HTTPD_STOCK_RESTORE, per board): an image
+    written to the bare flash at an erase-block offset, offset 0 being the
+    whole chip;
+  - UBI volumes: the per-unit factory data volumes named in
+    CONFIG_HTTPD_FACTORY_VOLS, checked for exact size, or any volume by
+    name -- created for the file if it does not exist.  "Stay" keeps the
+    server up afterwards so several can be restored in one sitting;
+  - device details: model, SoC, RAM, flash geometry, partitions, MAC,
+    U-Boot version and the UBI volume table, all read at request time
+    (GET /info).  The page carries no board name, so one copy of it serves
+    every board that enables it;
+  - about.
+
+Everything that can be checked before the upload is answered -- factory
+volume sizes, the raw-write offset and bound, the volume name -- is checked
+then, so a refused upload is refused while the browser is still listening.
 
 Built on U-Boot's own TCP stack, modelled on net/fastboot_tcp.c.  tcboot,
 the third-party bootloader for this device, embeds uIP 0.9 for the same job
 because the U-Boot it forked from had no TCP; that costs ~4000 lines and a
 second IP stack competing for the NIC.  Here tftpboot / dhcp / bootmenu keep
-working untouched, and CONFIG_CMD_HTTPD defaults to n, so nothing changes for
-boards that do not opt in.
+working untouched, and CONFIG_CMD_HTTPD defaults to n.
 
 Notable points:
 
   - rx() receives a stream offset, so the upload lands directly at $loadaddr
-    and a 64 MB image needs no second copy in RAM.  Parts are flashed where
+    and a 235 MB image needs no second copy in RAM.  Parts are flashed where
     they landed, aligned down to 64 bytes first -- the bytes stepped on
     belong to that part's own multipart header, never to the previous part's
     payload.
 
   - Requests are classified in on_rcv_nxt_update() rather than rx(), because
-    the first segment can be shorter than the method name.
+    the first segment can be shorter than the request line.
 
   - A minimal DHCP server hands out one fixed lease.  Without it the user has
     to configure a static address before the page is reachable, which is
@@ -36,21 +57,11 @@ Notable points:
     synchronous, so the blink is driven by the cyclic framework: the SPI-NAND
     layer calls schedule() once per written page.
 
-  - Each flashing step prefers its environment script but carries a built-in
-    equivalent.  The saved environment is itself something recovery has to
-    survive: a board whose ubootenv volume predates these scripts would
-    otherwise fail on the very first step, precisely when there is no other
-    way in.
+  - The page is kept as files/httpd/page.html next to this package and
+    spliced into net/httpd.c by files/httpd/gen.py, one string literal per
+    source line.  Edit the HTML and rerun the script.
 
-  - The bootloader is written before the firmware, so a migration that dies
-    halfway still leaves a board that can be recovered over the network.
-
-  - Flashing progress cannot reach the page: net_loop() has returned by then
-    and run_command() blocks, so there is no channel left.  The page says so
-    and points at the LEDs, and its write plan is labelled a plan, with
-    nothing emphasised as "current".
-
-diff -urN a/include/net-legacy.h b/include/net-legacy.h
+diff -Nur pre/include/net-legacy.h post/include/net-legacy.h
 --- a/include/net-legacy.h
 +++ b/include/net-legacy.h
 @@ -303,8 +303,11 @@
@@ -66,26 +77,54 @@ diff -urN a/include/net-legacy.h b/include/net-legacy.h
  
  /* Indicates whether the file name was specified on the command line */
  extern bool	net_boot_file_name_explicit;
-diff -urN a/net/Kconfig b/net/Kconfig
+diff -Nur pre/net/Kconfig post/net/Kconfig
 --- a/net/Kconfig
 +++ b/net/Kconfig
-@@ -212,6 +212,15 @@
+@@ -212,6 +212,43 @@
  	  Enable a generic tcp framework that allows defining a custom
  	  handler for tcp protocol.
  
 +config CMD_HTTPD
-+	bool "httpd - minimal HTTP recovery server"
-+	depends on PROT_TCP
++	bool "httpd - web recovery server"
++	depends on PROT_TCP && CMD_UBI && CMD_MTD
 +	help
-+	  Start a minimal HTTP server that serves a recovery page on port 80.
-+	  Intended for flashing firmware from a browser without a serial
-+	  console. Built on U-Boot's own TCP stack; no third-party IP stack
-+	  is required.
++	  Start a web recovery server on port 80: one page from which a
++	  browser can flash the firmware, the bootloader, UBI volumes and --
++	  where a board opts in below -- a factory image.  Built on U-Boot's
++	  own TCP stack; no third-party IP stack is required.
++
++	  Nothing board-specific is compiled into the page.  What it shows
++	  about the board is read at request time from the device tree, MTD
++	  and UBI.
++
++config HTTPD_FACTORY_VOLS
++	string "httpd - per-unit factory data volumes"
++	depends on CMD_HTTPD
++	default ""
++	help
++	  UBI volumes holding per-unit factory data that the page offers to
++	  restore from a backup, as space-separated "name:size" pairs with
++	  the size in hex, e.g. "ri:0x40000 bosa:0x40000".  A file is only
++	  written when its length matches the size exactly.  Leave empty on
++	  a board that has no such volumes.
++
++config CMD_HTTPD_STOCK_RESTORE
++	bool "httpd - raw flash write (back to stock)"
++	depends on CMD_HTTPD
++	help
++	  Add a "back to stock" page able to write an image to the bare
++	  flash device at an erase-block offset -- offset 0 with a full dump
++	  puts the factory firmware back and removes this U-Boot with it.
++
++	  The page checks only that the write fits the chip.  It cannot
++	  tell one model's dump from another's, and a wrong image leaves
++	  nothing bootable -- on the one path meant for a board that is
++	  already broken.  So it is off by default and turned on per board.
 +
  config PROT_TCP_SACK
  	bool "TCP SACK support"
  	depends on PROT_TCP
-diff -urN a/net/Makefile b/net/Makefile
+diff -Nur pre/net/Makefile post/net/Makefile
 --- a/net/Makefile
 +++ b/net/Makefile
 @@ -25,6 +25,7 @@
@@ -96,20 +135,39 @@ diff -urN a/net/Makefile b/net/Makefile
  obj-$(CONFIG_CMD_WOL)  += wol.o
  obj-$(CONFIG_PROT_UDP) += udp.o
  obj-$(CONFIG_PROT_TCP) += tcp.o
-diff -urN a/net/httpd.c b/net/httpd.c
+diff -Nur pre/net/httpd.c post/net/httpd.c
 --- a/net/httpd.c
 +++ b/net/httpd.c
-@@ -0,0 +1,1199 @@
+@@ -0,0 +1,1923 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
-+ * HTTP recovery server for U-Boot.
++ * Airoha Web U-Boot -- HTTP recovery server.
 + *
-+ * Serves an upload form on GET and accepts one or more images via
-+ * multipart/form-data on POST: the firmware, and -- for a first-time
-+ * migration -- the bootloader (BL2 and the U-Boot FIP) as well.  Each part is
-+ * flashed where the TCP stream left it, and the flashing itself is delegated
-+ * to the board's existing environment scripts, so no flash logic is
++ * Serves a recovery page on GET and accepts one or more images via
++ * multipart/form-data on POST.  Each part is flashed where the TCP stream
++ * left it, and the flashing itself is delegated to the board's environment
++ * scripts (with a built-in fallback for each), so no flash logic is
 + * duplicated here.
++ *
++ * What the page offers, one task per sidebar entry:
++ *
++ *   routine flash    "firmware" into the fit volume
++ *   bootloader       "bl2" and/or "fip", optionally with the firmware and
++ *                    a rebuild of the whole ubi partition ("format")
++ *   back to stock    "stock" written to raw flash at "stockoff"
++ *                    (CONFIG_CMD_HTTPD_STOCK_RESTORE)
++ *   UBI volumes      per-unit factory data volumes named in
++ *                    CONFIG_HTTPD_FACTORY_VOLS ("fvol_<name>"), or any
++ *                    volume by name ("ubivol" + "ubifile"), created when it
++ *                    does not exist yet; "stay" keeps the server up after
++ *                    the write instead of rebooting
++ *   device details   GET /info, JSON read at request time from the device
++ *                    tree, MTD and UBI -- the page itself carries no board
++ *                    name, so one build of it serves every board
++ *
++ * The page lives in files/httpd/page.html next to this package; gen.py
++ * splices it in between the PAGE_BEGIN / PAGE_END markers below.  Edit the
++ * HTML, rerun the script, never the string literal by hand.
 + *
 + * Built on U-Boot's own TCP stack (net/tcp.c), modelled on net/fastboot_tcp.c.
 + * No third-party IP stack is pulled in, so tftpboot / dhcp / bootmenu keep
@@ -122,28 +180,40 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +#include <dm.h>
 +#include <env.h>
 +#include <led.h>
++#include <mtd.h>
 +#include <net.h>
 +#include <net/tcp.h>
++#include <stdarg.h>
++#include <ubi_uboot.h>
++#include <linux/kernel.h>
++#include <linux/libfdt.h>
++#include <linux/mtd/mtd.h>
 +#include <linux/string.h>
-+#include <version.h>
++#include <asm/global_data.h>
++#include <version_string.h>
 +#include <vsprintf.h>
++#include "../drivers/mtd/ubi/ubi.h"
 +
-+/* Generated at build time; keep the page buildable if it ever moves. */
-+#ifndef U_BOOT_VERSION
-+#define U_BOOT_VERSION		"U-Boot"
-+#endif
++DECLARE_GLOBAL_DATA_PTR;
 +
 +#define HTTPD_PORT		80
 +
++/* Version of the recovery page itself, shown in the sidebar and on the console. */
++#define WEB_VERSION		"0.2.0"
++
++#define PROJECT_HOST		"github.com/Loong1996/ImmortalWrt-Airoha"
++#define PROJECT_URL		"https://" PROJECT_HOST
++#define PORTAL_HOST		"loong1996.github.io/ImmortalWrt-Airoha"
++#define PORTAL_URL		"https://" PORTAL_HOST "/"
++
 +/* Enough for the request line + headers of any sane browser. */
 +#define HDRBUF_SZ		2048
-+/* The trailing "\r\n--boundary--\r\n" lives within this many bytes. */
-+#define TAIL_SCAN		512
 +
 +/* tcp->priv values: per-connection classification. */
 +#define CONN_UNKNOWN		((void *)0)
 +#define CONN_GET		((void *)1)
 +#define CONN_POST		((void *)2)
++#define CONN_INFO		((void *)3)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -157,33 +227,55 @@ diff -urN a/net/httpd.c b/net/httpd.c
 + */
 +#define ENV_WRITE_BL2		"httpd_write_bl2"
 +#define ENV_FORMAT_UBI		"httpd_format_ubi"
-+#define ENV_WRITE_FIP		"ubi_write_fip"
++#define ENV_WRITE_FIP		"httpd_write_fip"
 +#define ENV_WRITE_FIT		"ubi_write_production"
++
++#define UBI_PART		"ubi"
++#define CMD_ATTACH_UBI		"ubi part " UBI_PART
 +
 +#define DEF_WRITE_BL2		"mtd erase bl2 && " \
 +				"mtd write bl2 $loadaddr 0x800 $filesize"
-+#define DEF_FORMAT_UBI		"ubi detach ; mtd erase ubi && ubi part ubi"
-+#define DEF_WRITE_FIP		"ubi check rootfs_data && ubi remove rootfs_data ; " \
-+				"ubi check fip && ubi remove fip ; " \
-+				"ubi create fip 0x100000 static && " \
-+				"ubi write $loadaddr fip $filesize"
++#define DEF_FORMAT_UBI		"ubi detach ; mtd erase " UBI_PART " && " \
++				CMD_ATTACH_UBI
++/*
++ * A routine bootloader update must not touch rootfs_data (the overlay
++ * holding every OpenWrt setting), and does not need to: fip is always
++ * created at the same fixed 0x100000, so an in-place "ubi write" on an
++ * already-existing fip fits inside its own current reservation with
++ * nothing to free.
++ *
++ * ubi_write_fip -- the board's own script, used by the bootmenu entry
++ * immediately followed by reset_factory -- is only reached here when fip
++ * does not exist yet (first migration, before rootfs_data exists either).
++ * That is the one case where its unconditional "evict rootfs_data, then
++ * create" is both necessary and harmless, so it is reused rather than
++ * duplicated.
++ */
++#define DEF_WRITE_FIP		"if ubi check fip ; then " \
++				"ubi write $loadaddr fip $filesize ; " \
++				"else run ubi_write_fip ; fi"
 +#define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
 +				"ubi check rootfs_data && ubi remove rootfs_data ; " \
 +				"ubi create fit $filesize dynamic && " \
 +				"ubi write $loadaddr fit $filesize"
 +
-+#define CMD_ATTACH_UBI		"ubi part ubi"
++/* UBI's own limit is 127; this bounds the on-stack copies. */
++#define UBIVOL_NAME_MAX		64
 +
-+/* Form field names.  Everything except the firmware is optional. */
++/* Form field names. */
 +#define FIELD_BL2		"bl2"
 +#define FIELD_FIP		"fip"
 +#define FIELD_FIT		"firmware"
 +#define FIELD_FORMAT		"format"
++#define FIELD_STOCK		"stock"
++#define FIELD_STOCK_OFF		"stockoff"
++#define FIELD_FVOL_PREFIX	"fvol_"
++#define FIELD_UBIVOL_NAME	"ubivol"
++#define FIELD_UBIVOL_FILE	"ubifile"
++#define FIELD_STAY		"stay"
 +
-+/* Version of the recovery page itself, shown next to the heading. */
-+#define WEB_VERSION		"0.1.2"
-+
-+#define MAX_PARTS		6
++#define MAX_PARTS		12
++#define MAX_FVOLS		8
 +
 +/*
 + * Parts are flashed in place, so their start address is wherever the form
@@ -193,347 +285,480 @@ diff -urN a/net/httpd.c b/net/httpd.c
 + */
 +#define FLASH_ALIGN		64
 +
++/*
++ * ---- the page -------------------------------------------------------------
++ *
++ * Generated from files/httpd/page.html by files/httpd/gen.py.  One board
++ * name does not appear anywhere in it: whatever is board-specific reaches
++ * the browser through GET /info at request time.
++ */
 +static const char resp_form[] =
 +	"HTTP/1.0 200 OK\r\n"
 +	"Content-Type: text/html; charset=utf-8\r\n"
 +	"Connection: close\r\n"
 +	"\r\n"
-+	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
-+	"<script>try{var t=localStorage.getItem('xgtheme');"
-+	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
-+	"<meta name=viewport content='width=device-width,initial-scale=1'>"
-+	"<title>XG-040G-MD 固件恢复</title>"
-+	"<style>"
-+	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
-+	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
-+	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
-+	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
-+	"--wbg:#2a2312;--wln:#8a6d1f}"
-+	"*{box-sizing:border-box}"
-+	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
-+	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
-+	"'PingFang SC','Microsoft YaHei',sans-serif}"
-+	".w{max-width:33rem;margin:0 auto}"
-+	"h1{font-size:1.35rem;margin:0 0 .15rem}"
-+	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
-+	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
-+	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
-+	".f{display:block;margin-bottom:1.1rem}"
-+	".f:last-child{margin-bottom:0}"
-+	".n{font-weight:600}"
-+	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
-+	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
-+	"font-size:.87rem;color:var(--mut)}"
-+	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
-+	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
-+	"b{white-space:nowrap}"
-+	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
-+	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
-+	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
-+	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
-+	"button:disabled{opacity:.5;cursor:progress}"
-+	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
-+	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
-+	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
-+	".mask[data-on]{display:flex}"
-+	".dlg{background:var(--card);border:1px solid var(--line);"
-+	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
-+	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
-+	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
-+	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
-+	".none{color:var(--mut);font-size:.9rem;margin:0}"
-+	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
-+	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
-+	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
-+	".btns button{flex:1}"
-+	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
-+	".danger{background:#b45309}"
-+	"[data-t=dark] .danger{background:#a35a00}"
-+	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
-+	".sr .k{color:var(--mut)}"
-+	".sr .v{font-variant-numeric:tabular-nums}"
-+	".bad{color:#a35a00}"
-+	"[data-t=dark] .bad{color:#e8a33d}"
-+	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
-+	".steps li{padding:.18rem 0}"
-+	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
-+	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
-+	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
-+	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
-+	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
-+	"background-size:1rem 1rem}"
-+	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
-+	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
-+	".pb.ind,.pbi{width:100%;"
-+	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
-+	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
-+	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
-+	"font-variant-numeric:tabular-nums}"
-+	".top{display:flex;align-items:flex-start;justify-content:space-between;"
-+	"gap:1rem;margin-bottom:1.4rem}"
-+	".top .sub{margin-bottom:0}"
-+	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
-+	"line-height:1.3;background:transparent;color:var(--mut);"
-+	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
-+	".tb:hover{color:var(--fg);border-color:var(--mut)}"
-+	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
-+	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
-+	"white-space:nowrap;letter-spacing:.02em}"
-+	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
-+	"td{padding:.3rem 0;vertical-align:top}"
-+	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-+	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
-+	"line-height:1.5}"
-+	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
-+	"word-break:break-all}"
-+	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
-+	"</style>"
-+	"</head><body><div class=w>"
-+	"<div class=top><div>"
-+	"<h1>固件恢复 <span class=ver>Web " WEB_VERSION "</span></h1>"
-+	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
-+	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
-+	"</div>"
-+	"<form method=post enctype=multipart/form-data "
-+	"onsubmit='try{return up(this)}catch(e){return true}'>"
-+	"<div class=c>"
-+	"<label class=f><span class=n>固件</span><br>"
-+	"<span class=h>…-squashfs-sysupgrade.itb</span>"
-+	"<input type=file name=" FIELD_FIT "></label>"
-+	"<details><summary>引导程序（仅首次迁移需要）</summary>"
-+	"<label class=f><span class=n>BL2</span><br>"
-+	"<span class=h>…-preloader.bin</span>"
-+	"<input type=file name=" FIELD_BL2 "></label>"
-+	"<label class=f><span class=n>U-Boot</span><br>"
-+	"<span class=h>…-bl31-uboot.fip</span>"
-+	"<input type=file name=" FIELD_FIP "></label>"
-+	"<div class=warn><label><input type=checkbox name=" FIELD_FORMAT " value=1> "
-+	"<b>先重建 UBI</b> —— 擦掉全部卷，包括出厂 MAC、U-Boot 环境与所有设置。"
-+	"只有从 tcboot / 原厂布局首次迁移时才需要。</label></div>"
-+	"</details></div>"
-+	"<button id=go type=submit>上传并刷写</button>"
-+	"<div class=pw id=pw hidden><div class=pb id=pb></div></div>"
-+	"<p class=ps id=ps hidden></p>"
-+	"</form>"
-+	"<div class=mask id=mask><div class=dlg>"
-+	"<h2>确认写入</h2><div id=dl></div>"
-+	"<div class=btns>"
-+	"<button type=button class=no onclick=hide()>取消</button>"
-+	"<button type=button id=yes onclick=go2()>开始写入</button>"
-+	"</div></div></div>"
-+	"<div class=c><table>"
-+	"<tr><td>流水</td><td>正在等待上传</td></tr>"
-+	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
-+	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
-+	"</table></div>"
-+	"<p class=sub>刷写会清空 rootfs_data，相当于恢复出厂设置。"
-+	"系统还能进的话，请优先用 sysupgrade。</p>"
-+	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
-+	"网页救砖 &middot; "
-+	"<a href='https://github.com/Loong1996/ImmortalWrt-XG-040G-MD' target=_blank rel=noopener>Loong</a>"
-+	"</footer>"
-+	"<script>"
-+	"function tg(){var d=document.documentElement,"
-+	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
-+	"d.setAttribute('data-t',n);"
-+	"try{localStorage.setItem('xgtheme',n)}catch(e){}}"
-+	"var SEL={},BAD=[];"
-+	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB'"
-+	":(n/1024).toFixed(0)+' KiB';}"
-+	"function nameok(k,n){n=n.toLowerCase();"
-+	"return k=='firmware'?n.indexOf('.itb')>0"
-+	":k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin')"
-+	":n.slice(-4)=='.fip';}"
-+	"function scan(){"
-+	"var f=document.forms[0],o='',"
-+	"L={firmware:'固件',bl2:'BL2',fip:'U-Boot'},k,i,n;"
-+	"SEL={};BAD=[];"
-+	"for(k in L){i=f[k];if(!i.files||!i.files.length)continue;"
-+	"n=i.files[0].name;SEL[k]=1;"
-+	"o+='<div class=sr><span class=k>'+L[k]+'</span><span class=v>'+"
-+	"sz(i.files[0].size)+(nameok(k,n)?''"
-+	":' <span class=bad>· 名字对不上</span>')+'</span></div>';"
-+	"if(!nameok(k,n))BAD.push(L[k]);}"
-+	"SEL.fmt=f.format.checked;"
-+	"return o;}"
-+	"function steps(){"
-+	"var e=document.getElementById('steps'),a=[];if(!e)return;"
-+	"if(SEL.bl2)a.push('写入 BL2 到 bl2 分区');"
-+	"if(SEL.fmt)a.push('重建 UBI —— 擦除约 256 MiB，"
-+	"<span class=bad>耗时远长于其他几步，别当成卡死</span>');"
-+	"if(SEL.fip)a.push('写入 U-Boot 到 fip 卷');"
-+	"if(SEL.firmware)a.push('写入固件到 fit 卷');"
-+	"a.push('自动重启');"
-+	"e.innerHTML='<li>'+a.join('</li><li>')+'</li>';}"
-+	"function hide(){"
-+	"document.getElementById('mask').removeAttribute('data-on');}"
-+	"function ask(){"
-+	"var o=scan(),W=[],y=document.getElementById('yes'),h,i;"
-+	"if(BAD.length)W.push(BAD.join('、')+' 的文件名对不上，"
-+	"写错位置可能只能靠串口救回');"
-+	"if(SEL.fmt)W.push('重建 UBI 会擦掉出厂 MAC、U-Boot 环境与全部设置');"
-+	"h=o?'<div class=list>'+o+'</div>'"
-+	":'<p class=none>还没有选择任何文件。</p>';"
-+	"for(i=0;i<W.length;i++)h+='<div class=wr>'+W[i]+'</div>';"
-+	"document.getElementById('dl').innerHTML=h;"
-+	"y.hidden=!o;y.textContent=W.length?'仍要写入':'开始写入';"
-+	"y.className=W.length?'danger':'';"
-+	"document.getElementById('mask').setAttribute('data-on','');}"
-+	"function up(f){ask();return false;}"
-+	"function go2(){hide();send(document.forms[0]);}"
-+	"function send(f){"
-+	"var x=new XMLHttpRequest(),"
-+	"b=document.getElementById('go'),w=document.getElementById('pw'),"
-+	"p=document.getElementById('pb'),s=document.getElementById('ps');"
-+	"b.disabled=true;b.textContent='上传中…';w.hidden=false;s.hidden=false;"
-+	"x.upload.onprogress=function(e){"
-+	"if(!e.lengthComputable)return;"
-+	"var v=e.loaded/e.total*100;p.style.width=v.toFixed(1)+'%';"
-+	"s.textContent='已上传 '+(e.loaded/1048576).toFixed(1)+' / '"
-+	"+(e.total/1048576).toFixed(1)+' MiB（'+v.toFixed(0)+'%）';};"
-+	"x.upload.onload=function(){p.className='pb ind';"
-+	"s.textContent='上传完毕，设备正在校验…';};"
-+	"x.onload=function(){document.open();document.write(x.responseText);"
-+	"document.close();steps();};"
-+	"x.onerror=function(){s.textContent='连接中断，请刷新页面重试';"
-+	"b.disabled=false;b.textContent='上传并刷写';w.hidden=true;"
-+	"p.className='pb';p.style.width='0';};"
-+	"x.open('POST','/');x.send(new FormData(f));return false;}"
-+	"document.addEventListener('keydown',function(e){"
-+	"if(e.key=='Escape')hide();});"
-+	"</script>"
-+	"</div></body></html>";
++/* @@PAGE_BEGIN@@ */
++	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>\n"
++	"<script>try{var t=localStorage.getItem('xgtheme');if(t)document.documentElement.setAttribute('da"
++		"ta-t',t)}catch(e){}</script>\n"
++	"<meta name=viewport content=\"width=device-width,initial-scale=1\">\n"
++	"<title>Airoha Web U-Boot</title>\n"
++	"<style>\n"
++	":root{--bg:#f5f5f7;--side:#ececef;--card:#fff;--fg:#1d1d1f;--c2:#6e6e73;--c3:#aeaeb2;--sep:rgba("
++		"60,60,67,.14);--blue:#0a66d6;--red:#d9342b;--org:#b8500f;--grn:#1f8a3b;--fill:#e8e8ed;--btn:#fff"
++		";--btnb:rgba(0,0,0,.14)}\n"
++	"[data-t=dark]{--bg:#1e1e20;--side:#242426;--card:#2a2a2d;--fg:#f5f5f7;--c2:#a1a1a6;--c3:#6e6e73;"
++		"--sep:rgba(255,255,255,.1);--blue:#2f7ff2;--red:#ff5f57;--org:#f0a04a;--grn:#4cd964;--fill:#3a3a"
++		"3d;--btn:#3a3a3d;--btnb:rgba(255,255,255,.14)}\n"
++	"*{box-sizing:border-box}\n"
++	"html,body{height:100%}\n"
++	"body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5"
++		" -apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"PingFang SC\",\"Microsoft YaHei\",\"Helvetica"
++		" Neue\",sans-serif}\n"
++	"a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}\n"
++	"svg{width:1em;height:1em;vertical-align:-.15em;fill:none;stroke:currentColor;stroke-width:2;stro"
++		"ke-linecap:round;stroke-linejoin:round}\n"
++	".app{display:grid;grid-template-columns:200px minmax(0,1fr);min-height:100%;max-width:1000px;mar"
++		"gin:0 auto;background:var(--bg)}\n"
++	"input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}\n"
++	".pb{border:1px solid var(--btnb);background:var(--btn);color:var(--fg);border-radius:6px;font:in"
++		"herit;padding:.22rem .8rem;cursor:pointer;box-shadow:0 .5px 1px"
++		" rgba(0,0,0,.08);white-space:nowrap}\n"
++	".pb:active{filter:brightness(.94)}\n"
++	".pb.pri{background:var(--blue);color:#fff;border-color:transparent;font-weight:500}\n"
++	".pb:disabled{opacity:.5;cursor:default}\n"
++	".pb.red{background:var(--red);color:#fff;border-color:transparent;font-weight:500}\n"
++	".fn{color:var(--c2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}\n"
++	".fn.has{color:var(--fg)}\n"
++	".fs{color:var(--c3);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:.92em}\n"
++	".sw{appearance:none;-webkit-appearance:none;position:relative;width:26px;height:15px;margin:0;bo"
++		"rder-radius:99px;background:var(--fill);flex:none;cursor:pointer;transition:background"
++		" .2s;box-shadow:inset 0 0 0 1px var(--sep);outline:0}\n"
++	".sw::after{content:\"\";position:absolute;top:1px;left:1px;width:13px;height:13px;border-radius:50"
++		"%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.3);transition:transform .2s}\n"
++	".sw:checked{background:var(--blue);box-shadow:none}.sw:checked::after{transform:translateX(11px)"
++		"}\n"
++	".sw:focus-visible{box-shadow:0 0 0 3px rgba(10,102,214,.35)}\n"
++	".mono{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}\n"
++	".box{background:var(--card);border:1px solid var(--sep);border-radius:9px;overflow:hidden}\n"
++	".bh{font-weight:600;margin:1.1rem 0 .4rem;font-size:.95rem}\n"
++	".bh small{color:var(--c2);font-weight:400;margin-left:.5rem}\n"
++	".fr{display:grid;grid-template-columns:150px minmax(0,1fr);gap:.8rem;align-items:center;padding:"
++		".55rem .9rem;position:relative;min-height:40px}\n"
++	".fr+.fr::before{content:\"\";position:absolute;left:.9rem;right:0;top:0;border-top:1px solid"
++		" var(--sep)}\n"
++	".fr.wide{grid-template-columns:minmax(0,1fr) auto}\n"
++	".fl{font-weight:500}\n"
++	".fl small{display:block;color:var(--c2);font-weight:400;font-size:.88em;line-height:1.3}\n"
++	".fc{display:flex;align-items:center;gap:.6rem;min-width:0}\n"
++	".fc.end{justify-content:flex-end}\n"
++	"input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radi"
++		"us:5px;font:inherit;padding:.22rem .5rem;width:220px;outline:0}\n"
++	"input[type=text]:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}\n"
++	"input::placeholder{color:var(--c3)}\n"
++	".note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}\n"
++	".note b{color:var(--org);font-weight:500}\n"
++	".act{display:flex;align-items:center;justify-content:flex-end;gap:.8rem;margin-top:auto;padding-"
++		"top:1.4rem}\n"
++	".st{color:var(--c2);margin-right:auto;font-variant-numeric:tabular-nums;min-width:0;overflow:hid"
++		"den;text-overflow:ellipsis;white-space:nowrap}\n"
++	".side{background:var(--side);border-right:1px solid var(--sep);padding:.6rem .6rem"
++		" 1rem;display:flex;flex-direction:column}\n"
++	".id{padding:.5rem .6rem 1rem}\n"
++	".id b{display:block;font-size:.98rem}\n"
++	".id small{color:var(--c2)}\n"
++	".nav{border:0;background:transparent;color:var(--fg);font:inherit;width:100%;text-align:left;dis"
++		"play:flex;align-items:center;gap:.55rem;padding:.35rem .5rem;border-radius:6px;cursor:pointer}\n"
++	".nav .ic{width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify"
++		"-content:center;color:#fff;flex:none}\n"
++	".nav .ic svg{width:13px;height:13px}\n"
++	".nav[aria-current]{background:var(--blue);color:#fff}\n"
++	".n1 .ic{background:#0a84ff}.n2 .ic{background:#5e5ce6}.n3 .ic{background:#8e8e93}.n4"
++		" .ic{background:#ff9f0a}.n5 .ic,.n6 .ic{background:#64748b}\n"
++	".nav[aria-current] .ic{background:rgba(255,255,255,.28)}\n"
++	"[data-busy] .nav{opacity:.45;pointer-events:none}\n"
++	".nsep{height:1px;background:var(--sep);margin:.45rem .5rem}\n"
++	".tb{margin-top:auto;align-self:flex-start;border:1px solid"
++		" var(--btnb);background:transparent;color:var(--c2);border-radius:99px;padding:.1rem"
++		" .55rem;font:inherit;font-size:1rem;line-height:1.3;cursor:pointer}\n"
++	".tb:hover{color:var(--fg)}\n"
++	".pane{display:none;padding:1.4rem 1.6rem 1.4rem;min-width:0}\n"
++	".pane[data-on]{display:flex;flex-direction:column;min-height:560px}\n"
++	"h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}\n"
++	".sub{color:var(--c2);margin:0 0 1.1rem}\n"
++	".drop{display:flex;align-items:center;gap:1rem;background:var(--card);border:1.5px dashed"
++		" var(--btnb);border-radius:9px;padding:1rem 1.1rem;cursor:pointer}\n"
++	".drop:hover,.drop.has,.drop.over{border-color:var(--blue);border-style:solid}\n"
++	".drop .ic{width:40px;height:40px;border-radius:9px;background:var(--fill);color:var(--blue);disp"
++		"lay:inline-flex;align-items:center;justify-content:center;flex:none}\n"
++	".drop .ic svg{width:20px;height:20px}\n"
++	".drop .tx{min-width:0;flex:1}\n"
++	".drop .t{font-weight:600;font-size:.98rem;display:flex;min-width:0}\n"
++	".drop .t .fn{display:block}\n"
++	".drop .s{color:var(--c2)}\n"
++	".prog{margin-top:auto;padding-top:1.4rem}\n"
++	".pw{height:6px;border-radius:99px;background:var(--fill);overflow:hidden}\n"
++	".pbar{height:100%;width:0;background:var(--blue);border-radius:99px;transition:width .2s}\n"
++	".pbar.ind{width:100%;animation:pu 1.4s ease-in-out infinite}\n"
++	"@keyframes pu{0%,100%{opacity:.4}50%{opacity:1}}\n"
++	".ps{display:flex;justify-content:space-between;color:var(--c2);margin-top:.4rem;font-variant-num"
++		"eric:tabular-nums}\n"
++	".ps span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n"
++	".ps .pct{flex:none;margin-left:1rem}\n"
++	".prog.ok .pbar{background:var(--grn)}.prog.ok .ps{color:var(--grn)}\n"
++	".prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red)}\n"
++	".kv{width:100%;border-collapse:collapse}\n"
++	".kv td{padding:.5rem .9rem;vertical-align:top;border-top:1px solid"
++		" var(--sep);word-break:break-all}\n"
++	".kv tr:first-child td{border-top:0}\n"
++	".kv td:first-child{width:150px;color:var(--c2);word-break:normal}\n"
++	".kv th{text-align:left;font-weight:500;color:var(--c2);padding:.45rem .9rem;font-size:.92em}\n"
++	".kv .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}\n"
++	".about{display:flex;gap:1rem;align-items:center;background:var(--card);border:1px solid"
++		" var(--sep);border-radius:9px;padding:1.1rem 1.2rem}\n"
++	".about .logo{width:56px;height:56px;border-radius:14px;background:linear-gradient(145deg,#0a84ff"
++		",#5e5ce6);color:#fff;display:flex;align-items:center;justify-content:center;flex:none}\n"
++	".about .logo svg{width:30px;height:30px}\n"
++	".about b{font-size:1.05rem;display:block}\n"
++	".about span{color:var(--c2)}\n"
++	".fin{background:var(--card);border:1px solid var(--sep);border-radius:9px;padding:1rem"
++		" 1.1rem;display:flex;gap:.9rem;align-items:flex-start}\n"
++	".fin .ic{width:36px;height:36px;border-radius:50%;background:var(--grn);color:#fff;display:inlin"
++		"e-flex;align-items:center;justify-content:center;flex:none}\n"
++	".fin .ic svg{width:20px;height:20px;stroke-width:2.5}\n"
++	".fin>div{min-width:0;flex:1}\n"
++	".fin>div>b{display:block;font-size:.98rem;margin:.3rem 0 .5rem}\n"
++	".lt{border-collapse:collapse;width:100%}\n"
++	".lt td{padding:.3rem 0;vertical-align:top;border-top:1px solid var(--sep)}\n"
++	".lt td:first-child{width:4rem;color:var(--c2);font-weight:500}\n"
++	".lt td b{color:var(--red);font-weight:500}\n"
++	".steps{margin:0;padding-left:1.3rem}\n"
++	".steps li{padding:.15rem 0}\n"
++	".steps b{color:var(--org);font-weight:500}\n"
++	".mask{position:fixed;inset:0;background:rgba(0,0,0,.28);display:none;z-index:9;padding:1rem}\n"
++	".mask[data-on]{display:flex}\n"
++	".alert{margin:auto;width:340px;background:var(--card);border-radius:12px;padding:1.2rem 1.2rem"
++		" 1rem;box-shadow:0 24px 60px -10px rgba(0,0,0,.5),0 0 0 1px var(--sep)}\n"
++	".alert .hd{display:flex;align-items:center;gap:.7rem;margin-bottom:.8rem}\n"
++	".alert .mi{width:38px;height:38px;border-radius:9px;background:var(--org);color:#fff;display:inl"
++		"ine-flex;align-items:center;justify-content:center;flex:none}\n"
++	".alert .mi svg{width:20px;height:20px;stroke-width:2.2}\n"
++	".alert h2{font-size:1rem;margin:0}\n"
++	".alert h2 small{display:block;color:var(--c2);font-weight:400;font-size:.85rem}\n"
++	".r{display:flex;justify-content:space-between;gap:1rem;padding:.3rem 0;font-size:.95em}\n"
++	".r+.r{border-top:1px solid var(--sep)}\n"
++	".r span:first-child{color:var(--c2)}\n"
++	".r .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}\n"
++	".w{font-size:.9em;color:var(--org);margin-top:.5rem;line-height:1.45}\n"
++	".w+.w{margin-top:.3rem}\n"
++	".e{font-size:.9em;color:var(--red);margin-top:.5rem;line-height:1.45;font-weight:500}\n"
++	".btns{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}\n"
++	".demo{color:var(--c3);font-size:.85em;margin-top:1.4rem}\n"
++	"@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px"
++		" solid var(--sep)}.pane[data-on]{min-height:0}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem"
++		"}}\n"
++	"</style>\n"
++	"</head><body><div class=app id=app>\n"
++	"<div class=side>\n"
++	"<div class=id><b>Airoha Web U-Boot</b><small>"
++		WEB_VERSION
++		" · Loong</small></div>\n"
++	"<button class=\"nav n1\" data-p=p1 aria-current=true onclick=nav(this)><span class=ic><svg"
++		" viewBox=\"0 0 24 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span>日常刷机</button>\n"
++	"<button class=\"nav n2\" data-p=p2 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M4 6h16M4 12h16M4 18h10\"/></svg></span>引导升级</button>\n"
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	"<button class=\"nav n4\" data-p=p4 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M3 12a9 9 0 1 0 3-6.7M3 4v5h5\"/></svg></span>刷回原厂</button>\n"
++#endif
++	"<button class=\"nav n3\" data-p=p3 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M4 7h16v10H4zM8 7v10M16 7v10\"/></svg></span>创建 UBI 卷</button>\n"
++	"<div class=nsep></div>\n"
++	"<button class=\"nav n5\" data-p=p5 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><rect x=\"4\" y=\"5\" width=\"16\" height=\"12\" rx=\"2\"/><path d=\"M8 21h8M12"
++		" 17v4\"/></svg></span>设备详情</button>\n"
++	"<button class=\"nav n6\" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v5M12 8h.01\"/></svg></span>关于</button>\n"
++	"<button type=button class=tb onclick=tg() title=\"切换深浅色\">&#9680;</button>\n"
++	"</div>\n"
++	"<form method=post enctype=multipart/form-data onsubmit=\"return ask()\">\n"
++	"<div class=pane id=p1 data-on>\n"
++	"<h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>\n"
++	"<label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span><span class=tx><span class=t><span"
++		" class=fn style=\"color:inherit\">选择固件文件</span></span><span class=\"s"
++		" mono\">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>\n"
++	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++		" pri\">上传并刷写</button></div>\n"
++	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
++	"</div>\n"
++	"<div class=pane id=p2>\n"
++	"<h1>引导升级</h1><p class=sub>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p>\n"
++	"<div class=box>\n"
++	"<div class=fr><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label"
++		" class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span"
++		" class=fn>未选择</span></label></div>\n"
++	"<div class=fr><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label"
++		" class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span"
++		" class=fn>未选择</span></label></div>\n"
++	"<div class=fr><span class=fl>固件<small>可选，同时写入</small></span><label class=fc><input type=file"
++		" name=firmware data-l=固件><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
++	"</div>\n"
++	"<p class=bh>首次迁移</p>\n"
++	"<div class=box>\n"
++	"<div class=\"fr wide\"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot"
++		" 环境与用户配置将丢失</small></span><span class=\"fc end\"><input type=checkbox class=sw name=format"
++		" value=1></span></div>\n"
++	"</div>\n"
++	"<p class=note>仅升级 U-Boot 时无需重建 UBI，只选择 U-Boot 文件即可，rootfs_data 保留。</p>\n"
++	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++		" pri\">上传并刷写</button></div>\n"
++	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
++	"</div>\n"
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	"<div class=pane id=p4>\n"
++	"<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL"
++		" 串口。</p>\n"
++	"<div class=box>\n"
++	"<div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label"
++		" class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span"
++		" class=fn>未选择</span></label></div>\n"
++	"<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input"
++		" type=text name=stockoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0"
++		" 为整片；也可只写某个分区</span></span></div>\n"
++	"</div>\n"
++	"<p class=note>镜像须来自本机备份。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。偏移加镜像长度不得超过 flash"
++		" 容量；整片写入耗时显著长于固件写入。</p>\n"
++	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++		" pri\">上传并刷写</button></div>\n"
++	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
++	"</div>\n"
++#endif
++	"<div class=pane id=p3>\n"
++	"<h1>创建 UBI 卷</h1><p class=sub>按卷名写入 UBI 卷，卷不存在时按文件长度创建。物理位置由 UBI 层管理，不涉及 bl2 分区。</p>\n"
++	"<div id=fvh hidden><p class=bh>出厂数据<small>文件须来自本机备份，可同时写入</small></p><div class=box"
++		" id=fv></div></div>\n"
++	"<p class=bh>任意卷<small>卷名错误将覆盖对应卷的内容</small></p>\n"
++	"<div class=box>\n"
++	"<div class=fr><span class=fl>卷名</span><span class=fc><input type=text name=ubivol"
++		" placeholder=\"如 fip、fit\" pattern=\"[A-Za-z0-9_.-]{1,63}\"><span class=fn>仅限字母、数字与 _ -"
++		" .</span></span></div>\n"
++	"<div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile"
++		" data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
++	"</div>\n"
++	"<div class=box style=\"margin-top:1rem\">\n"
++	"<div class=\"fr wide\"><span class=fl>写入后不重启<small>连续写入多个卷时使用；完成后刷新页面继续</small></span><span"
++		" class=\"fc end\"><input type=checkbox class=sw name=stay value=1></span></div>\n"
++	"</div>\n"
++	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++		" pri\">上传并刷写</button></div>\n"
++	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
++	"</div>\n"
++	"<div class=pane id=p5>\n"
++	"<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>\n"
++	"<div class=box><table class=kv id=dev><tr><td colspan=2 class=c2>正在读取…</td></tr></table></div>\n"
++	"<p class=bh>UBI 卷<small id=ubih></small></p>\n"
++	"<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>\n"
++	"</div>\n"
++	"<div class=pane id=p6>\n"
++	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
++	"<div class=about><span class=logo><svg viewBox=\"0 0 24 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4"
++		" 20h16\"/></svg></span><div><b>Airoha Web U-Boot</b><span>"
++		WEB_VERSION
++		" · Loong</span></div></div>\n"
++	"<div class=box style=\"margin-top:1rem\"><table class=kv>\n"
++	"<tr><td>作者</td><td>Loong</td></tr>\n"
++	"<tr><td>项目主页</td><td><a href=\""
++		PROJECT_URL
++		"\" target=_blank rel=noopener>"
++		PROJECT_HOST
++		"</a></td></tr>\n"
++	"<tr><td>门户</td><td><a href=\""
++		PORTAL_URL
++		"\" target=_blank rel=noopener>"
++		PORTAL_HOST
++		"</a></td></tr>\n"
++	"<tr><td>问题反馈</td><td><a href=\""
++		PROJECT_URL
++		"/issues\" target=_blank rel=noopener>Issues</a></td></tr>\n"
++	"<tr><td>基于</td><td id=based>U-Boot</td></tr>\n"
++	"</table></div>\n"
++	"</div>\n"
++	"<div class=pane id=p7>\n"
++	"<h1>上传完成</h1><p class=sub>本页面已无作用，可以关闭，网线也可断开。设备正在自行写入，完成后自动重启。</p>\n"
++	"<div class=fin><span class=ic><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5L20"
++		" 7\"/></svg></span><div><b>接下来只需看设备面板</b>\n"
++	"<table class=lt><tr><td>齐闪</td><td>正在写入，<b>请勿断电</b></td></tr><tr><td>熄灭</td><td>写入完成，自动重启；约 1–2"
++		" 分钟后可重新连接</td></tr></table></div></div>\n"
++	"<p class=bh>本次写入步骤</p>\n"
++	"<div class=box style=\"padding:.7rem 1rem\"><ol class=steps id=steps></ol></div>\n"
++	"</div>\n"
++	"</form>\n"
++	"<div class=mask id=mask onclick=\"if(event.target===this)hide()\"><div class=alert>\n"
++	"<div class=hd><span class=mi><svg viewBox=\"0 0 24 24\"><path d=\"M12 9v4M12 17h.01M10.3 3.9L2.4"
++		" 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4"
++		" 0z\"/></svg></span><h2>确认写入<small id=atitle></small></h2></div>\n"
++	"<div id=abody></div>\n"
++	"<div class=btns><button type=button class=pb onclick=hide()>取消</button><button type=button"
++		" class=\"pb red\" id=yes onclick=go()>仍要写入</button></div>\n"
++	"</div></div>\n"
++	"</div>\n"
++	"<script>\n"
++	"var INFO=null,FV=[],SENT=null;\n"
++	"function $(s,r){return (r||document).querySelector(s)}\n"
++	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
++	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
++		".setAttribute('data-t',n);try{localStorage.setItem('xgtheme',n)}catch(e){}}\n"
++	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?(n/1024).toFixed(0)+'"
++		" KiB':n+' B'}\n"
++	"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;"
++		"')}\n"
++	"function pane(){return $('.pane[data-on]')}\n"
++	"function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else"
++		" p.removeAttribute('data-on')})}\n"
++	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
++		"se x.removeAttribute('aria-current')});show(b.getAttribute('data-p'));if(b.getAttribute('data-p'"
++		")=='p5'&&!INFO)info()}\n"
++	"function files(p){return $$('input[type=file]',p).filter(function(i){return"
++		" i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files["
++		"0]}})}\n"
++	"function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent"
++		"=f.name;fn.classList.add('has');lab.classList.add('has');var"
++		" s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBef"
++		"ore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}\n"
++	"function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var"
++		" fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选"
++		" '+fs.length+' 个文件 · '+sz(n):'还没有选择文件'}\n"
++	"function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)}});$$"
++		"('.drop').forEach(function(d){d.ondragover=function(e){e.preventDefault();d.classList.add('over'"
++		")};d.ondragleave=function(){d.classList.remove('over')};d.ondrop=function(e){e.preventDefault();"
++		"d.classList.remove('over');var i=$('input[type=file]',d);if(e.dataTransfer.files.length){try{i.f"
++		"iles=e.dataTransfer.files;onfile(i)}catch(x){}}}})}\n"
++	"function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return"
++		" parseInt(v,16)}\n"
++	"function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span"
++		" class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input"
++		" type=file name=\"fvol_'+esc(v.n)+'\" data-l=\"'+esc(v.n)+'\"><span class=pb>选择文件…</span><span"
++		" class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}\n"
++	"function info(){var x=new XMLHttpRequest();x.onload=function(){try{INFO=JSON.parse(x.responseTex"
++		"t)}catch(e){INFO=null}fill()};x.onerror=function(){INFO=null;fill()};x.open('GET','/info');x.sen"
++		"d()}\n"
++	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;if(!INFO){d.innerHTML='<tr><td"
++		" colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
++	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
++		"FO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页"
++		" '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+'"
++		" 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' ·"
++		" ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];\n"
++	"rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td"
++		" class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;\n"
++	"if(INFO.uboot)$('#based').textContent=INFO.uboot;\n"
++	"FV=INFO.fv||[];fvrows();\n"
++	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
++	"$('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;\n"
++	"h='<tr><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
++	"(INFO.ubi.vols||[]).forEach(function(v){h+='<tr><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
++		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
++	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
++		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
++	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+'"
++		" 起的区域':'擦除整片 flash');a.push('写入镜像 —— <b>耗时最长，请勿断电</b>');a.push('自动重启');return a}\n"
++	"if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入"
++		" '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+'"
++		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}\n"
++	"if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI —— 擦除 ubi"
++		" 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip"
++		" 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}\n"
++	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
++	"$('#atitle').textContent=$('h1',p).textContent;\n"
++	"if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E."
++		"push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+'"
++		" 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移"
++		" 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader"
++		" 及其后全部内容'));if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}\n"
++	"if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return"
++		" r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^"
++		"[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+'"
++		" 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动断电重启')}\n"
++	"if(p.id=='p2'){if($('[name=format]',p).checked)W.push('重建 UBI 将清除出厂 MAC、U-Boot"
++		" 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或"
++		" U-Boot，本次只写入固件')}\n"
++	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
++		" 将被清空');\n"
++	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
++		" class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' ·"
++		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});\n"
++	"if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';\n"
++	"E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div"
++		" class=w>'+x+'</div>'});\n"
++	"$('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribute('data-on','');"
++		"return false}\n"
++	"function nameok(k,n){n=n.toLowerCase();return k=='firmware'?n.indexOf('.itb')>0:k=='bl2'?(n.inde"
++		"xOf('preloader')>=0||n.slice(-4)=='.bin'):k=='fip'?n.slice(-4)=='.fip':k=='stock'?n.slice(-4)=='"
++		".bin':true}\n"
++	"function hide(){$('#mask').removeAttribute('data-on')}\n"
++	"function go(){hide();send()}\n"
++	"function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new"
++		" XMLHttpRequest(),prog=$('.prog',p),bar=$('.pbar',prog),btn=$('button[type=submit]',p),tot=0,i;\n"
++	"$$('input[type=text]',p).forEach(function(t){if(t.value.trim())fd.append(t.name,t.value.trim())}"
++		");\n"
++	"$$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});\n"
++	"rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});\n"
++	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked)};\n"
++	"$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent='上传中…';prog.hidden=fals"
++		"e;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
++	"x.upload.onprogress=function(e){if(!e.lengthComputable)return;var"
++		" done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;"
++		"if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}\n"
++	"bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent='正在上传"
++		" '+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' ·"
++		" '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);$('.pct',prog).textContent=sz(done)+'"
++		" / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'};\n"
++	"x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent='上传完成，设备正在校验…';"
++		"$('.pct',prog).textContent=''};\n"
++	"x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};\n"
++	"x.onerror=function(){fail('连接中断，请检查网线后重试')};\n"
++	"x.open('POST','/');x.send(fd)}\n"
++	"function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeA"
++		"ttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog)"
++		".style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=fa"
++		"lse;btn.textContent='上传并刷写'}\n"
++	"function done(){var p=SENT.p,rows=SENT.rows;if(SENT.stay){var"
++		" prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.cl"
++		"assName='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat'"
++		",prog).textContent='已上传 '+rows.map(function(r){return"
++		" r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
++		"Content='上传并刷写';clear(p);return}\n"
++	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';show('p7')}\n"
++	"function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var"
++		" lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classLis"
++		"t.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode"
++		".removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''"
++		"});refresh()}\n"
++	"document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});\n"
++	"bind();info();\n"
++	"</script>\n"
++	"</body></html>\n"
++/* @@PAGE_END@@ */
++	;
 +
-+static const char resp_done[] =
++/* Sent once the upload has been staged; the page switches views on it. */
++static const char resp_ok[] =
 +	"HTTP/1.0 200 OK\r\n"
-+	"Content-Type: text/html; charset=utf-8\r\n"
++	"Content-Type: application/json\r\n"
 +	"Connection: close\r\n"
 +	"\r\n"
-+	"<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>"
-+	"<script>try{var t=localStorage.getItem('xgtheme');"
-+	"if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>"
-+	"<meta name=viewport content='width=device-width,initial-scale=1'>"
-+	"<title>正在写入</title>"
-+	"<style>"
-+	":root{--bg:#f4f6f8;--fg:#1b1f24;--card:#fff;--line:#dde3ea;"
-+	"--ac:#2563eb;--mut:#6b7280;--wbg:#fff8e1;--wln:#e5b567}"
-+	"[data-t=dark]{--bg:#0d1117;--fg:#e6edf3;"
-+	"--card:#161b22;--line:#30363d;--ac:#388bfd;--mut:#8b949e;"
-+	"--wbg:#2a2312;--wln:#8a6d1f}"
-+	"*{box-sizing:border-box}"
-+	"body{margin:0;padding:2rem 1rem;background:var(--bg);color:var(--fg);"
-+	"font:15px/1.7 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,"
-+	"'PingFang SC','Microsoft YaHei',sans-serif}"
-+	".w{max-width:33rem;margin:0 auto}"
-+	"h1{font-size:1.35rem;margin:0 0 .15rem}"
-+	".sub{color:var(--mut);font-size:.87rem;margin:0 0 1.4rem}"
-+	".c{background:var(--card);border:1px solid var(--line);border-radius:10px;"
-+	"padding:1.1rem 1.2rem;margin-bottom:1rem}"
-+	".f{display:block;margin-bottom:1.1rem}"
-+	".f:last-child{margin-bottom:0}"
-+	".n{font-weight:600}"
-+	".h{color:var(--mut);font-size:.83rem;font-family:ui-monospace,Menlo,monospace}"
-+	"input[type=file]{display:block;width:100%;margin-top:.45rem;font:inherit;"
-+	"font-size:.87rem;color:var(--mut)}"
-+	"summary{cursor:pointer;font-weight:600;color:var(--mut)}"
-+	"details[open] summary{margin-bottom:1rem;color:var(--fg)}"
-+	"b{white-space:nowrap}"
-+	".warn{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
-+	"padding:.7rem .85rem;font-size:.87rem;margin-top:.5rem}"
-+	"button{width:100%;padding:.85rem;font:inherit;font-weight:600;color:#fff;"
-+	"background:var(--ac);border:0;border-radius:9px;cursor:pointer}"
-+	"button:disabled{opacity:.5;cursor:progress}"
-+	".pw{height:12px;background:var(--line);border-radius:99px;overflow:hidden;"
-+	"margin-top:.9rem;box-shadow:inset 0 1px 2px rgba(0,0,0,.18)}"
-+	".mask{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;"
-+	"align-items:center;justify-content:center;padding:1rem;z-index:9}"
-+	".mask[data-on]{display:flex}"
-+	".dlg{background:var(--card);border:1px solid var(--line);"
-+	"border-radius:12px;padding:1.15rem 1.25rem;max-width:26rem;width:100%;"
-+	"box-shadow:0 24px 60px -24px rgba(0,0,0,.6)}"
-+	".dlg h2{margin:0 0 .55rem;font-size:1.02rem}"
-+	".list{font-size:.87rem;border-top:1px solid var(--line);padding-top:.5rem}"
-+	".none{color:var(--mut);font-size:.9rem;margin:0}"
-+	".wr{background:var(--wbg);border:1px solid var(--wln);border-radius:8px;"
-+	"padding:.6rem .75rem;font-size:.86rem;margin-top:.6rem}"
-+	".btns{display:flex;gap:.6rem;margin-top:1.1rem}"
-+	".btns button{flex:1}"
-+	".no{background:transparent;color:var(--mut);border:1px solid var(--line)}"
-+	".danger{background:#b45309}"
-+	"[data-t=dark] .danger{background:#a35a00}"
-+	".sr{display:flex;justify-content:space-between;gap:1rem;padding:.2rem 0}"
-+	".sr .k{color:var(--mut)}"
-+	".sr .v{font-variant-numeric:tabular-nums}"
-+	".bad{color:#a35a00}"
-+	"[data-t=dark] .bad{color:#e8a33d}"
-+	".steps{margin:1rem 0 0;padding-left:1.35rem;font-size:.88rem;color:var(--mut)}"
-+	".steps li{padding:.18rem 0}"
-+	".plan{margin:1rem 0 0;color:var(--mut);font-size:.85rem}"
-+	".pb,.pbi{height:100%;border-radius:99px;background:var(--ac);"
-+	"background-image:linear-gradient(45deg,rgba(255,255,255,.22) 25%,"
-+	"transparent 25%,transparent 50%,rgba(255,255,255,.22) 50%,"
-+	"rgba(255,255,255,.22) 75%,transparent 75%,transparent);"
-+	"background-size:1rem 1rem}"
-+	".pb{width:0;animation:st 1s linear infinite;transition:width .25s ease-out}"
-+	"@keyframes st{from{background-position:0 0}to{background-position:1rem 0}}"
-+	".pb.ind,.pbi{width:100%;"
-+	"animation:st 1s linear infinite,pu 1.4s ease-in-out infinite}"
-+	"@keyframes pu{0%,100%{opacity:.45}50%{opacity:1}}"
-+	".ps{text-align:center;margin:.55rem 0 0;color:var(--mut);font-size:.88rem;"
-+	"font-variant-numeric:tabular-nums}"
-+	".top{display:flex;align-items:flex-start;justify-content:space-between;"
-+	"gap:1rem;margin-bottom:1.4rem}"
-+	".top .sub{margin-bottom:0}"
-+	".tb{width:auto;flex:none;padding:.25rem .6rem;font-size:1.05rem;"
-+	"line-height:1.3;background:transparent;color:var(--mut);"
-+	"border:1px solid var(--line);border-radius:99px;cursor:pointer}"
-+	".tb:hover{color:var(--fg);border-color:var(--mut)}"
-+	".ver{font-size:.68rem;font-weight:600;color:var(--ac);border:1px solid;"
-+	"border-radius:99px;padding:.08rem .5rem;vertical-align:.15em;"
-+	"white-space:nowrap;letter-spacing:.02em}"
-+	"table{width:100%;border-collapse:collapse;font-size:.88rem}"
-+	"td{padding:.3rem 0;vertical-align:top}"
-+	"td:first-child{width:5.5rem;color:var(--mut);white-space:nowrap}"
-+	"footer{text-align:center;color:var(--mut);font-size:.83rem;margin-top:1.6rem;"
-+	"line-height:1.5}"
-+	"footer .v{font-family:ui-monospace,Menlo,monospace;font-size:.78rem;"
-+	"word-break:break-all}"
-+	"a{color:var(--ac);text-decoration:none}a:hover{text-decoration:underline}"
-+	"</style>"
-+	"</head><body><div class=w>"
-+	"<div class=top><div>"
-+	"<h1>已收到 <span class=ver>Web " WEB_VERSION "</span></h1>"
-+	"<p class=sub>Nokia XG-040G-MD &middot; U-Boot 恢复模式</p></div>"
-+	"<button type=button class=tb onclick=tg() title='切换深浅色'>&#9680;</button>"
-+	"</div>"
-+	"<div class=c><table>"
-+	"<tr><td>齐闪</td><td><b>正在写入，请勿断电</b></td></tr>"
-+	"<tr><td>熄灭</td><td>写完了，正在自动重启</td></tr>"
-+	"</table>"
-+	"<div class=pw><div class=pbi></div></div>"
-+	"<p class=ps>写入期间页面收不到任何消息，进度以面板灯为准</p>"
-+	"<p class=plan>接下来会依次做：</p>"
-+	"<ol class=steps id=steps></ol></div>"
-+	"<div class=warn>接下来看设备面板，不用管这个页面 —— "
-+	"网线现在拔掉也没关系，写入不经过网络。"
-+	"<b>唯一要紧的是别断电。</b></div>"
-+	"<footer><span class=v>" U_BOOT_VERSION "</span><br>"
-+	"网页救砖 &middot; "
-+	"<a href='https://github.com/Loong1996/ImmortalWrt-XG-040G-MD' target=_blank rel=noopener>Loong</a>"
-+	"</footer>"
-+	"<script>function tg(){var d=document.documentElement,"
-+	"n=d.getAttribute('data-t')=='dark'?'light':'dark';"
-+	"d.setAttribute('data-t',n);"
-+	"try{localStorage.setItem('xgtheme',n)}catch(e){}}</script>"
-+	"</div></body></html>";
++	"{\"ok\":1}";
 +
-+static const char resp_400[] =
-+	"HTTP/1.0 400 Bad Request\r\n"
-+	"Content-Type: text/plain; charset=utf-8\r\n"
-+	"Connection: close\r\n"
-+	"\r\n"
-+	"Could not parse the upload.\n";
++/* 400 with the reason as the body, which the page shows verbatim. */
++static char resp_reject[512];
++
++/* GET /info: JSON built per request, at most this long. */
++static char info_buf[3072];
 +
 +/* State of the single in-flight upload. */
 +static int	up_active;	/* a POST connection has been accepted */
@@ -550,7 +775,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +
 +/* One uploaded form field whose payload is non-empty. */
 +struct up_part {
-+	char	name[24];
++	char	name[40];
 +	ulong	addr;
 +	u32	size;
 +};
@@ -558,19 +783,86 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +static struct up_part	up_parts[MAX_PARTS];
 +static int		up_nparts;
 +
++/* Set from the form during httpd_flash(); read once it has returned. */
++static int		flash_stay;
++
++/*
++ * Per-unit factory data that the ubi layout keeps as UBI volumes, from
++ * CONFIG_HTTPD_FACTORY_VOLS: "name:size name:size ...".  Their exact size is
++ * checked before anything is written -- a wrong file must not get near the
++ * volume holding the factory MAC.
++ */
++struct fvol {
++	char	name[UBIVOL_NAME_MAX];
++	u32	size;
++};
++
++static struct fvol	fvols[MAX_FVOLS];
++static int		nfvols;
++
 +/*
 + * Cached once per httpd invocation: env_get_hex() walks the whole environment,
 + * and rx() is called for every single segment of a multi-megabyte upload.
 + */
 +static ulong up_base;
 +
-+/* Refuse anything that would not plausibly fit in RAM above $loadaddr. */
-+#define UPLOAD_MAX	(96 << 20)
++/*
++ * The upload lands at $loadaddr and is flashed from where it landed, so the
++ * ceiling is where U-Boot itself begins -- not the top of DRAM, which is
++ * where it relocated its code, malloc arena, FDT and stack to.  The bottom
++ * edge of all that is gd->start_addr_sp, and the stack grows down from
++ * there, which is what the margin is for.  A factory all_flash.bin is
++ * 235.6 MiB and still clears this on a 512 MiB board; a fixed limit would
++ * either forbid it outright or let a larger file run into U-Boot.
++ */
++#define UPLOAD_MARGIN	(2 << 20)
++
++static ulong upload_max(void)
++{
++	ulong top = gd->start_addr_sp;
++
++	if (up_base + UPLOAD_MARGIN >= top)
++		return 0;
++
++	return top - up_base - UPLOAD_MARGIN;
++}
++
++static void fvols_parse(void)
++{
++#ifdef CONFIG_HTTPD_FACTORY_VOLS
++	const char *p = CONFIG_HTTPD_FACTORY_VOLS;
++
++	nfvols = 0;
++	while (*p && nfvols < MAX_FVOLS) {
++		struct fvol *v = &fvols[nfvols];
++		int n = 0;
++
++		while (*p == ' ' || *p == ',')
++			p++;
++		while (*p && *p != ':' && *p != ' ' && *p != ',' &&
++		       n < UBIVOL_NAME_MAX - 1)
++			v->name[n++] = *p++;
++		v->name[n] = '\0';
++		v->size = 0;
++		if (*p == ':') {
++			char *e;
++
++			v->size = hextoul(p + 1, &e);
++			p = e;
++		}
++		while (*p && *p != ' ' && *p != ',')
++			p++;
++		if (n && v->size)
++			nfvols++;
++	}
++#endif
++}
 +
 +/*
 + * Panel feedback.  Recovery is a mode the user enters without a serial
 + * console, so the front LEDs are the only way to tell them the board is
-+ * waiting for an upload rather than dead.
++ * waiting for an upload rather than dead.  Labels that do not exist on a
++ * board are skipped.
 + */
 +#if CONFIG_IS_ENABLED(LED)
 +static const char * const led_chase[] = {
@@ -639,7 +931,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 + * Flashing is synchronous, so net_loop()'s timeout handler is no longer
 + * running and the chase above cannot drive the panel.  The SPI-NAND layer
 + * calls schedule() once per written page, and that is what ticks the cyclic
-+ * framework -- so this keeps blinking even in the middle of a 64 MB write.
++ * framework -- so this keeps blinking even in the middle of a 235 MB write.
 + */
 +static void httpd_blink(struct cyclic_info *c)
 +{
@@ -665,9 +957,6 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +static inline void httpd_led_stop(void) { }
 +static inline void httpd_blink_start(void) { }
 +static inline void httpd_blink_stop(void) { }
-+static inline void led_all(int state) { }
-+#define LEDST_ON	0
-+#define LEDST_OFF	0
 +#endif
 +
 +/*
@@ -826,6 +1115,190 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	return -1;
 +}
 +
++/* The bare flash device: the one MTD that is not somebody's partition. */
++static struct mtd_info *flash_master(void)
++{
++	struct mtd_info *mtd;
++
++	mtd_probe_devices();
++	mtd_for_each_device(mtd)
++		if (!mtd_is_partition(mtd))
++			return mtd;
++
++	return NULL;
++}
++
++/*
++ * ---- GET /info -----------------------------------------------------------
++ *
++ * Everything the page shows about the board, read when asked rather than
++ * baked in at build time.  Attaching UBI here is what the boot script would
++ * have done anyway; on a board with no UBI yet the field is simply null.
++ */
++static int json_str(char *b, int max, const char *s)
++{
++	int n = 0;
++
++	if (max < 3)
++		return 0;
++	b[n++] = '"';
++	for (; *s && n < max - 3; s++) {
++		if (*s == '"' || *s == '\\')
++			b[n++] = '\\';
++		b[n++] = ((unsigned char)*s < 0x20) ? ' ' : *s;
++	}
++	b[n++] = '"';
++	b[n] = '\0';
++
++	return n;
++}
++
++static int httpd_info(void)
++{
++	static char part_name[] = UBI_PART;
++	struct mtd_info *master;
++	const char *s;
++	int n, len, i, first;
++
++#define P(...)	do {							\
++	if (n < (int)sizeof(info_buf))					\
++		n += snprintf(info_buf + n, sizeof(info_buf) - n,	\
++			      __VA_ARGS__);				\
++} while (0)
++#define S(str)	do {							\
++	if (n < (int)sizeof(info_buf))					\
++		n += json_str(info_buf + n, sizeof(info_buf) - n, str);	\
++} while (0)
++
++	n = 0;
++	P("HTTP/1.0 200 OK\r\n"
++	  "Content-Type: application/json; charset=utf-8\r\n"
++	  "Connection: close\r\n"
++	  "\r\n"
++	  "{\"web\":\"" WEB_VERSION "\",\"model\":");
++
++	s = fdt_getprop(gd->fdt_blob, 0, "model", NULL);
++	S(s ? s : "");
++
++	/* The root compatible list ends with the SoC. */
++	P(",\"soc\":");
++	s = fdt_getprop(gd->fdt_blob, 0, "compatible", &len);
++	if (s && len > 0) {
++		const char *p = s, *last = s;
++
++		while (p < s + len && *p) {
++			last = p;
++			p += strlen(p) + 1;
++		}
++		S(last);
++	} else {
++		S("");
++	}
++
++	P(",\"ram\":%llu", (unsigned long long)gd->ram_size);
++
++	P(",\"mac\":\"%pM\"", net_ethaddr);
++	P(",\"uboot\":");
++	S(version_string);
++
++	master = flash_master();
++	if (master) {
++		struct mtd_info *part;
++
++		P(",\"flash\":{\"name\":");
++		S(master->name);
++		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
++		  (unsigned long long)master->size, master->erasesize,
++		  master->writesize);
++		first = 1;
++		list_for_each_entry(part, &master->partitions, node) {
++			P("%s{\"n\":", first ? "" : ",");
++			S(part->name);
++			P(",\"o\":%llu,\"s\":%llu}",
++			  (unsigned long long)part->offset,
++			  (unsigned long long)part->size);
++			first = 0;
++		}
++		P("]");
++	}
++
++	P(",\"stock\":%d", IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE) ? 1 : 0);
++
++	P(",\"fv\":[");
++	for (i = 0; i < nfvols; i++) {
++		P("%s{\"n\":", i ? "," : "");
++		S(fvols[i].name);
++		P(",\"s\":%u}", fvols[i].size);
++	}
++	P("]");
++
++	if (!ubi_part(part_name, NULL)) {
++		struct ubi_device *ubi = ubi_get_device(0);
++
++		if (ubi) {
++			P(",\"ubi\":{\"leb\":%d,\"pebs\":%d,\"vols\":[",
++			  ubi->leb_size, ubi->good_peb_count);
++			first = 1;
++			for (i = 0; i < ubi->vtbl_slots; i++) {
++				struct ubi_volume *v = ubi->volumes[i];
++
++				if (!v)
++					continue;
++				P("%s{\"n\":", first ? "" : ",");
++				S(v->name);
++				P(",\"t\":\"%s\",\"s\":%lld,\"u\":%lld}",
++				  v->vol_type == UBI_DYNAMIC_VOLUME ?
++				  "dynamic" : "static",
++				  (long long)v->reserved_pebs * ubi->leb_size,
++				  v->used_bytes);
++				first = 0;
++			}
++			P("]}");
++			ubi_put_device(ubi);
++		} else {
++			P(",\"ubi\":null");
++		}
++	} else {
++		P(",\"ubi\":null");
++	}
++
++	P("}");
++#undef P
++#undef S
++
++	if (n >= (int)sizeof(info_buf)) {
++		printf("httpd: /info truncated at %d bytes\n", n);
++		n = sizeof(info_buf) - 1;
++	}
++
++	return n;
++}
++
++static int info_len;
++
++/*
++ * ---- upload --------------------------------------------------------------
++ */
++
++/* Answer 400 with the reason; the page shows it under the progress bar. */
++static void httpd_reject(const char *fmt, ...)
++{
++	va_list ap;
++	int n;
++
++	n = snprintf(resp_reject, sizeof(resp_reject),
++		     "HTTP/1.0 400 Bad Request\r\n"
++		     "Content-Type: text/plain; charset=utf-8\r\n"
++		     "Connection: close\r\n"
++		     "\r\n");
++	va_start(ap, fmt);
++	vsnprintf(resp_reject + n, sizeof(resp_reject) - n, fmt, ap);
++	va_end(ap);
++
++	printf("httpd: rejecting upload: %s\n", resp_reject + n);
++	up_failed = 1;
++}
++
 +/*
 + * Parse the request headers, which sit at the very beginning of the stream
 + * (already stored at $loadaddr).  Only called once enough contiguous bytes
@@ -851,7 +1324,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +
 +	p = strstr(hdr, "Content-Length:");
 +	if (!p) {
-+		up_failed = 1;
++		httpd_reject("missing Content-Length");
 +		return;
 +	}
 +	p += 15;
@@ -864,15 +1337,15 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	while (*p == ' ' || *p == '\t')
 +		p++;
 +	clen = simple_strtoul(p, NULL, 10);
-+	if (!clen || clen > UPLOAD_MAX) {
-+		printf("httpd: refusing %lu byte upload\n", clen);
-+		up_failed = 1;
++	if (!clen || clen > upload_max()) {
++		httpd_reject("upload is %lu bytes, at most %lu fit in RAM",
++			     clen, upload_max());
 +		return;
 +	}
 +
 +	p = strstr(hdr, "boundary=");
 +	if (!p) {
-+		up_failed = 1;
++		httpd_reject("not a multipart upload");
 +		return;
 +	}
 +	p += 9;
@@ -886,7 +1359,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	}
 +	blen = q - p;
 +	if (blen <= 0 || blen > (int)sizeof(up_bound) - 5) {
-+		up_failed = 1;
++		httpd_reject("bad multipart boundary");
 +		return;
 +	}
 +	/* Each part ends right before CRLF + "--" + boundary. */
@@ -901,10 +1374,134 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	printf("httpd: expecting %lu body bytes at +%u\n", clen, up_body);
 +}
 +
++static struct up_part *part_find(const char *name)
++{
++	int i;
++
++	for (i = 0; i < up_nparts; i++)
++		if (!strcmp(up_parts[i].name, name))
++			return &up_parts[i];
++
++	return NULL;
++}
++
++/* A short text field, as a C string; NULL when absent or too long. */
++static const char *part_text(const char *name, char *buf, int max)
++{
++	struct up_part *p = part_find(name);
++
++	if (!p || p->size >= (u32)max)
++		return NULL;
++	memcpy(buf, (void *)p->addr, p->size);
++	buf[p->size] = '\0';
++
++	return buf;
++}
++
++/*
++ * The name goes straight into a run_command() string, so anything outside
++ * this set -- a space, a semicolon -- would be parsed as more command.  UBI
++ * itself allows more than this, but nothing the recovery page needs to write
++ * uses characters beyond it.
++ */
++static int vol_name_ok(const char *s)
++{
++	int n = strlen(s);
++
++	if (!n || n >= UBIVOL_NAME_MAX)
++		return 0;
++
++	for (; *s; s++) {
++		char c = *s;
++
++		if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
++		      (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
++			return 0;
++	}
++
++	return 1;
++}
++
++static struct fvol *fvol_find(const char *field)
++{
++	int i;
++
++	if (strncmp(field, FIELD_FVOL_PREFIX, strlen(FIELD_FVOL_PREFIX)))
++		return NULL;
++	field += strlen(FIELD_FVOL_PREFIX);
++	for (i = 0; i < nfvols; i++)
++		if (!strcmp(fvols[i].name, field))
++			return &fvols[i];
++
++	return NULL;
++}
++
++/*
++ * Everything that can be checked before answering is checked here, so a
++ * refused upload is refused while the browser is still listening.  Once the
++ * response is out the page has already said "done"; a failure after that
++ * only shows on the console and the panel.
++ */
++static int httpd_validate(void)
++{
++	char buf[UBIVOL_NAME_MAX];
++	struct up_part *p;
++	int i;
++
++	for (i = 0; i < up_nparts; i++) {
++		struct fvol *v = fvol_find(up_parts[i].name);
++
++		if (v && up_parts[i].size != v->size) {
++			httpd_reject("%s is %u bytes, the %s volume holds "
++				     "exactly %u", up_parts[i].name,
++				     up_parts[i].size, v->name, v->size);
++			return -1;
++		}
++	}
++
++	p = part_find(FIELD_UBIVOL_FILE);
++	if (p) {
++		if (!part_text(FIELD_UBIVOL_NAME, buf, sizeof(buf)) ||
++		    !vol_name_ok(buf)) {
++			httpd_reject("missing or invalid UBI volume name");
++			return -1;
++		}
++	}
++
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	p = part_find(FIELD_STOCK);
++	if (p) {
++		struct mtd_info *m = flash_master();
++		char ob[24];
++		ulong off = 0;
++
++		if (!m) {
++			httpd_reject("no flash device found");
++			return -1;
++		}
++		if (part_text(FIELD_STOCK_OFF, ob, sizeof(ob)))
++			off = hextoul(ob, NULL);
++		if (off % m->erasesize) {
++			httpd_reject("offset 0x%lx is not a multiple of the "
++				     "erase block (0x%x)", off, m->erasesize);
++			return -1;
++		}
++		if ((u64)off + p->size > m->size) {
++			httpd_reject("offset 0x%lx + %u bytes exceeds the "
++				     "flash (%llu bytes)", off, p->size,
++				     (unsigned long long)m->size);
++			return -1;
++		}
++	}
++#endif
++
++	return 0;
++}
++
 +/*
 + * Body fully received: walk the multipart stream once and record where each
 + * form field's payload landed.  Nothing is copied -- the parts are flashed in
-+ * place, which is what stops a 64 MB upload from needing a second 64 MB.
++ * place, which is what stops a 235 MB upload from needing a second 235 MB.
 + */
 +static void httpd_finish(void)
 +{
@@ -971,10 +1568,12 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	}
 +
 +	if (!up_nparts) {
-+		printf("httpd: no usable form fields in upload\n");
-+		up_failed = 1;
++		httpd_reject("no usable form fields in the upload");
 +		return;
 +	}
++
++	if (httpd_validate())
++		return;
 +
 +	up_ready = 1;
 +}
@@ -982,7 +1581,7 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
 +	/* A GET needs no body; drop whatever follows. */
-+	if (tcp->priv == CONN_GET)
++	if (tcp->priv == CONN_GET || tcp->priv == CONN_INFO)
 +		return len;
 +
 +	/*
@@ -1007,13 +1606,15 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +{
 +	/*
 +	 * Classify here rather than in rx(): the first segment may be shorter
-+	 * than the method name, and this callback guarantees that bytes
++	 * than the request line, and this callback guarantees that bytes
 +	 * [0..rx_bytes-1] are present and contiguous.
 +	 */
 +	if (tcp->priv == CONN_UNKNOWN) {
++		const char *req = (const char *)up_base;
++
 +		if (up_owner != tcp || rx_bytes < 4)
 +			return;
-+		if (!memcmp((const char *)up_base, "POST", 4)) {
++		if (!memcmp(req, "POST", 4)) {
 +			if (up_active) {
 +				tcp->priv = CONN_GET;	/* one upload at a time */
 +				up_owner = NULL;
@@ -1022,7 +1623,15 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +			up_active = 1;
 +			tcp->priv = CONN_POST;
 +		} else {
-+			tcp->priv = CONN_GET;
++			/* "GET /info " is 10 bytes; wait for the request line. */
++			if (!memcmp(req, "GET ", 4) && rx_bytes < 10)
++				return;
++			if (rx_bytes >= 10 && !memcmp(req, "GET /info ", 10)) {
++				info_len = httpd_info();
++				tcp->priv = CONN_INFO;
++			} else {
++				tcp->priv = CONN_GET;
++			}
 +			up_owner = NULL;	/* release the staging area */
 +			return;
 +		}
@@ -1044,13 +1653,16 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +
 +	if (tcp->priv == CONN_POST) {
 +		if (up_ready)
-+			s = resp_done;
++			s = resp_ok;
 +		else if (up_failed)
-+			s = resp_400;
++			s = resp_reject;
 +		else
 +			s = NULL;	/* still receiving */
 +	} else if (tcp->priv == CONN_GET) {
 +		s = resp_form;
++	} else if (tcp->priv == CONN_INFO) {
++		*len = info_len;
++		return info_buf;
 +	} else {
 +		s = NULL;
 +	}
@@ -1140,28 +1752,30 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	up_bound_len = 0;
 +	flash_pending = 0;
 +	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
++	fvols_parse();
 +
 +	memset(net_server_ethaddr, 0, 6);
 +	tcp_stream_set_on_create_handler(httpd_on_create);
 +	net_set_udp_handler(httpd_dhcp_rx);
 +	httpd_led_start();
 +
-+	printf("Using %s device\n", eth_get_name());
++	printf("Airoha Web U-Boot " WEB_VERSION " by Loong\n");
++	printf("Project " PROJECT_URL "\n");
++	printf("Guide   " PORTAL_URL "recovery-guide.html\n");
++	/*
++	 * The MAC is worth a line of its own: a board that lost its factory
++	 * MAC still serves the page just fine, but every browser on the
++	 * segment is still talking to whatever ARP learned last time.
++	 */
++	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
 +	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
 +	printf("Handing out DHCP leases from %pI4\n", &net_ip);
 +	printf("Press Ctrl-C to abort\n");
 +}
 +
-+static struct up_part *part_find(const char *name)
-+{
-+	int i;
-+
-+	for (i = 0; i < up_nparts; i++)
-+		if (!strcmp(up_parts[i].name, name))
-+			return &up_parts[i];
-+
-+	return NULL;
-+}
++/*
++ * ---- flashing ------------------------------------------------------------
++ */
 +
 +/*
 + * Move a part down to an aligned address so the NAND layer never sees an
@@ -1194,6 +1808,78 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	return run_command(builtin, 0);
 +}
 +
++/*
++ * Write one UBI volume in place.  UBI must already be attached; the caller
++ * does it once for all volumes.  With create set, a volume that does not
++ * exist yet is created for exactly the file, dynamic -- what the board's
++ * own scripts do for fit.  No size check against an existing volume: "ubi
++ * write" refuses anything larger than the reservation before it touches a
++ * byte, and it knows the real figure while this code would only be guessing.
++ */
++static int flash_vol(ulong addr, const char *name, u32 size, int create)
++{
++	char cmd[160];
++
++	if (create) {
++		snprintf(cmd, sizeof(cmd),
++			 "ubi check %s || ubi create %s 0x%x dynamic",
++			 name, name, size);
++		if (run_command(cmd, 0)) {
++			printf("httpd: creating %s FAILED\n", name);
++			return -1;
++		}
++	}
++
++	printf("httpd: writing %s volume, %u bytes\n", name, size);
++	snprintf(cmd, sizeof(cmd), "ubi write 0x%lx %s 0x%x", addr, name, size);
++	if (run_command(cmd, 0)) {
++		printf("httpd: writing %s FAILED\n", name);
++		return -1;
++	}
++
++	return 0;
++}
++
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++/*
++ * Raw write to the bare flash device.  Offset 0 is the whole-chip case that
++ * puts a factory image back; any other erase-block boundary writes one
++ * partition of it.  Either way this goes around the mtd partitions and UBI,
++ * and the erase has to cover whole blocks -- "mtd erase" refuses a length
++ * that is not a multiple of one.
++ */
++static int flash_raw(ulong addr, ulong off, u32 size)
++{
++	struct mtd_info *m = flash_master();
++	char cmd[96];
++	u64 elen;
++
++	if (!m)
++		return -1;
++
++	elen = ((u64)size + m->erasesize - 1) & ~(u64)(m->erasesize - 1);
++	if (off + elen > m->size)
++		elen = m->size - off;
++
++	printf("httpd: erasing %s, 0x%llx bytes at 0x%lx\n", m->name, elen, off);
++	snprintf(cmd, sizeof(cmd), "mtd erase %s 0x%lx 0x%llx", m->name, off, elen);
++	if (run_command(cmd, 0)) {
++		printf("httpd: erasing FAILED\n");
++		return -1;
++	}
++
++	printf("httpd: writing %u bytes at 0x%lx\n", size, off);
++	snprintf(cmd, sizeof(cmd), "mtd write %s 0x%lx 0x%lx 0x%x",
++		 m->name, addr, off, size);
++	if (run_command(cmd, 0)) {
++		printf("httpd: writing FAILED\n");
++		return -1;
++	}
++
++	return 0;
++}
++#endif
++
 +static int flash_part(const char *what, struct up_part *part, const char *var,
 +		      const char *builtin)
 +{
@@ -1219,10 +1905,73 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +	struct up_part *bl2 = part_find(FIELD_BL2);
 +	struct up_part *fip = part_find(FIELD_FIP);
 +	struct up_part *fit = part_find(FIELD_FIT);
++	struct up_part *ubifile = part_find(FIELD_UBIVOL_FILE);
 +	int format = part_find(FIELD_FORMAT) != NULL;
++	int nvols = 0;
 +	int ret = -1;
++	int i;
++
++	flash_stay = part_find(FIELD_STAY) != NULL;
 +
 +	httpd_blink_start();
++
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	{
++		struct up_part *stock = part_find(FIELD_STOCK);
++
++		if (stock) {
++			char ob[24];
++			ulong off = 0;
++
++			if (part_text(FIELD_STOCK_OFF, ob, sizeof(ob)))
++				off = hextoul(ob, NULL);
++
++			if (flash_raw(part_align(stock), off, stock->size))
++				goto out;
++
++			/* Whatever this U-Boot was running from may be gone. */
++			flash_stay = 0;
++			ret = 0;
++			goto out;
++		}
++	}
++#endif
++
++	/*
++	 * UBI volumes: the factory data ones from the config, then any named
++	 * one -- all in one attach, all in one sitting.  Sizes were checked
++	 * before the upload was accepted.
++	 */
++	for (i = 0; i < up_nparts; i++)
++		if (fvol_find(up_parts[i].name))
++			nvols++;
++
++	if (nvols || ubifile) {
++		if (run_command(CMD_ATTACH_UBI, 0)) {
++			printf("httpd: attaching UBI FAILED\n");
++			goto out;
++		}
++
++		for (i = 0; i < up_nparts; i++) {
++			struct fvol *v = fvol_find(up_parts[i].name);
++
++			if (v && flash_vol(part_align(&up_parts[i]), v->name,
++					   up_parts[i].size, 0))
++				goto out;
++		}
++
++		if (ubifile) {
++			char name[UBIVOL_NAME_MAX];
++
++			part_text(FIELD_UBIVOL_NAME, name, sizeof(name));
++			if (flash_vol(part_align(ubifile), name,
++				      ubifile->size, 1))
++				goto out;
++		}
++
++		ret = 0;
++		goto out;
++	}
 +
 +	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
 +		goto out;
@@ -1263,25 +2012,39 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +{
 +	int err;
 +
-+	err = net_loop(HTTPD);
++	/*
++	 * Looping here rather than letting the caller re-enter keeps "stay up"
++	 * behaving the same on both ways in: boot_httpd_forever would come
++	 * back on its own, but check_buttons would fall through to the boot
++	 * command instead.
++	 */
++	for (;;) {
++		err = net_loop(HTTPD);
 +
-+	httpd_led_stop();
++		httpd_led_stop();
 +
-+	if (err < 0) {
-+		printf("httpd error: %d\n", err);
-+		return CMD_RET_FAILURE;
-+	}
++		if (err < 0) {
++			printf("httpd error: %d\n", err);
++			return CMD_RET_FAILURE;
++		}
 +
-+	if (!flash_pending)
-+		return CMD_RET_SUCCESS;
++		if (!flash_pending)
++			return CMD_RET_SUCCESS;
 +
-+	flash_pending = 0;
-+	if (httpd_flash()) {
-+		/*
-+		 * Deliberately no reset: the caller loops back into httpd so
-+		 * the user can retry without touching the power.
-+		 */
-+		return CMD_RET_FAILURE;
++		flash_pending = 0;
++		if (httpd_flash()) {
++			/*
++			 * Deliberately no reset: the caller loops back into
++			 * httpd so the user can retry without touching the
++			 * power.
++			 */
++			return CMD_RET_FAILURE;
++		}
++
++		if (!flash_stay)
++			break;
++
++		printf("httpd: done, staying up -- reload the page for more\n");
 +	}
 +
 +	printf("httpd: flashing done, rebooting\n");
@@ -1292,14 +2055,14 @@ diff -urN a/net/httpd.c b/net/httpd.c
 +
 +U_BOOT_CMD(
 +	httpd,	1,	0,	do_httpd,
-+	"start HTTP recovery server",
++	"start the web recovery server",
 +	"\n"
-+	"    - serve an upload form on port 80 and hand out one DHCP lease;\n"
++	"    - serve the recovery page on port 80 and hand out one DHCP lease;\n"
 +	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
 +	"      flashed by the matching httpd_* / ubi_write_* env scripts,\n"
 +	"      or by a built-in equivalent when those are not defined"
 +);
-diff -urN a/net/net.c b/net/net.c
+diff -Nur pre/net/net.c post/net/net.c
 --- a/net/net.c
 +++ b/net/net.c
 @@ -508,6 +508,11 @@

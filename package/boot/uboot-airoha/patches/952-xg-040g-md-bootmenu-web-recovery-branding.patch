@@ -112,12 +112,12 @@ the env volumes, and is running off the defaults anyway.
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+envver=3
++envver=4
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [1;39mOpenWrt-Web 0.1.2[0m
++bootmenu_title=      [1;39mAiroha Web U-Boot 0.2.0[0m
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
@@ -126,7 +126,7 @@ the env volumes, and is running off the defaults anyway.
  bootmenu_6=Reboot=reset
  bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
 +bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
-+bootmenu_9=About - github.com/Loong1996/ImmortalWrt-XG-040G-MD=run show_about ; run bootmenu_confirm_return
++bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run show_about ; run bootmenu_confirm_return
  boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
  boot_default=run bootcmd ; run boot_tftp_forever
  boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
@@ -135,27 +135,8 @@ the env volumes, and is running off the defaults anyway.
  preboot=led $bootled_status on
  check_buttons=if button reset ; then httpd ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
-+show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
++show_about=echo ; echo Airoha Web U-Boot 0.2.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
 +ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
  mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
---- a/net/httpd.c
-+++ b/net/httpd.c
-@@ -1044,7 +1044,15 @@ void httpd_start_server(void)
- 	net_set_udp_handler(httpd_dhcp_rx);
- 	httpd_led_start();
- 
--	printf("Using %s device\n", eth_get_name());
-+	printf("Web recovery " WEB_VERSION " by Loong\n");
-+	printf("Guide   https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html\n");
-+	printf("Project https://github.com/Loong1996/ImmortalWrt-XG-040G-MD\n");
-+	/*
-+	 * The MAC is worth a line of its own: a board that lost its factory
-+	 * MAC still serves the page just fine, but every browser on the
-+	 * segment is still talking to whatever ARP learned last time.
-+	 */
-+	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
- 	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
- 	printf("Handing out DHCP leases from %pI4\n", &net_ip);
- 	printf("Press Ctrl-C to abort\n");
