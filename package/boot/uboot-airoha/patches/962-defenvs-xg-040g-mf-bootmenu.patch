@@ -37,13 +37,13 @@ All six variables are byte-identical to the md side.
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [1;39mOpenWrt-Web 0.1.2[0m
-+envver=3
++bootmenu_title=      [1;39mAiroha Web U-Boot 0.2.0[0m
++envver=4
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
 +bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
-+bootmenu_9=About - github.com/Loong1996/ImmortalWrt-XG-040G-MD=run show_about ; run bootmenu_confirm_return
-+show_about=echo ; echo Web recovery U-Boot by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-XG-040G-MD/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-XG-040G-MD ; echo Author: https://github.com/Loong1996 ; echo
++bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run show_about ; run bootmenu_confirm_return
++show_about=echo ; echo Airoha Web U-Boot 0.2.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
  bootmenu_2=Boot production system from NAND=run boot_production ; run bootmenu_confirm_return
  bootmenu_3=Load production system via TFTP then write to NAND=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return

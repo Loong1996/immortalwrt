@@ -12,14 +12,22 @@ built into U-Boot core -- so enabling it here is all this board needs.
 Must sort after 402-add-nokia-xg-040g-mf.patch, which is the patch that
 creates this defconfig in the first place.
 
+HTTPD_FACTORY_VOLS and CMD_HTTPD_STOCK_RESTORE are set exactly as on
+xg-040g-md: the two boards create the same ri / bosa volumes at the same
+size, and their stock images were found to share one layout -- both are
+0xEBA0000 bytes with every partition at the same offset, established by
+locating each dumped partition inside both all_flash images.
+
 --- a/configs/an7583_nokia_xg-040g-mf_defconfig
 +++ b/configs/an7583_nokia_xg-040g-mf_defconfig
-@@ -41,6 +41,9 @@ CONFIG_CMD_TFTPSRV=y
+@@ -41,6 +41,11 @@ CONFIG_CMD_TFTPSRV=y
  CONFIG_CMD_MTD_NAND_WRITE_TEST=y
  CONFIG_CMD_PART=y
  CONFIG_CMD_TFTPSRV=y
 +CONFIG_PROT_TCP=y
 +CONFIG_CMD_HTTPD=y
++CONFIG_HTTPD_FACTORY_VOLS="ri:0x40000 bosa:0x40000"
++CONFIG_CMD_HTTPD_STOCK_RESTORE=y
 +CONFIG_CYCLIC=y
  CONFIG_CMD_RARP=y
  CONFIG_CMD_CDP=y
