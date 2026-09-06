@@ -6,11 +6,12 @@
 :root{--bg:#f5f5f7;--side:#ececef;--card:#fff;--fg:#1d1d1f;--c2:#6e6e73;--c3:#aeaeb2;--sep:rgba(60,60,67,.14);--blue:#0a66d6;--red:#d9342b;--org:#b8500f;--grn:#1f8a3b;--fill:#e8e8ed;--btn:#fff;--btnb:rgba(0,0,0,.14)}
 [data-t=dark]{--bg:#1e1e20;--side:#242426;--card:#2a2a2d;--fg:#f5f5f7;--c2:#a1a1a6;--c3:#6e6e73;--sep:rgba(255,255,255,.1);--blue:#2f7ff2;--red:#ff5f57;--org:#f0a04a;--grn:#4cd964;--fill:#3a3a3d;--btn:#3a3a3d;--btnb:rgba(255,255,255,.14)}
 *{box-sizing:border-box}
-html,body{height:100%}
+[hidden]{display:none!important}
+html,body{height:100%;max-width:100%;overflow-x:hidden}
 body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif}
 a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
 svg{width:1em;height:1em;vertical-align:-.15em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
-.app{display:grid;grid-template-columns:200px minmax(0,1fr);min-height:100%;background:var(--bg)}
+.app{display:grid;grid-template-columns:minmax(9.5rem,12.5rem) minmax(0,1fr);min-height:100%;width:100%;max-width:100%;background:var(--bg)}
 input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
 .pb{border:1px solid var(--btnb);background:var(--btn);color:var(--fg);border-radius:6px;font:inherit;padding:.22rem .8rem;cursor:pointer;box-shadow:0 .5px 1px rgba(0,0,0,.08);white-space:nowrap}
 .pb:active{filter:brightness(.94)}
@@ -35,7 +36,7 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .fl small{display:block;color:var(--c2);font-weight:400;font-size:.88em;line-height:1.3}
 .fc{display:flex;align-items:center;gap:.6rem;min-width:0}
 .fc.end{justify-content:flex-end}
-input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radius:5px;font:inherit;padding:.22rem .5rem;width:220px;outline:0}
+input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radius:5px;font:inherit;padding:.22rem .5rem;width:100%;max-width:220px;outline:0}
 input[type=text]:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}
 input::placeholder{color:var(--c3)}
 .note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}
@@ -50,14 +51,14 @@ input::placeholder{color:var(--c3)}
 .nav .ic{width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;flex:none}
 .nav .ic svg{width:13px;height:13px}
 .nav[aria-current]{background:var(--blue);color:#fff}
-.n1 .ic{background:#0a84ff}.n2 .ic{background:#5e5ce6}.n3 .ic{background:#8e8e93}.n4 .ic{background:#ff9f0a}.n5 .ic,.n6 .ic{background:#64748b}
+.n1 .ic{background:#0a84ff}.n2 .ic{background:#5e5ce6}.n3 .ic{background:#8e8e93}.n4 .ic{background:#ff9f0a}.n5 .ic{background:#64748b}.n6 .ic{background:#af52de}.n7 .ic{background:#30d158}.n8 .ic{background:#64d2ff}
 .nav[aria-current] .ic{background:rgba(255,255,255,.28)}
 [data-busy] .nav{opacity:.45;pointer-events:none}
 .nsep{height:1px;background:var(--sep);margin:.45rem .5rem}
 .tb{margin-top:auto;align-self:flex-start;border:1px solid var(--btnb);background:transparent;color:var(--c2);border-radius:99px;padding:.1rem .55rem;font:inherit;font-size:1rem;line-height:1.3;cursor:pointer}
 .tb:hover{color:var(--fg)}
 .pane{display:none;padding:1.4rem 1.6rem 1.4rem;min-width:0}
-.pane[data-on]{display:flex;flex-direction:column;min-height:560px}
+.pane[data-on]{display:flex;flex-direction:column;min-height:0;flex:1}
 h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .sub{color:var(--c2);margin:0 0 1.1rem}
 .drop{display:flex;align-items:center;gap:1rem;background:var(--card);border:1.5px dashed var(--btnb);border-radius:9px;padding:1rem 1.1rem;cursor:pointer}
@@ -103,7 +104,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .steps b{color:var(--org);font-weight:500}
 .mask{position:fixed;inset:0;background:rgba(0,0,0,.28);display:none;z-index:9;padding:1rem}
 .mask[data-on]{display:flex}
-.alert{margin:auto;width:340px;background:var(--card);border-radius:12px;padding:1.2rem 1.2rem 1rem;box-shadow:0 24px 60px -10px rgba(0,0,0,.5),0 0 0 1px var(--sep)}
+.alert{margin:auto;width:min(340px,100%);background:var(--card);border-radius:12px;padding:1.2rem 1.2rem 1rem;box-shadow:0 24px 60px -10px rgba(0,0,0,.5),0 0 0 1px var(--sep)}
 .alert .hd{display:flex;align-items:center;gap:.7rem;margin-bottom:.8rem}
 .alert .mi{width:38px;height:38px;border-radius:9px;background:var(--org);color:#fff;display:inline-flex;align-items:center;justify-content:center;flex:none}
 .alert .mi svg{width:20px;height:20px;stroke-width:2.2}
@@ -118,7 +119,16 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .e{font-size:.9em;color:var(--red);margin-top:.5rem;line-height:1.45;font-weight:500}
 .btns{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}
 .demo{color:var(--c3);font-size:.85em;margin-top:1.4rem}
-@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--sep)}.pane[data-on]{min-height:0}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}}
+.ban{margin:1.2rem 1.6rem 0;padding:.65rem .9rem;border-radius:9px;background:rgba(217,52,43,.08);border:1px solid rgba(217,52,43,.35);color:var(--red);font-weight:500;line-height:1.45;display:flex;gap:.6rem;align-items:flex-start}
+.ban svg{flex:none;margin-top:.2em;stroke-width:2.2}
+.ban b{font-weight:600}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.5rem;background:var(--c3)}
+.dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}
+.kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}
+.row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}
+.log{margin:0;padding:.7rem .9rem;max-height:min(360px,60vh);overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;line-height:1.4;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
+@media (max-width:860px){.fr{grid-template-columns:1fr}input[type=text]{max-width:100%}.kv td:first-child{width:auto}}
+@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--sep)}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.ban{margin:1rem 1rem 0}.pane{padding:1rem}}
 </style>
 </head><body><div class=app id=app>
 <div class=side>
@@ -131,10 +141,13 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <button class="nav n3" data-p=p3 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zM8 7v10M16 7v10"/></svg></span>创建 UBI 卷</button>
 <div class=nsep></div>
 <button class="nav n5" data-p=p5 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>设备详情</button>
+<button class="nav n7" data-p=p8 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 7-6-14-3 7H2"/></svg></span>健康检查</button>
+<button class="nav n8" data-p=p9 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg></span>串口日志</button>
 <button class="nav n6" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span>关于</button>
 <button type=button class=tb onclick=tg() title="切换深浅色">&#9680;</button>
 </div>
 <form method=post enctype=multipart/form-data onsubmit="return ask()">
+<div class=ban id=ban hidden><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span id=bant></span></div>
 
 <div class=pane id=p1 data-on>
 <h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>
@@ -194,6 +207,18 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>
 </div>
 
+<div class=pane id=p8>
+<h1>健康检查</h1><p class=sub>BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备不响应，需要几秒。</p>
+<div class=box><table class=kv id=chk><tr><td colspan=2>还没有检查</td></tr></table></div>
+<div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb onclick=check()>开始检查</button><button type=button class=pb onclick=diag(this)>复制诊断信息</button></div>
+</div>
+
+<div class=pane id=p9>
+<h1>串口日志</h1><p class=sub>U-Boot 自本次上电以来的控制台输出。没有 USB-TTL 时，求助请把这段和健康检查一起贴出。</p>
+<div class=box><pre class=log id=log>还没有读取</pre></div>
+<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
+</div>
+
 <div class=pane id=p6>
 <h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>
 <div class=about><span class=logo><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span><div><b>Airoha Web U-Boot</b><span>@@WEB_VERSION@@ · Loong</span></div></div>
@@ -222,7 +247,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div></div>
 </div>
 <script>
-var INFO=null,FV=[],SENT=null;
+var INFO=null,FV=[],SENT=null,CHK=null;
 function $(s,r){return (r||document).querySelector(s)}
 function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
 function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d.setAttribute('data-t',n);try{localStorage.setItem('xgtheme',n)}catch(e){}}
@@ -230,23 +255,30 @@ function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?(n/1024).
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
 function pane(){return $('.pane[data-on]')}
 function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')})}
-function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});show(b.getAttribute('data-p'));if(b.getAttribute('data-p')=='p5'&&!INFO)info()}
+function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();if(id=='p8'&&!CHK)check();if(id=='p9')getlog()}
 function files(p){return $$('input[type=file]',p).filter(function(i){return i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files[0]}})}
 function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}
 function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):'还没有选择文件'}
 function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)}});$$('.drop').forEach(function(d){d.ondragover=function(e){e.preventDefault();d.classList.add('over')};d.ondragleave=function(){d.classList.remove('over')};d.ondrop=function(e){e.preventDefault();d.classList.remove('over');var i=$('input[type=file]',d);if(e.dataTransfer.files.length){try{i.files=e.dataTransfer.files;onfile(i)}catch(x){}}}})}
 function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return parseInt(v,16)}
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
-function info(){var x=new XMLHttpRequest();x.onload=function(){try{INFO=JSON.parse(x.responseText)}catch(e){INFO=null}fill()};x.onerror=function(){INFO=null;fill()};x.open('GET','/info');x.send()}
-function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
+function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
+function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}
+function banner(){var t='';if(INFO){if(!INFO.ubi)t='<b>闪存里没有可挂载的 UBI。</b>这是首次迁移：到「引导升级」里同时上传 BL2、U-Boot 与固件，并打开「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存里没有 U-Boot（fip 卷）。</b>现在运行的 U-Boot 只在内存里，断电即失：请到「引导升级」里上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
+function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
 if(INFO.uboot)$('#based').textContent=INFO.uboot;
+$('.nav[data-p=p9]').hidden=!INFO.log;
 FV=INFO.fv||[];fvrows();
 if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}
 $('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
 (INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
+function check(){var b=$('#chkb'),t=$('#chk');b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var h='',c=[0,0,0];r.items.forEach(function(i){c[i.s]++;h+='<tr><td><span class="dot s'+i.s+'"></span>'+esc(i.n)+'</td><td class="s'+i.s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
+function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.disabled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
+function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
+function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
 function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);
 if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+' 起的区域':'擦除整片 flash');a.push('写入镜像 —— <b>耗时最长，请勿断电</b>');a.push('自动重启');return a}
 if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}
@@ -255,7 +287,9 @@ function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
 $('#atitle').textContent=$('h1',p).textContent;
 if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动断电重启')}
-if(p.id=='p2'){if($('[name=format]',p).checked)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
+if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
+if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');
+if((p.id=='p1'||(p.id=='p3'&&!$('[name=stay]',p).checked))&&INFO&&INFO.ubi&&!INFO.ubi.fip)E.push('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));
 if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data 将被清空');
 rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' · '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});
 if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';
@@ -278,7 +312,7 @@ x.onerror=function(){fail('连接中断，请检查网线后重试')};
 x.open('POST','/');x.send(fd)}
 function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写'}
 function done(){var p=SENT.p,rows=SENT.rows;if(SENT.stay){var prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent='已上传 '+rows.map(function(r){return r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写';clear(p);return}
-$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';show('p7')}
+$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidden','');show('p7')}
 function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}
 document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
 bind();info();

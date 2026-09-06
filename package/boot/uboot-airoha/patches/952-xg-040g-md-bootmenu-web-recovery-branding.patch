@@ -96,9 +96,10 @@ boards have no envver in their default environment and return early.  Saving
 is best-effort -- a first-time migration gets here before _init_env has made
 the env volumes, and is running off the defaults anyway.
 
+diff --git a/configs/an7581_nokia_xg-040g-md_defconfig b/configs/an7581_nokia_xg-040g-md_defconfig
 --- a/configs/an7581_nokia_xg-040g-md_defconfig
 +++ b/configs/an7581_nokia_xg-040g-md_defconfig
-@@ -27,6 +27,7 @@ CONFIG_SYS_MAXARGS=8
+@@ -29,6 +29,7 @@ CONFIG_SYS_MAXARGS=8
  CONFIG_CMD_CPU=y
  CONFIG_CMD_LICENSE=y
  CONFIG_CMD_BOOTMENU=y
@@ -106,18 +107,19 @@ the env volumes, and is running off the defaults anyway.
  CONFIG_CMD_ASKENV=y
  CONFIG_CMD_ERASEENV=y
  CONFIG_CMD_ENV_FLAGS=y
+diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-md_env
 --- a/defenvs/an7581_nokia_xg-040g-md_env
 +++ b/defenvs/an7581_nokia_xg-040g-md_env
 @@ -10,10 +10,11 @@ bootfile_bl2=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-preloader.bin
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+envver=4
++envver=5
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [1;39mAiroha Web U-Boot 0.2.0[0m
++bootmenu_title=      [1;39mAiroha Web U-Boot 0.3.0[0m
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
@@ -135,7 +137,7 @@ the env volumes, and is running off the defaults anyway.
  preboot=led $bootled_status on
  check_buttons=if button reset ; then httpd ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
-+show_about=echo ; echo Airoha Web U-Boot 0.2.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
++show_about=echo ; echo Airoha Web U-Boot 0.3.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
 +ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
