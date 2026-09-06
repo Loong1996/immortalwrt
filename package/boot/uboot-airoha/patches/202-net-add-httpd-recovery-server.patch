@@ -138,7 +138,7 @@ diff -Nur pre/net/Makefile post/net/Makefile
 diff -Nur pre/net/httpd.c post/net/httpd.c
 --- a/net/httpd.c
 +++ b/net/httpd.c
-@@ -0,0 +1,1923 @@
+@@ -0,0 +1,1926 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -660,8 +660,10 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"FV=INFO.fv||[];fvrows();\n"
 +	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
 +	"$('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;\n"
-+	"h='<tr><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
-+	"(INFO.ubi.vols||[]).forEach(function(v){h+='<tr><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
++	"h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
++	"(INFO.ubi.vols||[]).slice().sort(function(a,b){return"
++		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
++		" class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
 +		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
 +	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
@@ -1244,7 +1246,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +
 +				if (!v)
 +					continue;
-+				P("%s{\"n\":", first ? "" : ",");
++				P("%s{\"i\":%d,\"n\":", first ? "" : ",",
++				  v->vol_id);
 +				S(v->name);
 +				P(",\"t\":\"%s\",\"s\":%lld,\"u\":%lld}",
 +				  v->vol_type == UBI_DYNAMIC_VOLUME ?
