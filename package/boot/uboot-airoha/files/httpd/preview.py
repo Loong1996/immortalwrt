@@ -4,10 +4,15 @@
 Usage: preview.py page.html [preview.html]
 
 Opens in any browser straight from disk: every request the page makes
-(/info, /check, /log, the POST) is answered by a stub, and a small bar at
-the bottom right switches the device between the states the page has to
-handle -- healthy, no UBI, no fip volume, a build without console
-recording, /info failing -- and picks how a submit ends.  Look at the
+(/info, /check, /log, /env, /ping, /reboot, the POST) is answered by a stub,
+and a small bar at the bottom right switches the device between the
+states the page has to handle -- healthy, no UBI, no fip volume, a build
+without console recording, /info failing -- picks how a submit ends, and
+can cut the connection so the heartbeat's disconnected overlay can be
+seen.  The stub also goes quiet for as long as a real device would: a
+write, a reboot, a whole-chip read.  Downloads have no device behind
+them off a file:// page, so the transfer is replaced with the line the
+page shows while the device reads.  Look at the
 page here before touching the C side; what the stub answers is what the
 real endpoints answer, so a layout or wording change is decided on the
 same data.
@@ -20,6 +25,9 @@ import sys
 
 MACROS = {
     "WEB_VERSION": "0.3.0",
+    "AUTHOR": "Loong",
+    "AUTHOR_HOST": "github.com/Loong1996",
+    "AUTHOR_URL": "https://github.com/Loong1996",
     "PROJECT_URL": "https://github.com/Loong1996/ImmortalWrt-Airoha",
     "PROJECT_HOST": "github.com/Loong1996/ImmortalWrt-Airoha",
     "PORTAL_URL": "https://loong1996.github.io/ImmortalWrt-Airoha/",
@@ -47,6 +55,7 @@ INFO = {
               "page": 2048},
     "parts": [{"n": "bl2", "o": 0, "s": 131072},
               {"n": "ubi", "o": 131072, "s": 268304384}],
+    "uploadmax": 0xf8d1000,
     "stock": 1,
     "log": 1,
     "fv": [{"n": "ri", "s": 262144}, {"n": "bosa", "s": 262144}],
@@ -54,17 +63,57 @@ INFO = {
 }
 
 CHECK = [
-    ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB"],
-    ["坏块", 0, "没有"],
-    ["BL2", 0, "0x800 处有 BL2 镜像"],
-    ["UBI", 0, "7 个卷，坏块 0 个，空闲 1836 个逻辑擦除块"],
-    ["fip 卷", 0, "325632 字节，校验通过"],
-    ["fit 卷", 0, "FIT 镜像，12984320 字节"],
-    ["ubootenv 卷", 0, "存在"],
-    ["ubootenv2 卷", 0, "存在"],
-    ["ri 卷", 0, "读到了，MAC 90:03:2e:12:34:56"],
-    ["bosa 卷", 1, "读到了，内容为空"],
-    ["U-Boot MAC", 0, "90:03:2e:12:34:56"],
+    ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
+    ["坏块", 0, "没有", "闪存"],
+    ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
+    ["envver", 0, "5，与这一版 U-Boot 一致", "引导"],
+    ["bootcmd", 0, "与这一版的默认一致", "引导"],
+    ["引导菜单", 0, "9 项", "引导"],
+    ["UBI", 0, "7 个卷，坏块 0 个，空闲 1836 个逻辑擦除块", "UBI"],
+    ["磨损", 0, "擦写次数最大 47、平均 12", "UBI"],
+    ["fip 卷", 0, "325632 字节，校验通过", "UBI"],
+    ["fit 卷", 0, "FIT 镜像，12984320 字节", "UBI"],
+    ["固件", 0, "ARM64 ImmortalWrt nokia_xg-040g-md FIT (Flattened Image Tree)"
+               "，2026-09-05 17:01", "UBI"],
+    ["ubootenv 卷", 0, "存在，CRC 0x3f2a91c4", "环境"],
+    ["ubootenv2 卷", 0, "存在，与 ubootenv 一致", "环境"],
+    ["ri 卷", 0, "读到了，MAC 90:03:2e:12:34:56", "出厂数据"],
+    ["bosa 卷", 1, "读到了，内容为空", "出厂数据"],
+    ["U-Boot MAC", 0, "90:03:2e:12:34:56，与出厂数据一致", "出厂数据"],
+]
+ENV = [
+    ("arch", "arm"),
+    ("baudrate", "115200"),
+    ("board", "an7581"),
+    ("boot_ubi", "ubi part ubi && ubi read $loadaddr fit && bootm $loadaddr"),
+    ("bootcmd", "run _firstboot ; run boot_ubi ; run boot_httpd_forever"),
+    ("bootdelay", "3"),
+    ("boot_httpd_forever", "while true ; do httpd ; done"),
+    ("bootmenu_0", "启动 ImmortalWrt.=run boot_ubi"),
+    ("bootmenu_8", "网页恢复（Airoha Web U-Boot 0.3.0）.=httpd"),
+    ("check_buttons", "if button reset ; then echo recovery ; httpd ; fi"),
+    ("envver", "5"),
+    ("ethaddr", "90:03:2e:12:34:56"),
+    ("ethaddr_factory", "90:03:2e:12:34:56"),
+    ("fdtcontroladdr", "bfad0f10"),
+    ("httpd_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
+    ("httpd_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0 $filesize"),
+    ("httpd_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
+                        "$filesize ; else ubi create fip $filesize static && "
+                        "ubi write $loadaddr fip $filesize ; fi"),
+    ("ipaddr", "192.168.1.1"),
+    ("loadaddr", "0x84000000"),
+    ("netmask", "255.255.255.0"),
+    ("serverip", "192.168.1.100"),
+    ("soc", "airoha"),
+    ("stderr", "serial"),
+    ("stdin", "serial"),
+    ("stdout", "serial"),
+    ("ubi_write_production", "ubi check fit && ubi remove fit ; "
+                             "ubi check rootfs_data && ubi remove rootfs_data ; "
+                             "ubi create fit $filesize dynamic && "
+                             "ubi write $loadaddr fit $filesize"),
+    ("vendor", "nokia"),
 ]
 
 LOG = """
@@ -72,6 +121,10 @@ LOG = """
 U-Boot 2026.07-ImmortalWrt-r40957-4b007b8c20 (Sep 05 2026 - 17:01:01 +0000)
 
 CPU:   Airoha AN7581
+dram: probing by address aliasing, base 0x80000000
+dram:  anchor at 0x80200000, holds 0x00000000
+dram:   512 MiB: wrote 0xa0200000, anchor now 0xa5a55a5a -- wrapped onto the anchor
+dram: 512 MiB, agrees with the device tree
 DRAM:  512 MiB
 Core:  37 devices, 22 uclasses, devicetree: separate
 Loading Environment from UBI... spi-nand: spi_nand nand@0: SkyHigh SPI NAND was found.
@@ -94,36 +147,71 @@ httpd: DHCP ACK -> 192.168.1.100
 # The stub.  Plain ES5 like the page itself.
 STUB = r"""
 <script>(function(){
-var D=@DATA@,S={dev:'ok',post:'ok'};
+var D=@DATA@,S={dev:'ok',post:'ok',conn:'up'},T0=Date.now(),DOWN=0;
+var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',name:''};
+function down(){return S.conn=='down'||Date.now()<DOWN}
+function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
 if(S.dev=='noubi')i.ubi=null;
 if(S.dev=='nofip'){i.ubi.fip=0;i.ubi.vols=i.ubi.vols.filter(function(v){return v.n!='fip'})}
 if(S.dev=='nolog')i.log=0;
 return i}
-function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2]}});
-if(S.dev=='noubi')return c.slice(0,3).concat([{n:'UBI',s:2,v:'无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件'},c[c.length-1]]);
-if(S.dev=='nofip')c[4]={n:'fip 卷',s:2,v:'不存在：现在运行的 U-Boot 只在内存里，请到「引导升级」里上传 U-Boot 文件'};
+function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3]}});
+if(S.dev=='noubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
+{n:'UBI',s:2,v:'无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
+{n:'ubootenv 卷',s:2,v:'读不到：UBI 挂不上，环境只在内存里，断电即失',g:'环境'},
+{n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'}]);
+if(S.dev=='nofip')c.forEach(function(i){if(i.n=='fip 卷'){i.s=2;i.v='不存在：现在运行的 U-Boot 只在内存里，请到「引导升级」里上传 U-Boot 文件'}});
 return c}
-function XHR(){var x=this;x.upload={};x.status=0;x.responseText='';
+function body(u){
+ if(u=='/ping')return JSON.stringify({up:Date.now()-T0});
+ if(u=='/dumpinfo')return JSON.stringify(DINFO);
+ if(u=='/info')return S.dev=='noinfo'?null:JSON.stringify(info());
+ if(u=='/check')return JSON.stringify({items:check()});
+ if(u=='/log')return S.dev=='nolog'?null:D.log;
+ if(u=='/env')return JSON.stringify({env:D.env,cut:0});
+ if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
+ if(u=='/reboot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'OK'}
+ return null}
+function XHR(){var x=this;x.upload={};x.status=0;x.responseText='';x.timeout=0;
 x.open=function(m,u){x.m=m;x.u=u};x.setRequestHeader=function(){};
 x.send=function(fd){
- if(x.m=='GET'){var t=x.u=='/info'?(S.dev=='noinfo'?null:JSON.stringify(info())):x.u=='/check'?JSON.stringify({items:check()}):x.u=='/log'?(S.dev=='nolog'?null:D.log):null;
-  setTimeout(function(){if(t==null){x.status=x.u=='/info'&&S.dev=='noinfo'?0:404;x.responseText='';(x.status?x.onload:x.onerror)&&(x.status?x.onload():x.onerror())}else{x.status=200;x.responseText=t;x.onload&&x.onload()}},x.u=='/check'?1500:300);return}
- var tot=0,n=0;try{fd.forEach(function(v){if(v&&v.size)tot+=v.size})}catch(e){}if(!tot)tot=1;
+ if(x.m=='GET'){
+  if(down()&&x.u!='/reboot'){setTimeout(function(){x.status=0;
+   (x.timeout&&x.ontimeout?x.ontimeout:x.onerror||function(){})()},Math.min(x.timeout||1200,900));return}
+  var t=body(x.u);
+  setTimeout(function(){if(t==null){x.status=404;x.responseText='';x.onerror?x.onerror():x.onload&&x.onload()}
+   else{x.status=200;x.responseText=t;x.onload&&x.onload()}},x.u=='/check'?1500:x.u=='/ping'?60:300);return}
+ var tot=0,n=0,stay=false;try{fd.forEach(function(v){if(v&&v.size)tot+=v.size})}catch(e){}if(!tot)tot=1;
+ try{stay=fd.get('stay')=='1'}catch(e){}
  var tick=setInterval(function(){n+=Math.max(tot/40,65536);if(n>=tot){n=tot;clearInterval(tick);x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot});x.upload.onload&&x.upload.onload();
   setTimeout(function(){if(S.post=='drop'){x.onerror&&x.onerror();return}
-   if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well'}else{x.status=200;x.responseText='OK'}
+   if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well'}
+   else{x.status=200;x.responseText='OK';fall(stay?7000:60000)}
    x.onload&&x.onload()},1200);return}
   x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot})},80)}}
 window.XMLHttpRequest=XHR;
 document.addEventListener('DOMContentLoaded',function(){
  var b=document.createElement('div');
- b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=drop>断线</option></select>';
+ b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=drop>断线</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
- var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost');
- sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.info&&window.info()};
+ var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn');
+ sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};
  ps.onchange=function(){S.post=ps.value};
+ cn.onchange=function(){S.conn=cn.value};
+ /*
+  * 下载本身在 file:// 下没有设备可下，所以只换掉最里面这一层：读取期间设备
+  * 静默、读完记下 crc32 —— 页面那套问 /dumpinfo 的逻辑跑的是真的。
+  */
+ window.dlstart=function(u,n){
+  /* 第一个窗口读完就开始传，所以静默很短；crc32 要等整份传完才有 */
+  var send=Math.max(1200,Math.min(n/2e5,12000));
+  fall(900);
+  setTimeout(function(){DSEQ++;
+   DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),
+          name:'nokia-xg-040g-md-'+(/vol=([^&]+)/.exec(u)||[0,'flash'])[1]+'.bin'}},
+   send)};
 });
 })();</script>
 """
@@ -139,7 +227,8 @@ def render(html):
     html = "\n".join(out) + "\n"
     for k, v in MACROS.items():
         html = html.replace("@@%s@@" % k, v)
-    data = json.dumps({"info": INFO, "check": CHECK, "log": LOG},
+    data = json.dumps({"info": INFO, "check": CHECK, "log": LOG,
+                       "env": [{"k": k, "v": v} for k, v in ENV]},
                       ensure_ascii=False)
     stub = STUB.replace("@DATA@", data)
     return html.replace("</head>", stub + "</head>", 1)
