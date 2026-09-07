@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,3981 @@
+@@ -0,0 +1,4018 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -224,6 +224,24 @@ new file mode 100644
 +#include <asm/unaligned.h>
 +#include <version_string.h>
 +#include <linux/sizes.h>
++/*
++ * <ubi_uboot.h> above pulls in <linux/crc32.h>, which #defines crc32() to
++ * crc32_le().  A function-like macro cannot tell a declaration from a call,
++ * so it also eats the crc32() prototype in the header below -- that is the
++ * compile error, and it is the harmless half.
++ *
++ * The quiet half is that crc32_le() (UBI carries its own in
++ * drivers/mtd/ubi/crc32.c) is the raw Linux LFSR, inverted at neither end.
++ * It would answer a plausible-looking number that never matches what
++ * "crc32 file.bin" prints on the user's machine -- and being compared
++ * against exactly that is the only reason /dumpinfo reports one.  UBI gets
++ * away with it because it only ever compares against its own stored values.
++ *
++ * So drop the macro: the declaration and every call here then mean
++ * lib/crc32.c's crc32(), which inverts at both ends and, as its own comment
++ * promises, chains from a previous result -- what /dump needs per window.
++ */
++#undef crc32
 +#include <u-boot/crc.h>
 +#include <vsprintf.h>
 +#include "../drivers/mtd/ubi/ubi.h"
@@ -2529,15 +2547,34 @@ new file mode 100644
 +static char env_buf[16384];
 +static int env_len;
 +
++/*
++ * hwalk_r() hands every live entry to a callback and takes no context
++ * pointer, so the list it fills is a static.  That is fine here: the whole
++ * server is single threaded and the list is consumed before returning.
++ *
++ * The table itself cannot be walked from outside: struct env_entry_node is
++ * only defined in lib/hashtable.c.
++ */
++static struct env_entry *env_list[MAX_ENVS];
++static int env_n;
++
++static int env_collect(struct env_entry *e)
++{
++	if (env_n < MAX_ENVS)
++		env_list[env_n++] = e;
++
++	return 0;			/* non-zero would stop the walk */
++}
++
 +static int httpd_env(void)
 +{
-+	struct env_entry *list[MAX_ENVS];
++	struct env_entry **list = env_list;
 +	struct jbuf jb;
-+	int n = 0, cut = 0, i, j;
++	int n, cut = 0, i, j;
 +
-+	for (i = 1; i <= (int)env_htab.size && n < MAX_ENVS; i++)
-+		if (env_htab.table[i].used > 0)
-+			list[n++] = &env_htab.table[i].entry;
++	env_n = 0;
++	hwalk_r(&env_htab, env_collect);
++	n = env_n;
 +
 +	/* Selection sort: a hundred names at most, and only when asked. */
 +	for (i = 0; i < n - 1; i++) {
