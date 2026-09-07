@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,3889 @@
+@@ -0,0 +1,3981 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -682,7 +682,7 @@ new file mode 100644
 +		" id=dumphint>留空就读到片尾</span></span></div>\n"
 +	"</div>\n"
 +	"<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>读取和写入走同一条 mtd"
-+		" 路径</b>，所以坏块怎么跳过都一致。</p>\n"
++		" 路径</b>，坏块两边都跳过，所以文件比标称容量小一些 —— 少的正是坏块，写回去时它们同样被跳过，位置对得上。</p>\n"
 +	"<p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>\n"
 +	"<div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div"
 +		" class=box><table class=kv id=dll></table></div></div>\n"
@@ -797,7 +797,7 @@ new file mode 100644
 +	"<script>\n"
 +	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
 +	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
-+	"var DLSEQ=0;\n"
++	"var DLSEQ=0,DLBAD=0;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
@@ -895,7 +895,7 @@ new file mode 100644
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
 +	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
-+	"if(f)$('#dumphint').textContent='读到片尾（0x'+f.size.toString(16)+'）';\n"
++	"if(f)$('#dumphint').textContent='读到片尾，'+sz(f.good)+'（坏块已扣掉）';\n"
 +	"if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
 +	"if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}\n"
 +	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
@@ -906,13 +906,19 @@ new file mode 100644
 +		" onclick=\"dlvol(\\''+esc(v.n)+'\\')\">下载</button></td></tr>'});\n"
 +	"t.innerHTML=h}\n"
 +	"/* 单独一层，好让预览把真正的下载换掉而不动上面的逻辑 */\n"
-+	"function dlstart(u,n){$('#dlsink').src=u}\n"
-+	"function sink(u,what,n){silent();\n"
-+	"$('#dlh').textContent='正在读并传送 '+what+'（'+sz(n)+'）…';\n"
++	"function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src=u}\n"
++	"/* 真下载会被浏览器接走，iframe 不触发 load；只有错误页会 —— 那就是信号 */\n"
++	"function dlrefused(f){var t='';\n"
++	"try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}\n"
++	"t=t.replace(/\\s+/g,' ').trim();if(!t)return;\n"
++	"DLBAD=1;$('#dlh').textContent='设备没有接下这次备份：'+t}\n"
++	"function sink(u,what,n){silent();DLBAD=0;\n"
++	"$('#dlh').textContent='正在读并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
 +	"get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}\n"
 +	"/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */\n"
-+	"function dlpoll(k){get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"function dlpoll(k){if(DLBAD)return;\n"
++	"get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;\n"
 +	"dlrow(r);return}\n"
 +	"if(k<120)setTimeout(function(){dlpoll(k+1)},2000);\n"
@@ -927,15 +933,20 @@ new file mode 100644
 +	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
 +		"=x});\n"
 +	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
++	"/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */\n"
 +	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='读不到闪存信息';return}\n"
-+	"$('#dumpoff').value='0x0';$('#dumplen').value='0x'+f.size.toString(16);dumpraw()}\n"
++	"$('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}\n"
 +	"function dumpraw(){var f=INFO&&INFO.flash,o=hex($('#dumpoff').value),lv=$('#dumplen').value.trim"
-+		"(),l=lv?hex(lv):(f?f.size-(o<0?0:o):-1);\n"
++		"(),l=lv?hex(lv):null;\n"
 +	"if(o<0){$('#dlh').textContent='起始偏移不是有效的十六进制数';return}\n"
-+	"if(l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}\n"
-+	"if(!l){$('#dlh').textContent='长度为 0';return}\n"
-+	"if(f&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
-+	"sink('/dump?off=0x'+o.toString(16)+'&len=0x'+l.toString(16),'0x'+o.toString(16)+' 起的区段',l)}\n"
++	"if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}\n"
++	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
++	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
++	"/* 两条都是必要条件，不会误拦；从 o 起究竟还剩多少，设备算完会说 */\n"
++	"if(f&&l!==null&&(l>f.good||o+l>f.size)){$('#dlh').textContent='最多只读得出 '+sz(f.good)+'（坏块已扣掉），要不了"
++		" '+sz(l);return}\n"
++	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
++		" 起的区段',l)}\n"
 +	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|"
 +		"check_buttons|httpd_|ubi_)/;\n"
 +	"function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;va"
@@ -1509,6 +1520,39 @@ new file mode 100644
 +}
 +
 +/*
++ * How many bytes a raw read starting at off can actually deliver.
++ *
++ * Reads skip bad blocks, the way the mtd command does, so that a backup and
++ * a restore of the same range line up with each other.  That makes the chip
++ * yield less than its nominal size: asking for mtd->size bytes walks off the
++ * end long before it has that many, which is a download that dies at the
++ * very end of a quarter-gigabyte transfer.  So this is the figure /info
++ * reports and the figure /dump is sized against.
++ */
++static u64 flash_good_bytes(struct mtd_info *m, u64 off)
++{
++	u64 first = off & ~((u64)m->erasesize - 1);
++	u64 good = 0;
++	u64 blk;
++
++	if (off >= m->size)
++		return 0;
++
++	for (blk = first; blk < m->size; blk += m->erasesize)
++		if (!mtd_block_isbad(m, blk))
++			good += m->erasesize;
++
++	/*
++	 * off may sit inside the first block.  A bad one is skipped whole, so
++	 * only a good one loses its head.
++	 */
++	if (good && !mtd_block_isbad(m, first))
++		good -= off - first;
++
++	return good;
++}
++
++/*
 + * ---- JSON ----------------------------------------------------------------
 + *
 + * The three GET endpoints build their reply in a static buffer each; this
@@ -1644,9 +1688,16 @@ new file mode 100644
 +
 +		P(",\"flash\":{\"name\":");
 +		S(master->name);
-+		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
-+		  (unsigned long long)master->size, master->erasesize,
-+		  master->writesize);
++		/*
++		 * "good" is what a raw backup can actually contain; the page
++		 * sizes "whole chip" from it rather than from size, which
++		 * would ask for bytes the bad blocks took away.
++		 */
++		P(",\"size\":%llu,\"good\":%llu,\"erase\":%u,\"page\":%u},"
++		  "\"parts\":[",
++		  (unsigned long long)master->size,
++		  (unsigned long long)flash_good_bytes(master, 0),
++		  master->erasesize, master->writesize);
 +		first = 1;
 +		list_for_each_entry(part, &master->partitions, node) {
 +			P("%s{\"n\":", first ? "" : ",");
@@ -2998,6 +3049,19 @@ new file mode 100644
 +static char	dump_qs[160];
 +
 +/*
++ * When bytes last actually went out.  A download that the browser abandons
++ * -- cancelled, tab closed, cable pulled -- never reaches the end, so
++ * nothing would ever clear dump_busy and every later upload would be
++ * refused until the page was reloaded.  After this long without progress
++ * the next request takes the buffer over.  Cutting a transfer that was only
++ * paused cannot hand anybody a bad backup: the crc32 is folded in on the
++ * forward pass alone, so /dumpinfo simply never reports it.
++ */
++#define DUMP_IDLE_MS	15000
++
++static ulong	dump_t0;
++
++/*
 + * Flash offset each window starts at.  Bad blocks are skipped, so the map
 + * from output offset to flash offset is not linear and cannot be computed --
 + * but it can be remembered as the forward pass lays it down, which is all a
@@ -3060,6 +3124,12 @@ new file mode 100644
 +	}
 +
 +	return 0;
++}
++
++/* A download nothing is pulling on any more; see DUMP_IDLE_MS. */
++static int dump_stale(void)
++{
++	return dump_busy && get_timer(dump_t0) > DUMP_IDLE_MS;
 +}
 +
 +/* Refuse with a reason the page can show; the console gets it too. */
@@ -3207,10 +3277,11 @@ new file mode 100644
 +	static char part_name[] = UBI_PART;
 +	char val[UBIVOL_NAME_MAX], what[80], name[128];
 +	ulong top, avail;
-+	u64 off = 0;
++	u64 off = 0, good = 0;
 +	u32 len = 0;
 +
 +	dump_busy = 1;
++	dump_t0 = get_timer(0);
 +	dump_wlen = 0;
 +	dump_crc = 0;
 +	dump_crc_pos = 0;
@@ -3270,9 +3341,18 @@ new file mode 100644
 +
 +		dump_raw = 1;
 +		off = qs_get(dump_qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
++		if (off >= dump_mtd->size) {
++			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
++			return;
++		}
++		/*
++		 * No len means "to the end of the chip", which is the good
++		 * bytes from here on -- not the address span, which the bad
++		 * blocks do not fill.
++		 */
++		good = flash_good_bytes(dump_mtd, off);
 +		len = qs_get(dump_qs, "len", l, sizeof(l)) ?
-+			(u32)hextoul(l, NULL) :
-+			(u32)(dump_mtd->size > off ? dump_mtd->size - off : 0);
++			(u32)hextoul(l, NULL) : (u32)good;
 +		snprintf(what, sizeof(what), "flash-0x%llx-0x%x", off, len);
 +	}
 +
@@ -3280,8 +3360,10 @@ new file mode 100644
 +		dump_fail("400 Bad Request", "长度为 0");
 +		return;
 +	}
-+	if (dump_raw && off + len > dump_mtd->size) {
-+		dump_fail("400 Bad Request", "偏移加长度超过闪存容量");
++	if (dump_raw && (u64)len > good) {
++		dump_fail("400 Bad Request",
++			  "从 0x%llx 起只读得出 %llu 字节（已扣掉坏块），要不了 %u",
++			  off, good, len);
 +		return;
 +	}
 +
@@ -3369,6 +3451,8 @@ new file mode 100644
 +
 +		return n;
 +	}
++
++	dump_t0 = get_timer(0);
 +
 +	want = off - dump_hdr_len;
 +	if (want < dump_wpos || want >= dump_wpos + dump_wlen) {
@@ -3484,6 +3568,10 @@ new file mode 100644
 +		if (up_owner != tcp || rx_bytes < 4)
 +			return;
 +		if (!memcmp(req, "POST", 4)) {
++			if (dump_stale()) {
++				printf("httpd: the download in flight went quiet, dropping it\n");
++				dump_busy = 0;
++			}
 +			if (dump_busy) {
 +				tcp->priv = CONN_POSTBUSY;
 +				up_owner = NULL;
@@ -3523,6 +3611,10 @@ new file mode 100644
 +			else if (cls == CONN_DUMPINFO)
 +				dumpinfo_len = httpd_dumpinfo();
 +			else if (cls == CONN_DUMP) {
++				if (dump_stale()) {
++					printf("httpd: the download in flight went quiet, dropping it\n");
++					dump_busy = 0;
++				}
 +				if (dump_busy)
 +					tcp->priv = CONN_DUMPBUSY;
 +				else

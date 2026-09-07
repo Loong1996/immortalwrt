@@ -85,20 +85,37 @@ function stayUpload(w) {
     ok('卷下载走 /dump?vol=', url === '/dump?vol=ri', url);
 
     w.dumpall();
-    ok('整片下载先取第一段', /^\/dump\?off=0x0&len=0x[0-9a-f]+$/.test(url), url);
+    ok('整片下载不带 len，交给设备去数', url === '/dump?off=0x0', url);
 
     $(w, '#dumpoff').value = '0x20000'; $(w, '#dumplen').value = '';
     w.dumpraw();
-    ok('留空长度读到片尾', url === '/dump?off=0x20000&len=0x' +
-       (w.INFO.flash.size - 0x20000).toString(16), url);
+    ok('留空长度也不带 len', url === '/dump?off=0x20000', url);
 
     url = null;
     $(w, '#dumpoff').value = '0x0'; $(w, '#dumplen').value = '0x20000000';
     w.dumpraw();
-    ok('超出容量不发请求', url === null && /超过 flash 容量/.test(txt(w, '#dlh')));
+    ok('超出可读容量不发请求',
+       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
     $(w, '#dumpoff').value = 'zz'; w.dumpraw();
     ok('偏移不是十六进制不发请求', url === null && /十六进制/.test(txt(w, '#dlh')));
-    ok('长度提示带片尾地址', /0x10000000/.test(txt(w, '#dumphint')));
+    ok('长度提示报的是可读字节数',
+       txt(w, '#dumphint').includes(w.sz(w.INFO.flash.good)) &&
+       /坏块/.test(txt(w, '#dumphint')), txt(w, '#dumphint'));
+
+    /* 有坏块的机器：能读出来的比标称容量少，上限得跟着它走 */
+    const good0 = w.INFO.flash.good;
+    w.INFO.flash.good = good0 - 0x40000;        /* 两个坏块 */
+    url = null;
+    $(w, '#dumpoff').value = '0x0';
+    $(w, '#dumplen').value = '0x' + good0.toString(16);
+    w.dumpraw();
+    ok('坏块吃掉的那部分要不到',
+       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    $(w, '#dumplen').value = '0x' + (good0 - 0x40000).toString(16);
+    w.dumpraw();
+    ok('刚好可读的长度放行',
+       url === '/dump?off=0x0&len=0x' + (good0 - 0x40000).toString(16), url);
+    w.INFO.flash.good = good0;
     ok('p10 上回车不弹写入确认框', w.ask() === false && !on(w, '#mask'));
   }
 
@@ -316,22 +333,49 @@ function stayUpload(w) {
 
     w.dumpall();
     await sleep(600);
-    ok('整片一次要到底', url === '/dump?off=0x0&len=0x' +
-       w.INFO.flash.size.toString(16), url);
+    ok('整片一次要到底', url === '/dump?off=0x0', url);
     ok('没有「下一段」这种东西', !$(w, '#dlnext'));
+    ok('长度未知时说的是到片尾', /到片尾/.test(txt(w, '#dlh')), txt(w, '#dlh'));
 
     $(w, '#dumpoff').value = '0x20000'; $(w, '#dumplen').value = '';
     w.dumpraw();
     await sleep(600);
-    ok('留空长度读到片尾', url === '/dump?off=0x20000&len=0x' +
-       (w.INFO.flash.size - 0x20000).toString(16), url);
+    ok('留空长度读到片尾', url === '/dump?off=0x20000', url);
 
     url = null;
     $(w, '#dumpoff').value = '0x0';
     $(w, '#dumplen').value = '0x' + (w.INFO.flash.size + 0x20000).toString(16);
     w.dumpraw();
     ok('还是拦得住超出容量的', url === null &&
-       /超过 flash 容量/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+       /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+  }
+
+  console.log('\n--- 设备拒绝时不用干等四分钟 ---');
+  {
+    /*
+     * 下载走隐藏 iframe：真下载会被浏览器接走、不触发 load，只有错误页会。
+     * 这里直接喂给 dlrefused()，不必让 jsdom 真去导航一个 iframe。
+     */
+    const w = await boot();
+    $(w, '.nav[data-p=p10]').click();
+    w.dlstart = () => {};
+    w.dumpall();
+    await sleep(50);
+    ok('先报在读', /正在读/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+
+    w.dlrefused({ contentDocument: { body: { textContent: '  \n ' } } });
+    ok('空白的 load 不当成错误',
+       w.DLBAD === 0 && /正在读/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+
+    w.dlrefused({ contentDocument: { body: { textContent:
+      ' 从 0x0 起只读得出 268173312 字节（已扣掉坏块），要不了 268435456\n' } } });
+    ok('拒绝的理由当场显示', /只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('理由里的换行被压平', !/\n/.test(txt(w, '#dlh')));
+    ok('不再等 /dumpinfo', w.DLBAD === 1);
+
+    const before = txt(w, '#dlh');
+    await sleep(2400);
+    ok('轮询确实停了', txt(w, '#dlh') === before, txt(w, '#dlh'));
   }
 
   console.log('\n--- 太大的镜像不用传就知道 ---');
