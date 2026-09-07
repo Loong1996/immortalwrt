@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4018 @@
+@@ -0,0 +1,4022 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -699,8 +699,9 @@ new file mode 100644
 +		" id=dumplen class=mono placeholder=\"留空到片尾\" style=\"width:130px\"><span class=fn"
 +		" id=dumphint>留空就读到片尾</span></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>读取和写入走同一条 mtd"
-+		" 路径</b>，坏块两边都跳过，所以文件比标称容量小一些 —— 少的正是坏块，写回去时它们同样被跳过，位置对得上。</p>\n"
++	"<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>文件偏移就是 flash 偏移</b>，坏块在文件里照样占着位子"
++		" ——和 <code>dd</code> 出来的镜像一个格式，所以别人给的 <code>all_flash.bin</code>"
++		" 能写进来，这里备份的也能拿去烧录器。写回时坏块只是不写，后面的内容不会跟着挪位。</p>\n"
 +	"<p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>\n"
 +	"<div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div"
 +		" class=box><table class=kv id=dll></table></div></div>\n"
@@ -913,7 +914,7 @@ new file mode 100644
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
 +	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
-+	"if(f)$('#dumphint').textContent='读到片尾，'+sz(f.good)+'（坏块已扣掉）';\n"
++	"if(f)$('#dumphint').textContent='读到片尾，'+sz(f.size);\n"
 +	"if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
 +	"if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}\n"
 +	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
@@ -943,11 +944,11 @@ new file mode 100644
 +	"else $('#dlh').textContent='没有等到设备回报，这次备份可能没成 —— 看「串口日志」'})}\n"
 +	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 +	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
-+	"function dlrow(r){var t=$('#dll');\n"
-+	"t.innerHTML+='<tr><td>'+esc(r.name)+'</td><td class=n>'+sz(r.len)+'</td><td class=\"n"
-+		" mono\">'+esc(r.crc)+'</td></tr>';\n"
++	"function dlrow(r){var t=$('#dll'),h=r.holes||0;\n"
++	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读不出</span>':'')+'</td><td"
++		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 +	"$('#dllh').hidden=false;\n"
-+	"$('#dlh').textContent='传完了'}\n"
++	"$('#dlh').textContent=h?'传完了 —— 有 '+h+' 个块读不出，那部分填的是 ff，看「串口日志」':'传完了'}\n"
 +	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
 +		"=x});\n"
 +	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
@@ -960,9 +961,7 @@ new file mode 100644
 +	"if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}\n"
 +	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
 +	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
-+	"/* 两条都是必要条件，不会误拦；从 o 起究竟还剩多少，设备算完会说 */\n"
-+	"if(f&&l!==null&&(l>f.good||o+l>f.size)){$('#dlh').textContent='最多只读得出 '+sz(f.good)+'（坏块已扣掉），要不了"
-+		" '+sz(l);return}\n"
++	"if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
 +	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
 +		" 起的区段',l)}\n"
 +	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|"
@@ -1233,6 +1232,7 @@ new file mode 100644
 +static u32	dump_last_seq;
 +static u32	dump_last_len;
 +static u32	dump_last_crc;
++static int	dump_last_holes;
 +static char	dump_last_name[128];
 +
 +
@@ -1538,39 +1538,6 @@ new file mode 100644
 +}
 +
 +/*
-+ * How many bytes a raw read starting at off can actually deliver.
-+ *
-+ * Reads skip bad blocks, the way the mtd command does, so that a backup and
-+ * a restore of the same range line up with each other.  That makes the chip
-+ * yield less than its nominal size: asking for mtd->size bytes walks off the
-+ * end long before it has that many, which is a download that dies at the
-+ * very end of a quarter-gigabyte transfer.  So this is the figure /info
-+ * reports and the figure /dump is sized against.
-+ */
-+static u64 flash_good_bytes(struct mtd_info *m, u64 off)
-+{
-+	u64 first = off & ~((u64)m->erasesize - 1);
-+	u64 good = 0;
-+	u64 blk;
-+
-+	if (off >= m->size)
-+		return 0;
-+
-+	for (blk = first; blk < m->size; blk += m->erasesize)
-+		if (!mtd_block_isbad(m, blk))
-+			good += m->erasesize;
-+
-+	/*
-+	 * off may sit inside the first block.  A bad one is skipped whole, so
-+	 * only a good one loses its head.
-+	 */
-+	if (good && !mtd_block_isbad(m, first))
-+		good -= off - first;
-+
-+	return good;
-+}
-+
-+/*
 + * ---- JSON ----------------------------------------------------------------
 + *
 + * The three GET endpoints build their reply in a static buffer each; this
@@ -1706,16 +1673,9 @@ new file mode 100644
 +
 +		P(",\"flash\":{\"name\":");
 +		S(master->name);
-+		/*
-+		 * "good" is what a raw backup can actually contain; the page
-+		 * sizes "whole chip" from it rather than from size, which
-+		 * would ask for bytes the bad blocks took away.
-+		 */
-+		P(",\"size\":%llu,\"good\":%llu,\"erase\":%u,\"page\":%u},"
-+		  "\"parts\":[",
-+		  (unsigned long long)master->size,
-+		  (unsigned long long)flash_good_bytes(master, 0),
-+		  master->erasesize, master->writesize);
++		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
++		  (unsigned long long)master->size, master->erasesize,
++		  master->writesize);
 +		first = 1;
 +		list_for_each_entry(part, &master->partitions, node) {
 +			P("%s{\"n\":", first ? "" : ",");
@@ -3070,7 +3030,6 @@ new file mode 100644
 + */
 +#define DUMP_HDR_SZ	512
 +#define DUMP_WIN_MAX	(8 << 20)
-+#define DUMP_WINS	512
 +
 +static char	dump_hdr[DUMP_HDR_SZ];
 +static int	dump_hdr_len;
@@ -3081,6 +3040,7 @@ new file mode 100644
 +static u32	dump_wlen;	/* valid bytes in it, 0 when empty */
 +static int	dump_busy;
 +static int	dump_raw;
++static u64	dump_off;	/* flash offset output offset 0 maps to */
 +static char	dump_vol[UBIVOL_NAME_MAX];
 +static struct mtd_info	*dump_mtd;
 +static char	dump_qs[160];
@@ -3099,13 +3059,16 @@ new file mode 100644
 +static ulong	dump_t0;
 +
 +/*
-+ * Flash offset each window starts at.  Bad blocks are skipped, so the map
-+ * from output offset to flash offset is not linear and cannot be computed --
-+ * but it can be remembered as the forward pass lays it down, which is all a
-+ * backward seek needs.  512 entries covers a 4 GiB chip at this window size.
++ * Blocks the forward pass could not read.  Recorded monotonically so a
++ * retransmit cannot count one twice; the list is capped but the count is
++ * not, and /dumpinfo reports it -- a backup with holes in it is still worth
++ * having, but only if you are told where they are.
 + */
-+static u64	dump_ckpt[DUMP_WINS];
-+static u8	dump_ckpt_ok[DUMP_WINS];
++#define DUMP_HOLES	16
++
++static u64	dump_hole[DUMP_HOLES];
++static int	dump_nhole;
++static u64	dump_hole_hi;
 +
 +/* Rolling over the forward pass, so the figure covers what was really sent. */
 +static u32	dump_crc;
@@ -3213,39 +3176,43 @@ new file mode 100644
 +}
 +
 +/*
-+ * Read len bytes of flash starting at offset off, skipping bad blocks the way
-+ * the mtd command does so that a dump and a restore of the same range line up
-+ * with each other.  *endp comes back as the flash offset just past what was
-+ * consumed -- that is what lets the next window carry on where this one
-+ * stopped, which a plain multiply cannot do once a block has been skipped.
++ * Read len bytes of flash at offset off, dd style: the buffer pointer and the
++ * flash offset move together, always, so a byte's place in the file is its
++ * place on the chip.  Nothing here consults the bad block table -- a block
++ * marked bad may still hold readable data, and refusing to look would be us
++ * deciding what somebody's backup is allowed to contain.
++ *
++ * Only a read that actually fails yields 0xff, because at that point there is
++ * nothing else to hand over.  It is noted rather than fatal: one unreadable
++ * block must not throw away the other 235 MiB.
 + */
-+static int dump_read_raw(u64 off, u32 len, u8 *buf, u64 *endp)
++static int dump_read_raw(u64 off, u32 len, u8 *buf)
 +{
 +	struct mtd_info *m = dump_mtd;
++
++	if (off + len > m->size)
++		return -1;
 +
 +	while (len) {
 +		u64 blk = off & ~((u64)m->erasesize - 1);
 +		size_t rl = 0;
-+		u32 n;
++		u32 n = m->erasesize - (u32)(off - blk);
 +		int ret;
 +
-+		if (off >= m->size) {
-+			printf("httpd: /dump ran off the end of the flash\n");
-+			return -1;
-+		}
-+		if (mtd_block_isbad(m, blk)) {
-+			off = blk + m->erasesize;
-+			continue;
-+		}
-+
-+		n = m->erasesize - (u32)(off - blk);
 +		if (n > len)
 +			n = len;
 +
 +		ret = mtd_read(m, off, n, &rl, buf);
 +		if (ret && ret != -EUCLEAN) {
-+			printf("httpd: /dump read at 0x%llx failed (%d)\n", off, ret);
-+			return -1;
++			memset(buf, 0xff, n);
++			if (blk >= dump_hole_hi) {
++				if (dump_nhole < DUMP_HOLES)
++					dump_hole[dump_nhole] = blk;
++				dump_nhole++;
++				dump_hole_hi = blk + m->erasesize;
++				printf("httpd: /dump cannot read the block at 0x%llx (%d), filling 0xff\n",
++				       blk, ret);
++			}
 +		}
 +
 +		buf += n;
@@ -3253,16 +3220,13 @@ new file mode 100644
 +		len -= n;
 +	}
 +
-+	*endp = off;
-+
 +	return 0;
 +}
 +
 +/* Bring the window holding output offset `want` into memory. */
 +static int dump_fill(u32 want)
 +{
-+	u32 idx = want / dump_win;
-+	u32 pos = idx * dump_win;
++	u32 pos = (want / dump_win) * dump_win;
 +	u32 len = dump_len - pos;
 +
 +	if (dump_wlen && pos == dump_wpos)
@@ -3276,20 +3240,10 @@ new file mode 100644
 +			       dump_vol, pos);
 +			return -1;
 +		}
-+	} else {
-+		u64 end;
-+
-+		if (idx >= DUMP_WINS || !dump_ckpt_ok[idx]) {
-+			printf("httpd: /dump has no checkpoint for window %u\n",
-+			       idx);
-+			return -1;
-+		}
-+		if (dump_read_raw(dump_ckpt[idx], len, (u8 *)dump_base, &end))
-+			return -1;
-+		if (idx + 1 < DUMP_WINS && !dump_ckpt_ok[idx + 1]) {
-+			dump_ckpt[idx + 1] = end;
-+			dump_ckpt_ok[idx + 1] = 1;
-+		}
++	} else if (dump_read_raw(dump_off + pos, len, (u8 *)dump_base)) {
++		printf("httpd: /dump reading flash at 0x%llx failed\n",
++		       dump_off + pos);
++		return -1;
 +	}
 +
 +	dump_wpos = pos;
@@ -3314,7 +3268,7 @@ new file mode 100644
 +	static char part_name[] = UBI_PART;
 +	char val[UBIVOL_NAME_MAX], what[80], name[128];
 +	ulong top, avail;
-+	u64 off = 0, good = 0;
++	u64 off = 0;
 +	u32 len = 0;
 +
 +	dump_busy = 1;
@@ -3322,7 +3276,8 @@ new file mode 100644
 +	dump_wlen = 0;
 +	dump_crc = 0;
 +	dump_crc_pos = 0;
-+	memset(dump_ckpt_ok, 0, sizeof(dump_ckpt_ok));
++	dump_nhole = 0;
++	dump_hole_hi = 0;
 +
 +	if (up_active) {
 +		dump_fail("503 Service Unavailable",
@@ -3382,14 +3337,10 @@ new file mode 100644
 +			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
 +			return;
 +		}
-+		/*
-+		 * No len means "to the end of the chip", which is the good
-+		 * bytes from here on -- not the address span, which the bad
-+		 * blocks do not fill.
-+		 */
-+		good = flash_good_bytes(dump_mtd, off);
++		/* Every byte from here to the end, bad blocks included. */
 +		len = qs_get(dump_qs, "len", l, sizeof(l)) ?
-+			(u32)hextoul(l, NULL) : (u32)good;
++			(u32)hextoul(l, NULL) : (u32)(dump_mtd->size - off);
++		dump_off = off;
 +		snprintf(what, sizeof(what), "flash-0x%llx-0x%x", off, len);
 +	}
 +
@@ -3397,10 +3348,8 @@ new file mode 100644
 +		dump_fail("400 Bad Request", "长度为 0");
 +		return;
 +	}
-+	if (dump_raw && (u64)len > good) {
-+		dump_fail("400 Bad Request",
-+			  "从 0x%llx 起只读得出 %llu 字节（已扣掉坏块），要不了 %u",
-+			  off, good, len);
++	if (dump_raw && off + len > dump_mtd->size) {
++		dump_fail("400 Bad Request", "偏移加长度超过闪存容量");
 +		return;
 +	}
 +
@@ -3419,17 +3368,8 @@ new file mode 100644
 +			  "内存不够，连一个读取窗口都放不下");
 +		return;
 +	}
-+	if (dump_raw && (u64)len > (u64)dump_win * DUMP_WINS) {
-+		dump_fail("507 Insufficient Storage",
-+			  "这一段太长，请分成几次备份");
-+		return;
-+	}
 +	dump_base = (top - dump_win) & ~0xffUL;
 +
-+	if (dump_raw) {
-+		dump_ckpt[0] = off;
-+		dump_ckpt_ok[0] = 1;
-+	}
 +	dump_len = len;
 +	dump_wpos = 0;
 +
@@ -3462,8 +3402,8 @@ new file mode 100644
 +
 +	jb_init(&jb, dumpinfo_buf, sizeof(dumpinfo_buf));
 +	jb_printf(&jb, JSON_HDR("200 OK")
-+		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"name\":",
-+		  dump_last_seq, dump_last_len, dump_last_crc);
++		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d,\"name\":",
++		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes);
 +	jb_str(&jb, dump_last_name);
 +	jb_printf(&jb, "}");
 +
@@ -3767,6 +3707,7 @@ new file mode 100644
 +			dump_last_seq++;
 +			dump_last_len = dump_len;
 +			dump_last_crc = dump_crc;
++			dump_last_holes = dump_nhole;
 +			printf("httpd: /dump %s delivered, %u bytes, crc32 0x%08x\n",
 +			       dump_last_name, dump_len, dump_crc);
 +		}
@@ -3943,32 +3884,95 @@ new file mode 100644
 + * and the erase has to cover whole blocks -- "mtd erase" refuses a length
 + * that is not a multiple of one.
 + */
++/*
++ * Write an image back at a fixed offset, block by block, position preserving:
++ * the source pointer advances over a bad block just as the flash offset does,
++ * so byte N of the file always lands at flash offset off + N.
++ *
++ * This is not what "mtd write" does.  That command skips a bad block without
++ * advancing its buffer, which compacts the image -- and a factory dd dump has
++ * the bad blocks sitting in it, so everything past the first one would land
++ * an eraseblock early and every absolute offset the boot chain relies on
++ * would be wrong.
++ *
++ * mtd_erase() is called directly, and the isbad test above it is the only
++ * thing standing between a factory bad block and being erased: nanddev_erase()
++ * clears such a block's BBT entry and erases it anyway, which wipes the marker
++ * living in its OOB.  The block would then read as good forever after and get
++ * trusted with data.  Nothing here may reach mtd_erase() without passing that
++ * test first.
++ */
 +static int flash_raw(ulong addr, ulong off, u32 size)
 +{
 +	struct mtd_info *m = flash_master();
-+	char cmd[96];
-+	u64 elen;
++	const u8 *src = (const u8 *)addr;
++	u64 skipped[16];
++	int nskip = 0, i;
++	u64 pos = off;
++	u32 left = size;
 +
 +	if (!m)
 +		return -1;
 +
-+	elen = ((u64)size + m->erasesize - 1) & ~(u64)(m->erasesize - 1);
-+	if (off + elen > m->size)
-+		elen = m->size - off;
-+
-+	printf("httpd: erasing %s, 0x%llx bytes at 0x%lx\n", m->name, elen, off);
-+	snprintf(cmd, sizeof(cmd), "mtd erase %s 0x%lx 0x%llx", m->name, off, elen);
-+	if (run_command(cmd, 0)) {
-+		printf("httpd: erasing FAILED\n");
++	if (off & (m->erasesize - 1)) {
++		printf("httpd: 0x%lx is not on an erase block boundary\n", off);
++		return -1;
++	}
++	if ((u64)off + size > m->size) {
++		printf("httpd: 0x%lx + %u bytes runs past the end of %s\n",
++		       off, size, m->name);
 +		return -1;
 +	}
 +
-+	printf("httpd: writing %u bytes at 0x%lx\n", size, off);
-+	snprintf(cmd, sizeof(cmd), "mtd write %s 0x%lx 0x%lx 0x%x",
-+		 m->name, addr, off, size);
-+	if (run_command(cmd, 0)) {
-+		printf("httpd: writing FAILED\n");
-+		return -1;
++	printf("httpd: writing %u bytes to %s at 0x%lx, block by block\n",
++	       size, m->name, off);
++
++	while (left) {
++		u32 n = left < m->erasesize ? left : m->erasesize;
++		struct erase_info ei;
++		size_t wl = 0;
++		int ret;
++
++		if (mtd_block_isbad(m, pos)) {
++			if (nskip < (int)ARRAY_SIZE(skipped))
++				skipped[nskip] = pos;
++			nskip++;
++			goto next;
++		}
++
++		memset(&ei, 0, sizeof(ei));
++		ei.mtd = m;
++		ei.addr = pos;
++		ei.len = m->erasesize;
++		ret = mtd_erase(m, &ei);
++		if (ret) {
++			printf("httpd: erasing 0x%llx FAILED (%d)\n", pos, ret);
++			return -1;
++		}
++
++		ret = mtd_write(m, pos, n, &wl, src);
++		if (ret || wl != n) {
++			printf("httpd: writing 0x%llx FAILED (%d, %u of %u)\n",
++			       pos, ret, (u32)wl, n);
++			return -1;
++		}
++next:
++		/* Both, always -- that is the whole point. */
++		src  += m->erasesize;
++		pos  += m->erasesize;
++		left -= n;
++
++		if (!((pos - off) & ((32 << 20) - 1)))
++			printf("httpd: ... 0x%llx\n", pos);
++	}
++
++	if (nskip) {
++		printf("httpd: %d bad block(s) left untouched, so what the image "
++		       "holds for them was not written:", nskip);
++		for (i = 0; i < nskip && i < (int)ARRAY_SIZE(skipped); i++)
++			printf(" 0x%llx", skipped[i]);
++		printf("%s\n", nskip > (int)ARRAY_SIZE(skipped) ? " ..." : "");
++		printf("httpd: everything else landed at its own offset\n");
 +	}
 +
 +	return 0;

@@ -51,8 +51,8 @@ INFO = {
     "ram": 536870912,
     "mac": "90:03:2e:12:34:56",
     "uboot": "U-Boot 2026.07-ImmortalWrt (Sep 06 2026 - 10:21:03 +0800)",
-    "flash": {"name": "spi-nand0", "size": 268435456, "good": 268435456,
-              "erase": 131072, "page": 2048},
+    "flash": {"name": "spi-nand0", "size": 268435456, "erase": 131072,
+              "page": 2048},
     "parts": [{"n": "bl2", "o": 0, "s": 131072},
               {"n": "ubi", "o": 131072, "s": 268304384}],
     "uploadmax": 0xf8d1000,
@@ -148,7 +148,7 @@ httpd: DHCP ACK -> 192.168.1.100
 STUB = r"""
 <script>(function(){
 var D=@DATA@,S={dev:'ok',post:'ok',conn:'up'},T0=Date.now(),DOWN=0;
-var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',name:''};
+var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',holes:0,name:''};
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
@@ -207,12 +207,12 @@ document.addEventListener('DOMContentLoaded',function(){
  window.dlstart=function(u,n){
   /* 长度留空时由设备算到片尾，这里照做，好让进度和 crc32 都有个数 */
   if(n===null){var o=/off=0x([0-9a-f]+)/.exec(u);
-   n=D.info.flash.good-(o?parseInt(o[1],16):0)}
+   n=D.info.flash.size-(o?parseInt(o[1],16):0)}
   /* 第一个窗口读完就开始传，所以静默很短；crc32 要等整份传完才有 */
   var send=Math.max(1200,Math.min(n/2e5,12000));
   fall(900);
   setTimeout(function(){DSEQ++;
-   DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),
+   DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),holes:0,
           name:'nokia-xg-040g-md-'+(/vol=([^&]+)/.exec(u)||[0,'flash'])[1]+'.bin'}},
    send)};
 });

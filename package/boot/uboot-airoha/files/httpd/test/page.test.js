@@ -94,28 +94,22 @@ function stayUpload(w) {
     url = null;
     $(w, '#dumpoff').value = '0x0'; $(w, '#dumplen').value = '0x20000000';
     w.dumpraw();
-    ok('超出可读容量不发请求',
-       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('超出容量不发请求',
+       url === null && /超过 flash 容量/.test(txt(w, '#dlh')), txt(w, '#dlh'));
     $(w, '#dumpoff').value = 'zz'; w.dumpraw();
     ok('偏移不是十六进制不发请求', url === null && /十六进制/.test(txt(w, '#dlh')));
-    ok('长度提示报的是可读字节数',
-       txt(w, '#dumphint').includes(w.sz(w.INFO.flash.good)) &&
-       /坏块/.test(txt(w, '#dumphint')), txt(w, '#dumphint'));
+    ok('长度提示报的是整片容量',
+       txt(w, '#dumphint').includes(w.sz(w.INFO.flash.size)),
+       txt(w, '#dumphint'));
 
-    /* 有坏块的机器：能读出来的比标称容量少，上限得跟着它走 */
-    const good0 = w.INFO.flash.good;
-    w.INFO.flash.good = good0 - 0x40000;        /* 两个坏块 */
+    /* 位置保持：坏块在文件里占着位子，所以整片就是标称容量 */
     url = null;
     $(w, '#dumpoff').value = '0x0';
-    $(w, '#dumplen').value = '0x' + good0.toString(16);
+    $(w, '#dumplen').value = '0x' + w.INFO.flash.size.toString(16);
     w.dumpraw();
-    ok('坏块吃掉的那部分要不到',
-       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
-    $(w, '#dumplen').value = '0x' + (good0 - 0x40000).toString(16);
-    w.dumpraw();
-    ok('刚好可读的长度放行',
-       url === '/dump?off=0x0&len=0x' + (good0 - 0x40000).toString(16), url);
-    w.INFO.flash.good = good0;
+    ok('整整一片的长度是收的',
+       url === '/dump?off=0x0&len=0x' + w.INFO.flash.size.toString(16), url);
+    ok('设备详情里没有 good 这个字段', w.INFO.flash.good === undefined);
     ok('p10 上回车不弹写入确认框', w.ask() === false && !on(w, '#mask'));
   }
 
@@ -347,7 +341,24 @@ function stayUpload(w) {
     $(w, '#dumplen').value = '0x' + (w.INFO.flash.size + 0x20000).toString(16);
     w.dumpraw();
     ok('还是拦得住超出容量的', url === null &&
-       /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+       /超过 flash 容量/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+  }
+
+  console.log('\n--- 读不出来的块要报出来 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p10]').click();
+    w.dlrow({ name: 'nokia-xg-040g-md-flash.bin', len: 268435456,
+              crc: '3f2a91c4', holes: 3 });
+    ok('洞数写在状态行上', /3 个块读不出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('填的是什么也说了', /ff/.test(txt(w, '#dlh')));
+    ok('那一行带标记', /3 块读不出/.test($(w, '#dll').textContent));
+
+    w.dlrow({ name: 'nokia-xg-040g-md-ri.bin', len: 65536,
+              crc: 'aabbccdd', holes: 0 });
+    ok('没有洞就还是「传完了」', txt(w, '#dlh') === '传完了', txt(w, '#dlh'));
+    ok('那一行不带标记',
+       !/读不出/.test([...$(w, '#dll').querySelectorAll('tr')].pop().textContent));
   }
 
   console.log('\n--- 设备拒绝时不用干等四分钟 ---');

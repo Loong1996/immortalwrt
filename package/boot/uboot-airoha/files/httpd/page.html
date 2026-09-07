@@ -231,7 +231,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>起始偏移<small>十六进制</small></span><span class=fc><input type=text id=dumpoff class=mono value=0x0 style="width:130px"><span class=fn>0 为片首</span></span></div>
 <div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text id=dumplen class=mono placeholder="留空到片尾" style="width:130px"><span class=fn id=dumphint>留空就读到片尾</span></span></div>
 </div>
-<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>读取和写入走同一条 mtd 路径</b>，坏块两边都跳过，所以文件比标称容量小一些 —— 少的正是坏块，写回去时它们同样被跳过，位置对得上。</p>
+<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>文件偏移就是 flash 偏移</b>，坏块在文件里照样占着位子 ——和 <code>dd</code> 出来的镜像一个格式，所以别人给的 <code>all_flash.bin</code> 能写进来，这里备份的也能拿去烧录器。写回时坏块只是不写，后面的内容不会跟着挪位。</p>
 <p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>
 <div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div class=box><table class=kv id=dll></table></div></div>
 <div class=act><span class=st id=dlh>选一个卷，或填偏移与长度</span><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
@@ -376,7 +376,7 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
 function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
-if(f)$('#dumphint').textContent='读到片尾，'+sz(f.good)+'（坏块已扣掉）';
+if(f)$('#dumphint').textContent='读到片尾，'+sz(f.size);
 if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}
 if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}
 (INFO.fv||[]).forEach(function(v){fv[v.n]=1});
@@ -403,10 +403,10 @@ if(k<120)setTimeout(function(){dlpoll(k+1)},2000);
 else $('#dlh').textContent='没有等到设备回报，这次备份可能没成 —— 看「串口日志」'})}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
 /* 传完了才有 crc32：它算的是真正发出去的那些字节 */
-function dlrow(r){var t=$('#dll');
-t.innerHTML+='<tr><td>'+esc(r.name)+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
+function dlrow(r){var t=$('#dll'),h=r.holes||0;
+t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读不出</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
 $('#dllh').hidden=false;
-$('#dlh').textContent='传完了'}
+$('#dlh').textContent=h?'传完了 —— 有 '+h+' 个块读不出，那部分填的是 ff，看「串口日志」':'传完了'}
 
 function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
 sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}
@@ -418,8 +418,7 @@ if(o<0){$('#dlh').textContent='起始偏移不是有效的十六进制数';retur
 if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}
 if(l===0){$('#dlh').textContent='长度为 0';return}
 if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}
-/* 两条都是必要条件，不会误拦；从 o 起究竟还剩多少，设备算完会说 */
-if(f&&l!==null&&(l>f.good||o+l>f.size)){$('#dlh').textContent='最多只读得出 '+sz(f.good)+'（坏块已扣掉），要不了 '+sz(l);return}
+if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}
 sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+' 起的区段',l)}
 var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|httpd_|ubi_)/;
 function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
