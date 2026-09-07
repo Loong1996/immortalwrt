@@ -201,7 +201,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 <div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片；也可只写某个分区</span></span></div>
 </div>
-<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href="#" onclick="return jump('p10')">备份下载</a>」里可以现在就存一份。设备一次最多收 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。偏移加镜像长度不得超过 flash 容量；整片写入耗时显著长于固件写入。</p>
+<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href="#" onclick="return jump('p10')">备份下载</a>」里可以现在就存一份。镜像边传边写、不经过内存，所以整片多大都收得下（上限就是 flash 容量 <span id=upmax>—</span>）。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。整片写入耗时显著长于固件写入 —— <b>一旦开始写，中途失败必须重传成功才能重启</b>。</p>
 <div class=act><span class=st>还没有选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
@@ -447,7 +447,7 @@ var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram)
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
 if(INFO.uboot)$('#based').textContent=INFO.uboot;
 $('.nav[data-p=p9]').hidden=!INFO.log;
-if(INFO.uploadmax)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.uploadmax)});
+if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});
 dlfill();
 FV=INFO.fv||[];fvrows();
 if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}
@@ -459,7 +459,7 @@ function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',functi
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
 function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);
-if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+' 起的区域':'擦除整片 flash');a.push('写入镜像 —— <b>耗时最长，请勿断电</b>');a.push('自动重启');return a}
+if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+' 起的区域':'擦除整片 flash');a.push('边传边写 —— <b>耗时最长，请勿断电；一旦开始写，中途失败必须重传成功才能重启</b>');a.push('自动重启');return a}
 if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}
 if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI —— 擦除 ubi 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}
 function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
@@ -473,7 +473,8 @@ if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的
 if((p.id=='p1'||(p.id=='p3'&&!$('[name=stay]',p).checked))&&INFO&&INFO.ubi&&!INFO.ubi.fip)E.push('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));
 if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data 将被清空');
 var utot=0;rows.forEach(function(r){utot+=r.f.size});
-if(INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的 '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');
+/* p4 是流式的，没有上限；别的页要先整个进内存才写 */
+if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的 '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');
 rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' · '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});
 if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';
 E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div class=w>'+x+'</div>'});
@@ -492,6 +493,10 @@ bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent='正在上传 '+
 x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent='上传完成，设备正在校验…';$('.pct',prog).textContent=''};
 x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};
 x.onerror=function(){fail('连接中断，请检查网线后重试')};
+/* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；
+   偏移在请求行里，设备收到第一个包就知道该写到哪 */
+if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);
+x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}
 x.open('POST','/');x.send(fd)}
 function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app').removeAttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写'}
 function done(){var p=SENT.p,rows=SENT.rows;HBOFF=0;if(SENT.stay){var prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent='已上传 '+rows.map(function(r){return r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写';clear(p);expect('write');return}

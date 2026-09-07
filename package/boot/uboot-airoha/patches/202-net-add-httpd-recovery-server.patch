@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4022 @@
+@@ -0,0 +1,4423 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -279,6 +279,7 @@ new file mode 100644
 +#define CONN_DUMPBUSY		((void *)11)
 +#define CONN_DUMPINFO		((void *)12)
 +#define CONN_POSTBUSY		((void *)13)
++#define CONN_STOCK		((void *)14)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -658,8 +659,9 @@ new file mode 100644
 +		" 为整片；也可只写某个分区</span></span></div>\n"
 +	"</div>\n"
 +	"<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href=\"#\" onclick=\"return"
-+		" jump('p10')\">备份下载</a>」里可以现在就存一份。设备一次最多收 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误"
-+		"后仅能通过串口恢复。偏移加镜像长度不得超过 flash 容量；整片写入耗时显著长于固件写入。</p>\n"
++		" jump('p10')\">备份下载</a>」里可以现在就存一份。镜像边传边写、不经过内存，所以整片多大都收得下（上限就是 flash 容量 <span"
++		" id=upmax>—</span>）。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。整片写入耗时显著长于固件写入 ——"
++		" <b>一旦开始写，中途失败必须重传成功才能重启</b>。</p>\n"
 +	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -1004,7 +1006,7 @@ new file mode 100644
 +		" class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;\n"
 +	"if(INFO.uboot)$('#based').textContent=INFO.uboot;\n"
 +	"$('.nav[data-p=p9]').hidden=!INFO.log;\n"
-+	"if(INFO.uploadmax)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.uploadmax)});\n"
++	"if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});\n"
 +	"dlfill();\n"
 +	"FV=INFO.fv||[];fvrows();\n"
 +	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
@@ -1041,7 +1043,8 @@ new file mode 100644
 +	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
 +	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+'"
-+		" 起的区域':'擦除整片 flash');a.push('写入镜像 —— <b>耗时最长，请勿断电</b>');a.push('自动重启');return a}\n"
++		" 起的区域':'擦除整片 flash');a.push('边传边写 —— <b>耗时最长，请勿断电；一旦开始写，中途失败必须重传成功才能重启</b>');a.push('自动重启');retu"
++		"rn a}\n"
 +	"if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入"
 +		" '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+'"
 +		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}\n"
@@ -1073,8 +1076,9 @@ new file mode 100644
 +	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 +		" 将被清空');\n"
 +	"var utot=0;rows.forEach(function(r){utot+=r.f.size});\n"
-+	"if(INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的"
-+		" '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');\n"
++	"/* p4 是流式的，没有上限；别的页要先整个进内存才写 */\n"
++	"if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传"
++		" '+sz(utot)+'，超过设备一次能收下的 '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');\n"
 +	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
 +		" class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' ·"
 +		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});\n"
@@ -1108,6 +1112,10 @@ new file mode 100644
 +		"$('.pct',prog).textContent=''};\n"
 +	"x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};\n"
 +	"x.onerror=function(){fail('连接中断，请检查网线后重试')};\n"
++	"/* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；\n"
++	"偏移在请求行里，设备收到第一个包就知道该写到哪 */\n"
++	"if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);\n"
++	"x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}\n"
 +	"x.open('POST','/');x.send(fd)}\n"
 +	"function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app')"
 +		".removeAttribute('data-busy');prog.className='prog"
@@ -3454,8 +3462,359 @@ new file mode 100644
 +	return n;
 +}
 +
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++/*
++ * ---- POST /stock?off= ----------------------------------------------------
++ *
++ * A whole-chip restore does not fit in RAM.  From $loadaddr up to where
++ * U-Boot relocated itself is about 249 MiB on a 512 MiB board, and the raw
++ * image of a 256 MiB chip is 256 MiB -- so the only way to offer it at all
++ * was to make the user cut the file up and write it in pieces.  Splitting is
++ * our problem, not theirs.  This path never holds the image: bytes go to
++ * flash as they arrive and the size of the upload stops mattering.
++ *
++ * It is deliberately not multipart.  Every other form on the page carries
++ * several fields and is small enough to stage whole, and that code is
++ * untouched.  Streaming a multipart body would mean scanning for boundaries
++ * incrementally and inferring where the payload stops -- and being two bytes
++ * wrong about the closing delimiter puts two bytes of garbage in the last
++ * eraseblock.  A raw body leaves no such question: the offset is in the
++ * request line and the length is in Content-Length, both known from the
++ * first packet.
++ *
++ * The ring only has to absorb reordering.  The stack drops anything outside
++ * [rcv_nxt, rcv_nxt + rcv_wnd) before it ever reaches us, and rcv_wnd is
++ * PKTBUFSRX * TCP_MSS -- tens of kilobytes.  Four eraseblocks would do.
++ *
++ * What is given up is that a failed transfer no longer leaves the flash
++ * untouched.  That is what streaming means and it cannot be argued away, so
++ * the failure is made survivable instead: no reset on error, the page stays
++ * up in RAM, and it says plainly that the flash is now half written and the
++ * transfer has to be repeated before the board is rebooted.
++ */
++#define ST_RING_MAX	(4 << 20)
++
++static struct mtd_info	*st_mtd;
++static ulong	st_ring;	/* == up_base; a ring of whole eraseblocks */
++static u32	st_blk;		/* eraseblock size */
++static u32	st_nblk;	/* slots in the ring */
++static u32	st_hdr_end;	/* stream offset of the first body byte */
++static u32	st_body;	/* body length, from Content-Length */
++static u32	st_done;	/* body bytes already committed to flash */
++static u64	st_off;		/* flash offset body byte 0 belongs at */
++static u32	st_crc;		/* over the bytes received, to compare locally */
++static int	st_nskip;	/* bad blocks passed over */
++static u64	st_skip[16];
++static int	st_started;	/* at least one eraseblock has been written */
++static int	st_failed;
++static int	st_ok;
++static char	st_resp[512];
++static int	st_resp_len;
++
++static void st_reply(const char *status, const char *fmt, ...)
++{
++	char msg[256];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	printf("httpd: /stock: %s\n", msg);
++	st_resp_len = snprintf(st_resp, sizeof(st_resp),
++			       "HTTP/1.0 %s\r\n"
++			       "Content-Type: text/plain; charset=utf-8\r\n"
++			       "Connection: close\r\n"
++			       "\r\n%s\n", status, msg);
++}
++
++/* Refuse, and say whether the flash has already been changed. */
++static void st_fail(const char *fmt, ...)
++{
++	char msg[192];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	st_failed = 1;
++	if (st_started) {
++		httpd_blink_stop();
++		st_reply("500 Internal Server Error",
++			 "%s。闪存已经改写了一部分，现在重启会起不来 —— 请重新写入，成功之前不要断电",
++			 msg);
++	} else {
++		st_reply("400 Bad Request", "%s（闪存尚未改动）", msg);
++	}
++}
++
++/*
++ * Parse the head, which the CONN_UNKNOWN path has already staged at up_base,
++ * and lay the ring out over the same area.  Everything that can be refused is
++ * refused here -- once the first eraseblock is gone there is no going back.
++ */
++static int st_begin(u32 rx_bytes)
++{
++	char hdr[HDRBUF_SZ];
++	char qs[96], o[24];
++	const char *p, *sp;
++	int hdr_end, n, qlen = 0;
++	ulong avail, clen;
++	u32 body_here;
++
++	st_hdr_end = st_body = st_done = st_crc = 0;
++	st_nskip = st_started = st_failed = st_ok = 0;
++	st_resp_len = 0;
++
++	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
++	memcpy(hdr, (const void *)up_base, n);
++	hdr[n] = '\0';
++
++	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
++	if (hdr_end < 0) {
++		st_fail("请求头不完整");
++		return -1;
++	}
++	hdr_end += 4;
++
++	/* "POST /stock?off=0x0 HTTP/1.1" */
++	p = memchr(hdr, '?', hdr_end);
++	if (p) {
++		sp = memchr(p, ' ', hdr_end - (p - hdr));
++		qlen = sp ? (int)(sp - p) - 1 : 0;
++		if (qlen > (int)sizeof(qs) - 1)
++			qlen = sizeof(qs) - 1;
++		if (qlen > 0)
++			memcpy(qs, p + 1, qlen);
++	}
++	qs[qlen > 0 ? qlen : 0] = '\0';
++	st_off = qs_get(qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
++
++	p = strstr(hdr, "Content-Length:");
++	if (!p) {
++		st_fail("没有 Content-Length");
++		return -1;
++	}
++	p += 15;
++	while (*p == ' ' || *p == '\t')
++		p++;
++	clen = simple_strtoul(p, NULL, 10);
++	if (!clen) {
++		st_fail("长度为 0");
++		return -1;
++	}
++
++	st_mtd = flash_master();
++	if (!st_mtd) {
++		st_fail("没有找到闪存设备");
++		return -1;
++	}
++	st_blk = st_mtd->erasesize;
++
++	if (st_off & (u64)(st_blk - 1)) {
++		st_fail("写入偏移 0x%llx 没有按擦除块 0x%x 对齐", st_off, st_blk);
++		return -1;
++	}
++	if (st_off + clen > st_mtd->size) {
++		st_fail("从 0x%llx 起写 %lu 字节会超出闪存容量 %llu",
++			st_off, clen, (unsigned long long)st_mtd->size);
++		return -1;
++	}
++
++	avail = upload_max();
++	st_nblk = (u32)(avail / st_blk);
++	if (st_nblk > ST_RING_MAX / st_blk)
++		st_nblk = ST_RING_MAX / st_blk;
++	if (st_nblk < 4) {
++		st_fail("内存放不下接收环，至少要 %u 字节", 4 * st_blk);
++		return -1;
++	}
++	st_ring = up_base;
++
++	st_hdr_end = (u32)hdr_end;
++	st_body = (u32)clen;
++
++	/* The head already carried some body bytes; move them into slot 0. */
++	body_here = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
++	if (body_here > st_nblk * st_blk)
++		body_here = st_nblk * st_blk;
++	if (body_here)
++		memmove((void *)st_ring,
++			(const void *)(up_base + st_hdr_end), body_here);
++
++	printf("httpd: /stock: %lu bytes to 0x%llx, ring %u x %u KiB at 0x%lx\n",
++	       clen, st_off, st_nblk, st_blk >> 10, st_ring);
++
++	return 0;
++}
++
++/* One eraseblock of the image, at the offset it belongs at. */
++static int st_put(u32 k, u32 n)
++{
++	u64 pos = st_off + (u64)k * st_blk;
++	const u8 *p = (const u8 *)(st_ring + (k % st_nblk) * st_blk);
++	struct erase_info ei;
++	size_t wl = 0;
++	int ret;
++
++	/* Over what arrived, so it can be compared with the file on disk. */
++	st_crc = crc32(st_crc, p, n);
++
++	/*
++	 * The isbad test is load bearing, exactly as in flash_raw():
++	 * nanddev_erase() clears a bad block's BBT entry and erases it anyway,
++	 * wiping the marker in its OOB.  Nothing may reach mtd_erase() without
++	 * passing this first.
++	 */
++	if (mtd_block_isbad(st_mtd, pos)) {
++		if (st_nskip < (int)ARRAY_SIZE(st_skip))
++			st_skip[st_nskip] = pos;
++		st_nskip++;
++
++		return 0;
++	}
++
++	memset(&ei, 0, sizeof(ei));
++	ei.mtd = st_mtd;
++	ei.addr = pos;
++	ei.len = st_blk;
++	ret = mtd_erase(st_mtd, &ei);
++	if (ret) {
++		st_fail("擦除 0x%llx 失败（%d）", pos, ret);
++		return -1;
++	}
++
++	ret = mtd_write(st_mtd, pos, n, &wl, p);
++	if (ret || wl != n) {
++		st_fail("写入 0x%llx 失败（%d，只写进 %u/%u）", pos, ret,
++			(u32)wl, n);
++		return -1;
++	}
++
++	return 0;
++}
++
++/* Commit whatever whole blocks the contiguous prefix now covers. */
++static void st_commit(u32 rx_bytes)
++{
++	u32 have;
++	int i;
++
++	if (st_failed || st_ok || !st_body)
++		return;
++
++	have = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
++	if (have > st_body)
++		have = st_body;
++	if (have < st_done)
++		return;
++
++	while (have - st_done >= st_blk ||
++	       (have == st_body && st_done < st_body)) {
++		u32 n = have - st_done;
++
++		if (n > st_blk)
++			n = st_blk;
++		if (!st_started) {
++			st_started = 1;
++			httpd_blink_start();
++			printf("httpd: /stock: writing now, do not power off\n");
++		}
++		if (st_put(st_done / st_blk, n))
++			return;
++		st_done += n;
++
++		if (!(st_done & ((32 << 20) - 1)))
++			printf("httpd: /stock: %u of %u bytes\n", st_done,
++			       st_body);
++	}
++
++	if (st_done < st_body)
++		return;
++
++	httpd_blink_stop();
++	st_ok = 1;
++
++	if (st_nskip) {
++		printf("httpd: /stock: %d bad block(s) skipped, what the image "
++		       "held for them was not written:", st_nskip);
++		for (i = 0; i < st_nskip && i < (int)ARRAY_SIZE(st_skip); i++)
++			printf(" 0x%llx", st_skip[i]);
++		printf("%s\n", st_nskip > (int)ARRAY_SIZE(st_skip) ? " ..." : "");
++		printf("httpd: /stock: everything else landed at its own offset\n");
++	}
++	st_reply("200 OK", "ok %u bytes crc32 %08x skipped %d", st_body,
++		 st_crc, st_nskip);
++}
++
++/*
++ * Body bytes into the ring.  The return value is how many bytes counting from
++ * the start of this segment the stack may treat as received, so everything
++ * refused has to be a suffix -- which it is: the only reason to refuse is
++ * running past the far edge of the ring.
++ */
++static int st_rx(u32 rx_offs, const u8 *src, int len)
++{
++	u32 b, cap, pre = 0, skip;
++
++	if (st_failed || st_ok)
++		return len;		/* swallow the rest of the upload */
++
++	/* Bytes of the head; the CONN_UNKNOWN path already took those. */
++	if (rx_offs < st_hdr_end) {
++		skip = st_hdr_end - rx_offs;
++		if ((u32)len <= skip)
++			return len;
++		pre += skip;
++		src += skip;
++		len -= skip;
++		b = 0;
++	} else {
++		b = rx_offs - st_hdr_end;
++	}
++
++	/* Already committed to flash; its ring slot has moved on. */
++	if (b < st_done) {
++		skip = st_done - b;
++		if ((u32)len <= skip)
++			return (int)pre + len;
++		pre += skip;
++		src += skip;
++		len -= skip;
++		b = st_done;
++	}
++
++	cap = st_done + st_nblk * st_blk;
++	if (b >= cap)
++		return (int)pre;	/* 0 here means "send it again later" */
++	if ((u32)len > cap - b)
++		len = (int)(cap - b);
++
++	while (len) {
++		u32 k = b / st_blk, io = b % st_blk;
++		u32 n = st_blk - io;
++
++		if (n > (u32)len)
++			n = (u32)len;
++		memcpy((u8 *)(st_ring + (k % st_nblk) * st_blk) + io, src, n);
++		src += n;
++		b += n;
++		len -= n;
++		pre += n;
++	}
++
++	return (int)pre;
++}
++#endif /* CONFIG_CMD_HTTPD_STOCK_RESTORE */
++
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK)
++		return st_rx(rx_offs, buf, len);
++#endif
++
 +	/* A GET needs no body; drop whatever follows. */
 +	if (tcp->priv != CONN_UNKNOWN && tcp->priv != CONN_POST)
 +		return len;
@@ -3560,6 +3919,16 @@ new file mode 100644
 +				return;
 +			}
 +			up_active = 1;
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++			/* "POST /stock" -- straight to flash, never staged. */
++			if (rx_bytes > 11 && !memcmp(req + 4, " /stock", 7) &&
++			    (req[11] == '?' || req[11] == ' ')) {
++				tcp->priv = CONN_STOCK;
++				if (!st_begin(rx_bytes))
++					st_commit(rx_bytes);
++				return;
++			}
++#endif
 +			tcp->priv = CONN_POST;
 +		} else {
 +			void *cls = CONN_GET;
@@ -3609,6 +3978,13 @@ new file mode 100644
 +		}
 +	}
 +
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK) {
++		st_commit(rx_bytes);
++		return;
++	}
++#endif
++
 +	if (tcp->priv != CONN_POST)
 +		return;
 +
@@ -3656,6 +4032,12 @@ new file mode 100644
 +		s = resp_dumpbusy;
 +	} else if (tcp->priv == CONN_POSTBUSY) {
 +		s = resp_postbusy;
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	} else if (tcp->priv == CONN_STOCK) {
++		/* Nothing to say until it is over, either way. */
++		*len = st_resp_len;
++		return st_resp_len ? st_resp : NULL;
++#endif
 +	} else if (tcp->priv == CONN_DUMPINFO) {
 +		*len = dumpinfo_len;
 +		return dumpinfo_buf;
@@ -3727,6 +4109,25 @@ new file mode 100644
 +	 * would break the stream, which is why this lives here.
 +	 */
 +	tcp_stream_close(tcp);
++
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK) {
++		if (st_ok) {
++			/* The bootloader this was running from is gone. */
++			reboot_pending = 1;
++			net_set_state(NETLOOP_SUCCESS);
++		} else {
++			/* Let them try again without touching the power. */
++			printf("httpd: /stock failed, ready for another attempt\n");
++			up_active = 0;
++			up_owner = NULL;
++			st_resp_len = 0;
++			st_failed = 0;
++		}
++
++		return;
++	}
++#endif
 +
 +	/* Same shape as flash_pending: act once the answer is out. */
 +	if (tcp->priv == CONN_REBOOT) {

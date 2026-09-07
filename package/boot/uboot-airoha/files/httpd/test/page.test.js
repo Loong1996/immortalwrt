@@ -389,13 +389,14 @@ function stayUpload(w) {
     ok('轮询确实停了', txt(w, '#dlh') === before, txt(w, '#dlh'));
   }
 
-  console.log('\n--- 太大的镜像不用传就知道 ---');
+  console.log('\n--- 刷回原厂：整片多大都收，走裸端点 ---');
   {
     const w = await boot();
     const max = w.INFO.uploadmax;
     ok('设备报了上传上限', max > 0, max);
     $(w, '.nav[data-p=p4]').click();
-    ok('「刷回原厂」页上写着上限', txt(w, '#upmax') === w.sz(max), txt(w, '#upmax'));
+    ok('页上写的是 flash 容量而不是内存上限',
+       txt(w, '#upmax') === w.sz(w.INFO.flash.size), txt(w, '#upmax'));
 
     const pick = (n) => {
       const i = $(w, '#p4 input[name=stock]');
@@ -404,19 +405,67 @@ function stayUpload(w) {
       Object.defineProperty(i, 'files', { value: [f], configurable: true });
     };
 
-    pick(max + 1024);
+    /* 整片 256 MiB 比内存上限还大 —— 流式之后这不该再是错误 */
+    pick(w.INFO.flash.size);
     w.ask();
-    ok('超了就弹框', on(w, '#mask'));
-    ok('说清超了多少', /超过设备一次能收下的/.test(txt(w, '#abody')), txt(w, '#abody'));
-    ok('这是硬错误，不给「仍要写入」', $(w, '#yes').hidden);
+    ok('整片不再被内存上限拦下',
+       !/超过设备一次能收下的/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('还是给「仍要写入」', !$(w, '#yes').hidden);
     w.hide();
 
-    // 原厂 all_flash 是 235.6 MiB，本来就在上限之内 —— 别把它也拦了
     pick(0xEBA0000);
     w.ask();
     ok('原厂镜像照样放行', !$(w, '#yes').hidden);
-    ok('也没有多余的报错', !/超过设备一次能收下的/.test(txt(w, '#abody')));
     w.hide();
+  }
+
+  console.log('\n--- 刷回原厂发的是裸 body，不是表单 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 0x10000000 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    $(w, '#p4 input[name=stockoff]').value = '0x8000000';
+
+    let sent = null;
+    const XHR = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () {
+      const x = new XHR();
+      const open = x.open.bind(x), send = x.send.bind(x);
+      x.open = (m, u) => { sent = { m, u }; return open(m, u); };
+      x.send = (b) => { sent.body = b; return send(b); };
+      return x;
+    };
+    w.send();
+    w.XMLHttpRequest = XHR;
+
+    ok('走 /stock 并带上偏移', sent && sent.u === '/stock?off=0x8000000',
+       sent && sent.u);
+    ok('body 就是文件本身，没有 FormData 包装',
+       sent && sent.body === f, sent && String(sent.body));
+
+    /* 别的页仍然是表单 */
+    let sent2 = null;
+    const w2 = await boot();
+    $(w2, '.nav[data-p=p1]').click();
+    const i2 = $(w2, '#p1 input[name=firmware]');
+    const f2 = new w2.File([new Uint8Array(4)], 'x.itb');
+    Object.defineProperty(i2, 'files', { value: [f2], configurable: true });
+    const XHR2 = w2.XMLHttpRequest;
+    w2.XMLHttpRequest = function () {
+      const x = new XHR2();
+      const open = x.open.bind(x), send = x.send.bind(x);
+      x.open = (m, u) => { sent2 = { m, u }; return open(m, u); };
+      x.send = (b) => { sent2.body = b; return send(b); };
+      return x;
+    };
+    w2.send();
+    w2.XMLHttpRequest = XHR2;
+    ok('引导升级还是 POST /', sent2 && sent2.u === '/', sent2 && sent2.u);
+    ok('引导升级还是 FormData',
+       sent2 && sent2.body instanceof w2.FormData, sent2 && String(sent2.body));
   }
 
   console.log('\n--- 健康检查分组 ---');
