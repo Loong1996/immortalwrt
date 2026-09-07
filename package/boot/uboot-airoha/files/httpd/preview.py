@@ -148,7 +148,7 @@ def render(html):
 def main():
     html = open(sys.argv[1], encoding="utf-8").read()
     dst = sys.argv[2] if len(sys.argv) > 2 else "preview.html"
-    open(dst, "w", encoding="utf-8").write(render(html))
+    open(dst, "w", encoding="utf-8", newline="").write(render(html))
     print("wrote", dst)
 
 

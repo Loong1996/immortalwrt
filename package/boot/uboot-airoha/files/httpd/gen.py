@@ -65,7 +65,7 @@ def main():
     a = src.index(BEGIN) + len(BEGIN)
     b = src.index(END)
     src = src[:a] + "\n" + convert(html) + "\n" + src[b:]
-    open(sys.argv[2], "w", encoding="utf-8").write(src)
+    open(sys.argv[2], "w", encoding="utf-8", newline="").write(src)
 
 
 if __name__ == "__main__":
