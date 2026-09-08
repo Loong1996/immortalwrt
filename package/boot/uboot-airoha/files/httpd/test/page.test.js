@@ -129,11 +129,11 @@ function stayUpload(w) {
     $(w, '.nav[data-p=p11]').click();
     await sleep(600);
     let rows = [...w.document.querySelectorAll('#envt tr')];
-    ok('把 env 全列出来', rows.length === 27, rows.length);
-    ok('计数对得上', /27 \/ 27 项/.test(txt(w, '#envh')), txt(w, '#envh'));
+    ok('把 env 全列出来', rows.length === 28, rows.length);
+    ok('计数对得上', /28 \/ 28 项/.test(txt(w, '#envh')), txt(w, '#envh'));
 
     $(w, '#envq').value = 'bootmenu'; w.envfill();
-    ok('按名称过滤', w.document.querySelectorAll('#envt tr').length === 2);
+    ok('按名称过滤', w.document.querySelectorAll('#envt tr').length === 3);
     $(w, '#envq').value = 'ubi remove'; w.envfill();
     rows = [...w.document.querySelectorAll('#envt tr')];
     ok('按值也能过滤', rows.length === 1 &&
@@ -143,7 +143,7 @@ function stayUpload(w) {
 
     $(w, '#envq').value = ''; $(w, '#envkey').checked = true; w.envfill();
     const names = [...w.document.querySelectorAll('#envt tr')].map(r => r.cells[0].textContent);
-    ok('只看关键项筛掉噪声', names.length === 18 && !names.includes('stdin'), names.length);
+    ok('只看关键项筛掉噪声', names.length === 19 && !names.includes('stdin'), names.length);
     ok('关键项留下 bootcmd 与 envver',
        names.includes('bootcmd') && names.includes('envver'));
 
@@ -584,6 +584,107 @@ function stayUpload(w) {
     ok('引导升级还是 POST /', sent2 && sent2.u === '/', sent2 && sent2.u);
     ok('引导升级还是 FormData',
        sent2 && sent2.body instanceof w2.FormData, sent2 && String(sent2.body));
+  }
+
+  console.log('\n--- 上传时报速率与剩余时间 ---');
+  {
+    const w = await boot();
+    const i = $(w, '#p1 input[name=firmware]');
+    /* size 得是真的：进了 FormData 之后桩按 Blob 自己的长度算 */
+    const f = new w.File([new Uint8Array(4 << 20)], 'x.itb');
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    w.send();
+    await sleep(2200);
+    const pct = txt(w, '#p1 .pct');
+    ok('还是有百分比', /%/.test(pct), pct);
+    ok('报了速率', /(MiB|KiB|B)\/s/.test(pct), pct);
+    ok('报了剩余时间', /剩余 /.test(pct), pct);
+    ok('正在上传哪个文件也还在', /正在上传/.test(txt(w, '#p1 .pwhat')),
+       txt(w, '#p1 .pwhat'));
+
+    await sleep(2600);
+    ok('传完改说设备在写', /开始写入闪存/.test(txt(w, '#p1 .pwhat')),
+       txt(w, '#p1 .pwhat'));
+    ok('写入阶段给的是预计时间', /预计 /.test(txt(w, '#p1 .pct')),
+       txt(w, '#p1 .pct'));
+  }
+
+  console.log('\n--- 每个文件框都能拖 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p2]').click();
+    const i = $(w, '#p2 input[name=bl2]');
+    const box = i.closest('.fr');
+    ok('表格里的文件框也接了拖拽', !!box && typeof box.ondrop === 'function');
+
+    const f = new w.File([new Uint8Array(4)], 'x-preloader.bin');
+    Object.defineProperty(f, 'size', { value: 120832 });
+    box.ondragover({ preventDefault() {} });
+    ok('拖上去有反馈', box.classList.contains('over'));
+    Object.defineProperty(i, 'files', { value: [f], configurable: true,
+                                        writable: true });
+    box.ondrop({ preventDefault() {}, dataTransfer: { files: [f] } });
+    ok('松手就选上了', /x-preloader\.bin/.test(txt(w, '#p2')));
+    ok('反馈也收了', !box.classList.contains('over'));
+    ok('大框那条老路没断',
+       typeof $(w, '#p1 .drop').ondrop === 'function');
+  }
+
+  console.log('\n--- 引导菜单预览 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p11]').click();
+    await sleep(600);
+    const rows = [...w.document.querySelectorAll('#bmenu tr')];
+    ok('两条菜单都列出来了', rows.length === 2, rows.length);
+    ok('序号在最前', rows[0].cells[0].textContent === '0',
+       rows[0].cells[0].textContent);
+    ok('标题切在第一个等号', rows[0].cells[1].textContent === '启动 ImmortalWrt.',
+       rows[0].cells[1].textContent);
+    ok('命令也摆出来', rows[0].cells[2].textContent === 'run boot_ubi',
+       rows[0].cells[2].textContent);
+    ok('说清不按键会怎样', /秒内不按键/.test(txt(w, '#bmh')), txt(w, '#bmh'));
+
+    /* 串口上红的那几条是会写闪存的，这里也标红；颜色码不能漏进标题 */
+    w.ENV = { env: [
+      { k: 'bootmenu_1', v: '\u001b[31mWrite BL2\u001b[0m=run x' },
+      { k: 'bootmenu_delay', v: '3' }], cut: 0 };
+    w.bmfill();
+    const r = $(w, '#bmenu tr');
+    ok('颜色码没漏进标题', r.cells[1].textContent === 'Write BL2',
+       r.cells[1].textContent);
+    ok('危险条目标红', r.cells[1].className === 'hot', r.cells[1].className);
+
+    w.ENV = { env: [{ k: 'bootcmd', v: 'x' }], cut: 0 };
+    w.bmfill();
+    ok('没有菜单也说清楚', /直接走 bootcmd/.test(txt(w, '#bmh')),
+       txt(w, '#bmh'));
+  }
+
+  console.log('\n--- 诊断包下载 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(2200);
+    let got = null;
+    w.save = (name, text) => { got = { name, text } };
+    const b = [...w.document.querySelectorAll('#p8 button')]
+      .find(x => /下载诊断包/.test(x.textContent));
+    ok('体检页上有这个按钮', !!b);
+    b.click();
+    await sleep(1500);
+    ok('存了一个文件', !!got);
+    ok('文件名带机型', got && got.name === 'nokia-xg-040g-md-diag.txt',
+       got && got.name);
+    ok('带设备详情', /Nokia XG-040G-MD/.test(got.text));
+    ok('带体检结果', /== 健康检查 ==/.test(got.text) && /BL2/.test(got.text));
+    ok('带环境变量', /== 环境变量 ==/.test(got.text) &&
+       /bootcmd=/.test(got.text));
+    ok('带串口日志', /== 串口日志 ==/.test(got.text) &&
+       /probing by address aliasing/.test(got.text));
+    ok('按钮恢复原样', /下载诊断包/.test(b.textContent) && !b.disabled,
+       b.textContent);
+    ok('顺手把环境变量也读回来了', !!w.ENV);
   }
 
   console.log('\n--- 健康检查分组 ---');

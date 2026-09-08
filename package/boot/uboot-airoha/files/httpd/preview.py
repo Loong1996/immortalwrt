@@ -64,10 +64,10 @@ INFO = {
 
 CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
-    ["坏块", 0, "没有", "闪存"],
+    ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["envver", 0, "5，与这一版 U-Boot 一致", "引导"],
-    ["bootcmd", 0, "与这一版的默认一致", "引导"],
+    ["envver", 0, "5，与当前 U-Boot 一致", "引导"],
+    ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 1836 个逻辑擦除块", "UBI"],
     ["磨损", 0, "擦写次数最大 47、平均 12", "UBI"],
@@ -77,8 +77,8 @@ CHECK = [
                "，2026-09-05 17:01", "UBI"],
     ["ubootenv 卷", 0, "存在，CRC 0x3f2a91c4", "环境"],
     ["ubootenv2 卷", 0, "存在，与 ubootenv 一致", "环境"],
-    ["ri 卷", 0, "读到了，MAC 90:03:2e:12:34:56", "出厂数据"],
-    ["bosa 卷", 1, "读到了，内容为空", "出厂数据"],
+    ["ri 卷", 0, "已读取，MAC 90:03:2e:12:34:56", "出厂数据"],
+    ["bosa 卷", 1, "已读取，内容为空", "出厂数据"],
     ["U-Boot MAC", 0, "90:03:2e:12:34:56，与出厂数据一致", "出厂数据"],
 ]
 ENV = [
@@ -91,6 +91,7 @@ ENV = [
     ("boot_httpd_forever", "while true ; do httpd ; done"),
     ("bootmenu_0", "启动 ImmortalWrt.=run boot_ubi"),
     ("bootmenu_8", "网页恢复（Airoha Web U-Boot 0.3.0）.=httpd"),
+    ("bootmenu_delay", "3"),
     ("check_buttons", "if button reset ; then echo recovery ; httpd ; fi"),
     ("envver", "5"),
     ("ethaddr", "90:03:2e:12:34:56"),
@@ -158,10 +159,10 @@ if(S.dev=='nolog')i.log=0;
 return i}
 function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3]}});
 if(S.dev=='noubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
-{n:'UBI',s:2,v:'无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
-{n:'ubootenv 卷',s:2,v:'读不到：UBI 挂不上，环境只在内存里，断电即失',g:'环境'},
+{n:'UBI',s:2,v:'无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
+{n:'ubootenv 卷',s:2,v:'无法读取，UBI 未挂载，环境仅存于内存，断电丢失',g:'环境'},
 {n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'}]);
-if(S.dev=='nofip')c.forEach(function(i){if(i.n=='fip 卷'){i.s=2;i.v='不存在：现在运行的 U-Boot 只在内存里，请到「引导升级」里上传 U-Boot 文件'}});
+if(S.dev=='nofip')c.forEach(function(i){if(i.n=='fip 卷'){i.s=2;i.v='不存在。当前 U-Boot 仅存于内存，请在「引导升级」页上传 U-Boot 文件'}});
 return c}
 function body(u){
  if(u=='/ping')return JSON.stringify({up:Date.now()-T0});
