@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4530 @@
+@@ -0,0 +1,4678 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -712,6 +712,8 @@ new file mode 100644
 +	"<div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span><button type=button class=pb"
 +		" onclick=dumpall()>整片下载</button><button type=button class=\"pb pri\""
 +		" onclick=dumpraw()>下载区段</button></div>\n"
++	"<div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p5>\n"
 +	"<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>\n"
@@ -748,8 +750,11 @@ new file mode 100644
 +	"<div class=pane id=p9>\n"
 +	"<h1>串口日志</h1><p class=sub>U-Boot 本次上电以来的控制台输出。反馈问题时请与健康检查结果一并附上。</p>\n"
 +	"<div class=box><pre class=log id=log>未读取</pre></div>\n"
-+	"<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button"
-+		" type=button class=pb onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
++	"<p class=note id=logovf hidden>日志缓冲已满，后续输出未记录。重启后重新开始记录。</p>\n"
++	"<div class=row><label><input type=checkbox class=sw id=logf"
++		" onchange=logfollow()>实时跟随</label><button type=button class=pb id=logb"
++		" onclick=getlog()>读取日志</button><button type=button class=pb"
++		" onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p12>\n"
 +	"<h1>重启</h1><p class=sub>执行 reset，不改动闪存。用于连续写入多个卷之后。</p>\n"
@@ -834,6 +839,8 @@ new file mode 100644
 +	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
 +	"var RT=0,RN=0,RATE=0;\n"
 +	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
++	"var DLT=0,DLN=0,DLRATE=0;\n"
++	"var LOGN=0,LOGT=null;\n"
 +	"/* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */\n"
 +	"var WRSPD=1400000;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
@@ -905,8 +912,9 @@ new file mode 100644
 +	"var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()}"
 +		";\n"
 +	"x.timeout=2500;\n"
-+	"x.onload=function(){var u=-1;try{u=JSON.parse(x.responseText).up}catch(e){}fin(x.status==200,u)}"
-+		";\n"
++	"x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}\n"
++	"if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}\n"
++	"fin(x.status==200,u)};\n"
 +	"x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};\n"
 +	"x.open('GET','/ping');x.send()}\n"
 +	"function seen(o,u){\n"
@@ -961,24 +969,47 @@ new file mode 100644
 +	"function dlrefused(f){var t='';\n"
 +	"try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}\n"
 +	"t=t.replace(/\\s+/g,' ').trim();if(!t)return;\n"
-+	"DLBAD=1;$('#dlh').textContent='设备拒绝了本次备份：'+t}\n"
++	"DLBAD=1;dlstop('bad');\n"
++	"$('.pwhat',$('#dlprog')).textContent='设备拒绝了本次备份';\n"
++	"$('#dlh').textContent='设备拒绝了本次备份：'+t}\n"
 +	"function sink(u,what,n){silent();DLBAD=0;\n"
++	"DLT=Date.now();DLN=0;DLRATE=0;\n"
++	"var pg=$('#dlprog');pg.hidden=false;pg.className='prog';\n"
++	"$('.pbar',pg).className='pbar ind';$('.pbar',pg).style.width='100%';\n"
++	"$('.pwhat',pg).textContent='正在读取并传送 '+what;$('.pct',pg).textContent='';\n"
 +	"$('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
 +	"get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}\n"
-+	"/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */\n"
++	"/*\n"
++	"* 同一个 /dumpinfo：传输中报进度，读完报 crc32。页面本来每两秒就在问它，\n"
++	"* 不必再开一个端点。\n"
++	"*/\n"
 +	"function dlpoll(k){if(DLBAD)return;\n"
 +	"get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;\n"
 +	"dlrow(r);return}\n"
++	"if(st==200&&r&&r.busy&&r.total)dlprog(r);\n"
 +	"if(k<120)setTimeout(function(){dlpoll(k+1)},2000);\n"
-+	"else $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'})}\n"
++	"else{dlstop('bad');\n"
++	"$('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'}})}\n"
++	"function dlprog(r){var pg=$('#dlprog'),p=r.sent/r.total,\n"
++	"now=Date.now(),dt=(now-DLT)/1000;\n"
++	"if(dt>=1.5){DLRATE=(r.sent-DLN)/dt;DLT=now;DLN=r.sent}\n"
++	"$('.pbar',pg).className='pbar';$('.pbar',pg).style.width=(p*100)+'%';\n"
++	"$('.pct',pg).textContent=sz(r.sent)+' / '+sz(r.total)+' · '\n"
++	"+(p*100).toFixed(0)+'%'\n"
++	"+(DLRATE>0?' · '+spd(DLRATE)+' · 剩余 '+dur((r.total-r.sent)/DLRATE):'')}\n"
++	"function dlstop(cls){var pg=$('#dlprog');pg.className='prog'+(cls?' '+cls:'');\n"
++	"$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';\n"
++	"$('.pct',pg).textContent=''}\n"
 +	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 +	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
 +	"function dlrow(r){var t=$('#dll'),h=r.holes||0;\n"
 +	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
 +		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 +	"$('#dllh').hidden=false;\n"
++	"dlstop(h?'':'ok');\n"
++	"$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';\n"
 +	"$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「串口日志」':'传输完成'}\n"
 +	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
 +		"=x});\n"
@@ -1074,6 +1105,22 @@ new file mode 100644
 +		" s'+i.s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+i.s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;"
 +		"$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 ·"
 +		" '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}\n"
++	"/*\n"
++	"* 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码\n"
++	"* 后的字符串、数不出字节数，所以偏移得由设备说。\n"
++	"*/\n"
++	"function logfollow(){clearTimeout(LOGT);LOGT=null;\n"
++	"var on=$('#logf').checked;$('#logb').disabled=on;\n"
++	"if(!on)return;\n"
++	"LOGN=0;$('#log').textContent='';logtick()}\n"
++	"function logtick(){if(!$('#logf').checked)return;\n"
++	"get('/log?from='+LOGN,function(st,t){if(!$('#logf').checked)return;\n"
++	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
++	"if(i>0){var o=parseInt(t.slice(0,i),10);\n"
++	"if(o>=LOGN){LOGN=o;\n"
++	"var add=t.slice(i+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,'');\n"
++	"if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}\n"
++	"LOGT=setTimeout(logtick,2000)})}\n"
 +	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.dis"
 +		"abled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'')"
 +		".replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
@@ -2538,6 +2585,17 @@ new file mode 100644
 + * skipped, and why a write failed -- the lines this file prints while
 + * flashing go there too.  The buffer is read through a copy of its control
 + * block, so nothing is consumed.
++ *
++ * ?from=N serves only what follows byte N, so the page can follow the
++ * console the way tail -f does instead of re-fetching 64 KiB every couple
++ * of seconds.  That is sound because the record is append-only: U-Boot
++ * stops recording when the buffer fills (GD_FLG_RECORD_OVF) rather than
++ * wrapping, so a byte at offset N stays the byte at offset N.
++ *
++ * The "buffer is full" notice is deliberately NOT part of that stream --
++ * it sits at the end of the body, so a follower would be handed it again
++ * on every poll.  /ping carries the flag instead, and the page says it
++ * once, next to the log rather than inside it.
 + */
 +#if IS_ENABLED(CONFIG_CONSOLE_RECORD)
 +static char log_buf[CONFIG_CONSOLE_RECORD_OUT_SIZE + 512];
@@ -2545,17 +2603,25 @@ new file mode 100644
 +
 +static int httpd_log(void)
 +{
++	static const char hdr[] =
++		"HTTP/1.0 200 OK\r\n"
++		"Content-Type: text/plain; charset=utf-8\r\n"
++		"Connection: close\r\n"
++		"\r\n";
 +	static const char full[] =
 +		"\n[日志缓冲已满，后续输出未记录]\n";
 +	struct membuf copy = *(struct membuf *)&gd->console_out;
++	char from[24], pre[16];
++	unsigned long skip = 0;
 +	char *data;
-+	int n, len, i;
++	int n, len, i, body, tail, k, back, follow;
 +
-+	n = snprintf(log_buf, sizeof(log_buf),
-+		     "HTTP/1.0 200 OK\r\n"
-+		     "Content-Type: text/plain; charset=utf-8\r\n"
-+		     "Connection: close\r\n"
-+		     "\r\n");
++	follow = qs_get(log_qs, "from", from, sizeof(from));
++	if (follow)
++		skip = dectoul(from, NULL);
++
++	n = snprintf(log_buf, sizeof(log_buf), "%s", hdr);
++	body = n;
 +	for (i = 0; i < 2; i++) {
 +		len = membuf_getraw(&copy, sizeof(log_buf) - n - sizeof(full),
 +				    true, &data);
@@ -2564,6 +2630,47 @@ new file mode 100644
 +		memcpy(log_buf + n, data, len);
 +		n += len;
 +	}
++
++	/*
++	 * Following: hand back only what is new, after one line saying how far
++	 * that reaches.  The page cannot work the offset out on its own -- it
++	 * holds decoded text, not bytes -- so the device has to say it.
++	 *
++	 * The notice below belongs to the whole-log view; a follower would be
++	 * handed it again on every poll, so /ping carries that flag instead.
++	 */
++	if (follow) {
++		if (skip > (unsigned long)(n - body))
++			skip = n - body;
++		tail = n - body - (int)skip;
++
++		/*
++		 * Never end inside a UTF-8 sequence: each response is decoded on
++		 * its own, so a split one leaves a replacement character behind
++		 * for good.  Walk back to the last lead byte and drop it if what
++		 * follows is short; the next poll picks it up whole.
++		 */
++		for (k = tail, back = 0; k > 0 && back < 4; k--, back++) {
++			unsigned char c = log_buf[body + skip + k - 1];
++			int need;
++
++			if ((c & 0xc0) == 0x80)
++				continue;	/* continuation, keep walking */
++			need = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 :
++				(c & 0xf0) == 0xe0 ? 3 : 4;
++			if (back + 1 < need)
++				tail = k - 1;
++			break;
++		}
++
++		k = snprintf(pre, sizeof(pre), "%lu\n",
++			     skip + (unsigned long)tail);
++		memmove(log_buf + body + k, log_buf + body + skip, tail);
++		memcpy(log_buf + body, pre, k);
++
++		return body + k + tail;
++	}
++
 +	if (gd->flags & GD_FLG_RECORD_OVF) {
 +		memcpy(log_buf + n, full, sizeof(full) - 1);
 +		n += sizeof(full) - 1;
@@ -2600,8 +2707,16 @@ new file mode 100644
 +
 +static int httpd_ping(void)
 +{
++	/*
++	 * ovf rides along here because the page polls this anyway, and because
++	 * a follower on /log?from= would otherwise never learn that the record
++	 * stopped growing for a reason.
++	 */
 +	return snprintf(ping_buf, sizeof(ping_buf),
-+			JSON_HDR("200 OK") "{\"up\":%lu}", get_timer(0));
++			JSON_HDR("200 OK") "{\"up\":%lu,\"ovf\":%d}",
++			get_timer(0),
++			IS_ENABLED(CONFIG_CONSOLE_RECORD) &&
++			(gd->flags & GD_FLG_RECORD_OVF) ? 1 : 0);
 +}
 +
 +/*
@@ -3159,6 +3274,7 @@ new file mode 100644
 +static char	dump_vol[UBIVOL_NAME_MAX];
 +static struct mtd_info	*dump_mtd;
 +static char	dump_qs[160];
++static char	log_qs[32];
 +
 +/*
 + * When bytes last actually went out.  A download that the browser abandons
@@ -3188,6 +3304,15 @@ new file mode 100644
 +/* Rolling over the forward pass, so the figure covers what was really sent. */
 +static u32	dump_crc;
 +static u32	dump_crc_pos;
++
++/*
++ * The high-water mark of what tx() has handed to the stack.  A pull
++ * callback is asked for arbitrary offsets -- a retransmit asks for one
++ * already served -- so progress is the highest offset reached, never the
++ * last one asked for.  Reported live by /dumpinfo, which the page is
++ * already polling every couple of seconds while the transfer runs.
++ */
++static u32	dump_sent;
 +
 +/*
 + * There is one staging area and one header buffer, so a second download
@@ -3389,6 +3514,7 @@ new file mode 100644
 +	dump_busy = 1;
 +	dump_t0 = get_timer(0);
 +	dump_wlen = 0;
++	dump_sent = 0;
 +	dump_crc = 0;
 +	dump_crc_pos = 0;
 +	dump_nhole = 0;
@@ -3514,11 +3640,20 @@ new file mode 100644
 +static int httpd_dumpinfo(void)
 +{
 +	struct jbuf jb;
++	u32 sent = 0;
++
++	/* The header is not part of what the user asked for; do not count it. */
++	if (dump_sent > (u32)dump_hdr_len)
++		sent = dump_sent - (u32)dump_hdr_len;
++	if (sent > dump_len)
++		sent = dump_len;
 +
 +	jb_init(&jb, dumpinfo_buf, sizeof(dumpinfo_buf));
 +	jb_printf(&jb, JSON_HDR("200 OK")
-+		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d,\"name\":",
-+		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes);
++		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d"
++		  ",\"busy\":%d,\"sent\":%u,\"total\":%u,\"name\":",
++		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes,
++		  dump_busy ? 1 : 0, sent, dump_busy ? dump_len : 0);
 +	jb_str(&jb, dump_last_name);
 +	jb_printf(&jb, "}");
 +
@@ -3540,6 +3675,8 @@ new file mode 100644
 +		if (n > maxlen)
 +			n = maxlen;
 +		memcpy(buf, dump_hdr + off, n);
++		if (off + n > dump_sent)
++			dump_sent = off + n;
 +
 +		return n;
 +	}
@@ -3565,6 +3702,8 @@ new file mode 100644
 +	if (n > maxlen)
 +		n = maxlen;
 +	memcpy(buf, (const void *)(dump_base + (want - dump_wpos)), n);
++	if (off + n > dump_sent)
++		dump_sent = off + n;
 +
 +	return n;
 +}
@@ -3962,7 +4101,7 @@ new file mode 100644
 +	sp = memchr(path, ' ', eol - 4);
 +	plen = sp ? sp - path : eol - 4;
 +
-+	/* Only /dump takes arguments; for everything else the path is all. */
++	/* /dump and /log take arguments; for everything else the path is all. */
 +	q = memchr(path, '?', plen);
 +	if (q) {
 +		qlen = plen - (q - path) - 1;
@@ -3973,8 +4112,17 @@ new file mode 100644
 +		return CONN_INFO;
 +	if (plen == 6 && !memcmp(path, "/check", 6))
 +		return CONN_CHECK;
-+	if (plen == 4 && !memcmp(path, "/log", 4))
++	if (plen == 4 && !memcmp(path, "/log", 4)) {
++		int k = qlen;
++
++		if (k > (int)sizeof(log_qs) - 1)
++			k = sizeof(log_qs) - 1;
++		if (k > 0)
++			memcpy(log_qs, q + 1, k);
++		log_qs[k > 0 ? k : 0] = '\0';
++
 +		return CONN_LOG;
++	}
 +	if (plen == 5 && !memcmp(path, "/ping", 5))
 +		return CONN_PING;
 +	if (plen == 4 && !memcmp(path, "/env", 4))

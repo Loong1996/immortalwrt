@@ -239,6 +239,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
 <div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
 <div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
+<div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
 <div class=pane id=p5>
@@ -271,7 +272,8 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=pane id=p9>
 <h1>串口日志</h1><p class=sub>U-Boot 本次上电以来的控制台输出。反馈问题时请与健康检查结果一并附上。</p>
 <div class=box><pre class=log id=log>未读取</pre></div>
-<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
+<p class=note id=logovf hidden>日志缓冲已满，后续输出未记录。重启后重新开始记录。</p>
+<div class=row><label><input type=checkbox class=sw id=logf onchange=logfollow()>实时跟随</label><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
 </div>
 
 <div class=pane id=p12>
@@ -328,6 +330,8 @@ var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;
 var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;
 var RT=0,RN=0,RATE=0;
 var DLSEQ=0,DLBAD=0,STUCK='';
+var DLT=0,DLN=0,DLRATE=0;
+var LOGN=0,LOGT=null;
 /* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */
 var WRSPD=1400000;
 function $(s,r){return (r||document).querySelector(s)}
@@ -372,7 +376,9 @@ function hbnext(){if(!HB)return;clearTimeout(HBT);HBT=setTimeout(ping,LIVE?3000:
 function ping(){if(!HB)return;if(HBOFF){hbnext();return}
 var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()};
 x.timeout=2500;
-x.onload=function(){var u=-1;try{u=JSON.parse(x.responseText).up}catch(e){}fin(x.status==200,u)};
+x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}
+if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}
+fin(x.status==200,u)};
 x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};
 x.open('GET','/ping');x.send()}
 function seen(o,u){
@@ -421,23 +427,46 @@ function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src
 function dlrefused(f){var t='';
 try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}
 t=t.replace(/\s+/g,' ').trim();if(!t)return;
-DLBAD=1;$('#dlh').textContent='设备拒绝了本次备份：'+t}
+DLBAD=1;dlstop('bad');
+$('.pwhat',$('#dlprog')).textContent='设备拒绝了本次备份';
+$('#dlh').textContent='设备拒绝了本次备份：'+t}
 function sink(u,what,n){silent();DLBAD=0;
+DLT=Date.now();DLN=0;DLRATE=0;
+var pg=$('#dlprog');pg.hidden=false;pg.className='prog';
+$('.pbar',pg).className='pbar ind';$('.pbar',pg).style.width='100%';
+$('.pwhat',pg).textContent='正在读取并传送 '+what;$('.pct',pg).textContent='';
 $('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';
 get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
 DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}
-/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */
+/*
+ * 同一个 /dumpinfo：传输中报进度，读完报 crc32。页面本来每两秒就在问它，
+ * 不必再开一个端点。
+ */
 function dlpoll(k){if(DLBAD)return;
 get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}
 if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;
 dlrow(r);return}
+if(st==200&&r&&r.busy&&r.total)dlprog(r);
 if(k<120)setTimeout(function(){dlpoll(k+1)},2000);
-else $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'})}
+else{dlstop('bad');
+$('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'}})}
+function dlprog(r){var pg=$('#dlprog'),p=r.sent/r.total,
+now=Date.now(),dt=(now-DLT)/1000;
+if(dt>=1.5){DLRATE=(r.sent-DLN)/dt;DLT=now;DLN=r.sent}
+$('.pbar',pg).className='pbar';$('.pbar',pg).style.width=(p*100)+'%';
+$('.pct',pg).textContent=sz(r.sent)+' / '+sz(r.total)+' · '
++(p*100).toFixed(0)+'%'
++(DLRATE>0?' · '+spd(DLRATE)+' · 剩余 '+dur((r.total-r.sent)/DLRATE):'')}
+function dlstop(cls){var pg=$('#dlprog');pg.className='prog'+(cls?' '+cls:'');
+$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';
+$('.pct',pg).textContent=''}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
 /* 传完了才有 crc32：它算的是真正发出去的那些字节 */
 function dlrow(r){var t=$('#dll'),h=r.holes||0;
 t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
 $('#dllh').hidden=false;
+dlstop(h?'':'ok');
+$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';
 $('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「串口日志」':'传输完成'}
 
 function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
@@ -506,6 +535,22 @@ $('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
 (INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
 function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+i.s+'"></span>'+esc(i.n)+'</td><td class="s'+i.s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
+/*
+ * 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码
+ * 后的字符串、数不出字节数，所以偏移得由设备说。
+ */
+function logfollow(){clearTimeout(LOGT);LOGT=null;
+var on=$('#logf').checked;$('#logb').disabled=on;
+if(!on)return;
+LOGN=0;$('#log').textContent='';logtick()}
+function logtick(){if(!$('#logf').checked)return;
+get('/log?from='+LOGN,function(st,t){if(!$('#logf').checked)return;
+var i=st==200&&t?t.indexOf('\n'):-1;
+if(i>0){var o=parseInt(t.slice(0,i),10);
+if(o>=LOGN){LOGN=o;
+var add=t.slice(i+1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,'');
+if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}
+LOGT=setTimeout(logtick,2000)})}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.disabled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}

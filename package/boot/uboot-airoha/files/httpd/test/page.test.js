@@ -209,9 +209,13 @@ function stayUpload(w) {
   {
     const w = await boot();
     $(w, '.nav[data-p=p10]').click();
-    w.dumpall();
+    /* 整片在桩里要跑十几秒（真机是十几分钟），
+       而这里验的是「读取期间不打扰」，不是快慢 */
+    $(w, '#dumpoff').value = '0x0';
+    $(w, '#dumplen').value = '0x800000';
+    w.dumpraw();
     await sleep(5000);
-    ok('整片下载期间不弹框', !on(w, '#off'));
+    ok('备份期间不弹框', !on(w, '#off'));
     ok('边读边传，点一直是绿的', $(w, '#lived').className === 'dot s0',
        $(w, '#lived').className);
     ok('传完记了一行', w.document.querySelectorAll('#dll tr').length === 1);
@@ -584,6 +588,72 @@ function stayUpload(w) {
     ok('引导升级还是 POST /', sent2 && sent2.u === '/', sent2 && sent2.u);
     ok('引导升级还是 FormData',
        sent2 && sent2.body instanceof w2.FormData, sent2 && String(sent2.body));
+  }
+
+  console.log('\n--- 备份时也有进度条 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p10]').click();
+    await sleep(400);
+    ok('还没开始时不占地方', $(w, '#dlprog').hidden);
+
+    $(w, '#dumpoff').value = '0x0';
+    $(w, '#dumplen').value = '0x4000000';
+    w.dumpraw();
+    await sleep(700);
+    ok('开始就露出来', !$(w, '#dlprog').hidden);
+    ok('先说在读哪一段', /正在读取并传送/.test(txt(w, '#dlprog .pwhat')),
+       txt(w, '#dlprog .pwhat'));
+
+    await sleep(4200);
+    const pct = txt(w, '#dlprog .pct');
+    ok('报了已传多少', /MiB \/ /.test(pct), pct);
+    ok('报了百分比', /%/.test(pct), pct);
+    ok('报了速率', /(MiB|KiB|B)\/s/.test(pct), pct);
+    ok('报了剩余时间', /剩余 /.test(pct), pct);
+    ok('进度条不是那根来回晃的',
+       !$(w, '#dlprog .pbar').className.includes('ind'),
+       $(w, '#dlprog .pbar').className);
+
+    await sleep(9000);
+    ok('传完转绿', $(w, '#dlprog').className === 'prog ok',
+       $(w, '#dlprog').className);
+    ok('传完那行说传输完成', /传输完成/.test(txt(w, '#dlprog .pwhat')),
+       txt(w, '#dlprog .pwhat'));
+    ok('完成记录也照旧', w.document.querySelectorAll('#dll tr').length === 1);
+  }
+
+  console.log('\n--- 串口日志实时跟随 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p9]').click();
+    await sleep(600);
+    const first = txt(w, '#log');
+    ok('先按老路整段读出来', /probing by address aliasing/.test(first));
+    ok('缓冲没满就不提这茬', $(w, '#logovf').hidden);
+
+    $(w, '#logf').checked = true;
+    w.logfollow();
+    ok('跟随时不让人再手点读取', $(w, '#logb').disabled);
+    await sleep(900);
+    ok('跟随第一次就把全文取回来',
+       /probing by address aliasing/.test(txt(w, '#log')), txt(w, '#log').length);
+    ok('偏移是设备给的，不是页面数的', w.LOGN > 0, w.LOGN);
+
+    const n1 = w.LOGN, t1 = txt(w, '#log');
+    await sleep(5200);
+    ok('日志自己长了出来', w.LOGN > n1, w.LOGN + ' vs ' + n1);
+    ok('新内容是追加不是重画', txt(w, '#log').indexOf(t1) === 0);
+    ok('没有把旧内容再贴一遍',
+       txt(w, '#log').split('probing by address aliasing').length === 2,
+       txt(w, '#log').split('probing by address aliasing').length);
+
+    $(w, '#logf').checked = false;
+    w.logfollow();
+    const n2 = w.LOGN;
+    await sleep(4200);
+    ok('关掉就真的停了', w.LOGN === n2, w.LOGN + ' vs ' + n2);
+    ok('按钮也放开了', !$(w, '#logb').disabled);
   }
 
   console.log('\n--- 上传时报速率与剩余时间 ---');
