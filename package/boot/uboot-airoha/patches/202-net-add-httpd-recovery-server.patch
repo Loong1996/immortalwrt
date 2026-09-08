@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4018 @@
+@@ -0,0 +1,4447 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -279,6 +279,7 @@ new file mode 100644
 +#define CONN_DUMPBUSY		((void *)11)
 +#define CONN_DUMPINFO		((void *)12)
 +#define CONN_POSTBUSY		((void *)13)
++#define CONN_STOCK		((void *)14)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -483,7 +484,8 @@ new file mode 100644
 +	".ps span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n"
 +	".ps .pct{flex:none;margin-left:1rem}\n"
 +	".prog.ok .pbar{background:var(--grn)}.prog.ok .ps{color:var(--grn)}\n"
-+	".prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red)}\n"
++	".prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red);align-items:flex-start}.pro"
++		"g.bad .pwhat{white-space:normal;overflow:visible;text-overflow:clip}\n"
 +	".kv{width:100%;border-collapse:collapse}\n"
 +	".kv td{padding:.5rem .9rem;vertical-align:top;border-top:1px solid"
 +		" var(--sep);word-break:break-all}\n"
@@ -613,8 +615,8 @@ new file mode 100644
 +		" 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span><span class=tx><span class=t><span"
 +		" class=fn style=\"color:inherit\">选择固件文件</span></span><span class=\"s"
 +		" mono\">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>\n"
-+	"<p class=note>设备现在停在恢复模式，不会自己去启动系统。<b>不想刷了直接断电重启就退出了</b>，只要没有开始写入，闪存一个字节都没动过。</p>\n"
-+	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++	"<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。</p>\n"
++	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
@@ -637,31 +639,30 @@ new file mode 100644
 +		" 环境与用户配置将丢失</small></span><span class=\"fc end\"><input type=checkbox class=sw name=format"
 +		" value=1></span></div>\n"
 +	"</div>\n"
-+	"<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一，擦掉就再也拿不回来 —— 先到「<a href=\"#\""
-+		" onclick=\"return jump('p10')\">备份下载</a>」里存一份。</p>\n"
-+	"<p class=note>仅升级 U-Boot 时无需重建 UBI，只选择 U-Boot 文件即可，rootfs_data 保留。</p>\n"
-+	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++	"<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一且不可再生，请先在「<a href=\"#\""
++		" onclick=\"return jump('p10')\">备份下载</a>」中导出。</p>\n"
++	"<p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>\n"
++	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
 +#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
 +	"<div class=pane id=p4>\n"
-+	"<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL"
-+		" 串口。</p>\n"
++	"<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0"
++		" 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>\n"
 +	"<div class=box>\n"
 +	"<div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label"
 +		" class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span"
 +		" class=fn>未选择</span></label></div>\n"
 +	"<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input"
 +		" type=text name=stockoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0"
-+		" 为整片；也可只写某个分区</span></span></div>\n"
++		" 为整片，亦可写入单个分区</span></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href=\"#\" onclick=\"return"
-+		" jump('p10')\">备份下载</a>」里可以现在就存一份。设备一次最多收 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误"
-+		"后仅能通过串口恢复。偏移加镜像长度不得超过 flash 容量；整片写入耗时显著长于固件写入。</p>\n"
-+	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
-+		" pri\">上传并刷写</button></div>\n"
++	"<p class=note>镜像须来自本机备份，可在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。长度上限为 flash 容量"
++		" <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于"
++		"不一致状态，须重传至成功后方可重启</b>。</p>\n"
++	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb pri\">刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
@@ -682,29 +683,29 @@ new file mode 100644
 +	"<div class=\"fr wide\"><span class=fl>写入后不重启<small>连续写入多个卷时使用；完成后刷新页面继续</small></span><span"
 +		" class=\"fc end\"><input type=checkbox class=sw name=stay value=1></span></div>\n"
 +	"</div>\n"
-+	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
++	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p10>\n"
-+	"<h1>备份下载</h1><p class=sub>把闪存内容读出来存到电脑。边读边传，多大都是一个文件；传输期间页面偶尔不响应是正常的。</p>\n"
-+	"<p class=bh>UBI 卷<small>逐机唯一、丢了就拿不回来的出厂数据在 ri 与 bosa 里</small></p>\n"
++	"<h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>\n"
++	"<p class=bh>UBI 卷<small>逐机唯一的出厂数据位于 ri 与 bosa 卷</small></p>\n"
 +	"<div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>\n"
-+	"<p class=bh>原始区段<small>绕过 UBI 按 flash 偏移读，与「刷回原厂」的写入一一对应</small></p>\n"
++	"<p class=bh>原始区段<small>绕过 UBI 按 flash 偏移读取，偏移与「刷回原厂」一致</small></p>\n"
 +	"<div class=box>\n"
 +	"<div class=fr><span class=fl>起始偏移<small>十六进制</small></span><span class=fc><input type=text"
 +		" id=dumpoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0 为片首</span></span></div>\n"
 +	"<div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text"
 +		" id=dumplen class=mono placeholder=\"留空到片尾\" style=\"width:130px\"><span class=fn"
-+		" id=dumphint>留空就读到片尾</span></span></div>\n"
++		" id=dumphint>留空读至片尾</span></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>读取和写入走同一条 mtd"
-+		" 路径</b>，坏块两边都跳过，所以文件比标称容量小一些 —— 少的正是坏块，写回去时它们同样被跳过，位置对得上。</p>\n"
-+	"<p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>\n"
-+	"<div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div"
++	"<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>\n"
++	"<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部"
++		" <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>\n"
++	"<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div"
 +		" class=box><table class=kv id=dll></table></div></div>\n"
-+	"<div class=act><span class=st id=dlh>选一个卷，或填偏移与长度</span><button type=button class=pb"
++	"<div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span><button type=button class=pb"
 +		" onclick=dumpall()>整片下载</button><button type=button class=\"pb pri\""
 +		" onclick=dumpraw()>下载区段</button></div>\n"
 +	"</div>\n"
@@ -715,14 +716,14 @@ new file mode 100644
 +	"<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p8>\n"
-+	"<h1>健康检查</h1><p class=sub>BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备不响应，需要几秒。</p>\n"
-+	"<div class=box><table class=kv id=chk><tr><td colspan=2>还没有检查</td></tr></table></div>\n"
++	"<h1>健康检查</h1><p class=sub>检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。</p>\n"
++	"<div class=box><table class=kv id=chk><tr><td colspan=2>未执行检查</td></tr></table></div>\n"
 +	"<div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb"
 +		" onclick=check()>开始检查</button><button type=button class=pb"
 +		" onclick=diag(this)>复制诊断信息</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p11>\n"
-+	"<h1>环境变量</h1><p class=sub>U-Boot 当前的 env。只读 —— bootcmd 或引导菜单被改坏是机器起不来的常见原因，这里能看出来。</p>\n"
++	"<h1>环境变量</h1><p class=sub>U-Boot 当前环境变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。</p>\n"
 +	"<div class=bar><input type=text id=envq placeholder=\"过滤名称或值\" oninput=envfill()"
 +		" style=\"max-width:200px\"><label><input type=checkbox class=sw id=envkey"
 +		" onchange=envfill()>只看关键项</label><span class=fs id=envh></span></div>\n"
@@ -731,22 +732,21 @@ new file mode 100644
 +		" type=button class=pb onclick=envcopy(this)>复制全部</button></div>\n"
 +	"<p class=bh>恢复默认环境</p>\n"
 +	"<div class=box>\n"
-+	"<div class=\"fr wide\"><span class=fl>恢复成这一版 U-Boot 自带的默认值<small>清掉自定义的"
++	"<div class=\"fr wide\"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的"
 +		" bootcmd、引导菜单与网络设置并保存</small></span><span class=\"fc end\"><button type=button class=\"pb red\""
 +		" onclick=askenvdef()>恢复默认</button></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>出厂 MAC 存在 ri 卷里，<b>不受影响</b>；固件与用户配置也不受影响。恢复后需重启才生效。若 UBI 挂不上，保存会失败 ——"
-+		" 改动只在内存里，断电即失。</p>\n"
++	"<p class=note>出厂 MAC 位于 ri 卷，<b>不受影响</b>；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。</p>\n"
 +	"</div>\n"
 +	"<div class=pane id=p9>\n"
-+	"<h1>串口日志</h1><p class=sub>U-Boot 自本次上电以来的控制台输出。没有 USB-TTL 时，求助请把这段和健康检查一起贴出。</p>\n"
-+	"<div class=box><pre class=log id=log>还没有读取</pre></div>\n"
++	"<h1>串口日志</h1><p class=sub>U-Boot 本次上电以来的控制台输出。反馈问题时请与健康检查结果一并附上。</p>\n"
++	"<div class=box><pre class=log id=log>未读取</pre></div>\n"
 +	"<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button"
 +		" type=button class=pb onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p12>\n"
-+	"<h1>重启</h1><p class=sub>等同于断电再上电，不改动闪存。连着写完几个卷之后用它，省得去够电源。</p>\n"
-+	"<p class=note>重启后正常引导系统，起不来才会回到这个页面。设备回来之后本页面自动刷新。</p>\n"
++	"<h1>重启</h1><p class=sub>执行 reset，不改动闪存。用于连续写入多个卷之后。</p>\n"
++	"<p class=note>重启后正常引导，引导失败时回到本页面。设备恢复响应后本页面自动刷新。</p>\n"
 +	"<div class=act><span class=st></span><button type=button class=\"pb red\""
 +		" onclick=askreboot()>立即重启</button></div>\n"
 +	"</div>\n"
@@ -787,14 +787,24 @@ new file mode 100644
 +	"</table></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p7>\n"
-+	"<h1>上传完成</h1><p class=sub>本页面已无作用，可以关闭，网线也可断开。设备正在自行写入，完成后自动重启。</p>\n"
++	"<h1>上传完成</h1><p class=sub>设备正在写入，完成后自动重启。本页面可以关闭。</p>\n"
 +	"<div class=fin><span class=ic><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5L20"
-+		" 7\"/></svg></span><div><b>接下来只需看设备面板</b>\n"
++		" 7\"/></svg></span><div><b>通过设备指示灯判断进度</b>\n"
 +	"<table class=lt><tr><td>齐闪</td><td>正在写入，<b>请勿断电</b></td></tr><tr><td>熄灭</td><td>写入完成，自动重启；约 1–2"
 +		" 分钟后可重新连接</td></tr></table></div></div>\n"
 +	"<p class=bh>本次写入步骤</p>\n"
 +	"<div class=box style=\"padding:.7rem 1rem\"><ol class=steps id=steps></ol></div>\n"
 +	"</div>\n"
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	"<div class=pane id=p13>\n"
++	"<h1>写入完成</h1><p class=sub>镜像已全部写入闪存，设备正在重启。本页面可以关闭。</p>\n"
++	"<div class=fin><span class=ic><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5L20"
++		" 7\"/></svg></span><div><b>设备回报</b>\n"
++	"<table class=lt id=stres></table></div></div>\n"
++	"<p class=note>crc32 由设备对收到的字节计算，与备份时记录的值一致即说明传输无误。</p>\n"
++	"<p class=note>重启约需 1–2 分钟。整片写入后本页面所属的 U-Boot 已被覆盖，设备将按镜像中的引导程序启动。</p>\n"
++	"</div>\n"
++#endif
 +	"</form>\n"
 +	"<iframe id=dlsink hidden title=download></iframe>\n"
 +	"<div class=mask id=off><div class=alert>\n"
@@ -815,7 +825,7 @@ new file mode 100644
 +	"<script>\n"
 +	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
 +	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
-+	"var DLSEQ=0,DLBAD=0;\n"
++	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
@@ -841,7 +851,7 @@ new file mode 100644
 +		"ore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}\n"
 +	"function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var"
 +		" fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选"
-+		" '+fs.length+' 个文件 · '+sz(n):'还没有选择文件'}\n"
++		" '+fs.length+' 个文件 · '+sz(n):'未选择文件'}\n"
 +	"function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)}});$$"
 +		"('.drop').forEach(function(d){d.ondragover=function(e){e.preventDefault();d.classList.add('over'"
 +		")};d.ondragleave=function(){d.classList.remove('over')};d.ondrop=function(e){e.preventDefault();"
@@ -856,10 +866,11 @@ new file mode 100644
 +	"function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x"
 +		".onerror=function(){cb(0,'')};x.open('GET',u);x.send()}\n"
 +	"function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}\n"
-+	"function banner(){var t='';if(INFO){if(!INFO.ubi)t='<b>闪存里没有可挂载的 UBI。</b>这是首次迁移：到「引导升级」里同时上传"
-+		" BL2、U-Boot 与固件，并打开「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存里没有 U-Boot（fip 卷）。</b>现在运行的 U-Boot"
-+		" 只在内存里，断电即失：请到「引导升级」里上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidde"
-+		"n');else $('#ban').setAttribute('hidden','')}\n"
++	"function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的"
++		" UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有"
++		" U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot"
++		" 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else"
++		" $('#ban').setAttribute('hidden','')}\n"
 +	"var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1"
 +		" 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20\"/>';\n"
 +	"var ICON_WR='<path d=\"M12 6v6l4 2\"/><circle cx=\"12\" cy=\"12\" r=\"9\"/>';\n"
@@ -893,9 +904,9 @@ new file mode 100644
 +	"/* 已知会静默，但用户自己发起的：只变点，不弹框 */\n"
 +	"function silent(){SILENT=1;MISS=0}\n"
 +	"function offline(why){var i,t,b,r=0;\n"
-+	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='面板齐闪，<b>不要断电</b>。写完自动恢复。'}\n"
-+	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，回来后自动刷新。'}\n"
-+	"else{i=ICON_OFF;t='已断开与路由器连接';b='设备没有回应。检查网线与电源。面板齐闪说明在写入，等它写完。';r=1}\n"
++	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}\n"
++	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}\n"
++	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯齐闪表示正在写入，请等待完成。';r=1}\n"
 +	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
 +	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+b+'</div>'+\n"
 +	"(r?'<div class=hint>每 2 秒自动重试。</div>':'');\n"
@@ -903,7 +914,7 @@ new file mode 100644
 +	"$('#off').setAttribute('data-on','')}\n"
 +	"function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');\n"
 +	"if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';\n"
-+	"$('.pwhat',prog).textContent='设备写完了，网页服务已恢复 —— 可以接着写下一个卷';$('.pct',prog).textContent=''}}}\n"
++	"$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}\n"
 +	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);pi"
 +		"ng()}\n"
 +	"function askreboot(){$('#atitle').textContent='重启';\n"
@@ -913,9 +924,9 @@ new file mode 100644
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
 +	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
-+	"if(f)$('#dumphint').textContent='读到片尾，'+sz(f.good)+'（坏块已扣掉）';\n"
++	"if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);\n"
 +	"if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
-+	"if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}\n"
++	"if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，请使用下方的原始区段。首次迁移前闪存仍为原厂内容，建议此时备份</td></tr>';return}\n"
 +	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
 +	"(INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return"
 +		" x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;\n"
@@ -929,9 +940,9 @@ new file mode 100644
 +	"function dlrefused(f){var t='';\n"
 +	"try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}\n"
 +	"t=t.replace(/\\s+/g,' ').trim();if(!t)return;\n"
-+	"DLBAD=1;$('#dlh').textContent='设备没有接下这次备份：'+t}\n"
++	"DLBAD=1;$('#dlh').textContent='设备拒绝了本次备份：'+t}\n"
 +	"function sink(u,what,n){silent();DLBAD=0;\n"
-+	"$('#dlh').textContent='正在读并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
++	"$('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
 +	"get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}\n"
 +	"/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */\n"
@@ -940,19 +951,19 @@ new file mode 100644
 +	"if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;\n"
 +	"dlrow(r);return}\n"
 +	"if(k<120)setTimeout(function(){dlpoll(k+1)},2000);\n"
-+	"else $('#dlh').textContent='没有等到设备回报，这次备份可能没成 —— 看「串口日志」'})}\n"
++	"else $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'})}\n"
 +	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 +	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
-+	"function dlrow(r){var t=$('#dll');\n"
-+	"t.innerHTML+='<tr><td>'+esc(r.name)+'</td><td class=n>'+sz(r.len)+'</td><td class=\"n"
-+		" mono\">'+esc(r.crc)+'</td></tr>';\n"
++	"function dlrow(r){var t=$('#dll'),h=r.holes||0;\n"
++	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
++		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 +	"$('#dllh').hidden=false;\n"
-+	"$('#dlh').textContent='传完了'}\n"
++	"$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「串口日志」':'传输完成'}\n"
 +	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
 +		"=x});\n"
 +	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
 +	"/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */\n"
-+	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='读不到闪存信息';return}\n"
++	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}\n"
 +	"$('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}\n"
 +	"function dumpraw(){var f=INFO&&INFO.flash,o=hex($('#dumpoff').value),lv=$('#dumplen').value.trim"
 +		"(),l=lv?hex(lv):null;\n"
@@ -960,9 +971,7 @@ new file mode 100644
 +	"if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}\n"
 +	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
 +	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
-+	"/* 两条都是必要条件，不会误拦；从 o 起究竟还剩多少，设备算完会说 */\n"
-+	"if(f&&l!==null&&(l>f.good||o+l>f.size)){$('#dlh').textContent='最多只读得出 '+sz(f.good)+'（坏块已扣掉），要不了"
-+		" '+sz(l);return}\n"
++	"if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
 +	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
 +		" 起的区段',l)}\n"
 +	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|"
@@ -981,18 +990,18 @@ new file mode 100644
 +	"if(!ENV)return;\n"
 +	"rows.forEach(function(e){h+='<tr><td>'+esc(e.k)+'</td><td class=envv>'+esc(e.v)+'</td></tr>'});\n"
 +	"t.innerHTML=h||'<tr><td>没有匹配的变量</td></tr>';\n"
-+	"$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容看串口':'')}\n"
++	"$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容见串口':'')}\n"
 +	"function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\\n'))}\n"
 +	"function askenvdef(){$('#atitle').textContent='环境变量';\n"
 +	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default -a \\u0026\\u0026"
 +		" saveenv</span></div>'+\n"
-+	"'<div class=w>自定义的 bootcmd、引导菜单与网络设置会回到这一版 U-Boot 的默认值</div>'+\n"
-+	"'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启才生效</div>';\n"
++	"'<div class=w>自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值</div>'+\n"
++	"'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启生效</div>';\n"
 +	"var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on'"
 +		",'')}\n"
 +	"function envdef(){$('#envh').textContent='正在恢复…';\n"
 +	"get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并"
-+		"保存，重启后生效':'已恢复，但保存失败（UBI 挂不上），断电即失';getenv()}\n"
++		"保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
 +	"else $('#envh').textContent='恢复失败（'+st+'）'})}\n"
 +	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td"
 +		" colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
@@ -1005,7 +1014,7 @@ new file mode 100644
 +		" class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;\n"
 +	"if(INFO.uboot)$('#based').textContent=INFO.uboot;\n"
 +	"$('.nav[data-p=p9]').hidden=!INFO.log;\n"
-+	"if(INFO.uploadmax)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.uploadmax)});\n"
++	"if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});\n"
 +	"dlfill();\n"
 +	"FV=INFO.fv||[];fvrows();\n"
 +	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
@@ -1016,9 +1025,9 @@ new file mode 100644
 +		" class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
 +		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
 +	"function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.in"
-+		"nerHTML='<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabl"
-+		"ed=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML"
-+		"='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td"
++		"nerHTML='<tr><td colspan=2>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled"
++		"=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='"
++		"<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td"
 +		" colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var"
 +		" h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th"
 +		" class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
@@ -1041,12 +1050,12 @@ new file mode 100644
 +		" '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\\n'))}\n"
 +	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
-+	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+'"
-+		" 起的区域':'擦除整片 flash');a.push('写入镜像 —— <b>耗时最长，请勿断电</b>');a.push('自动重启');return a}\n"
++	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移"
++		" 0x'+(o<0?'?':o.toString(16))+' 起逐块擦除并写入镜像，随上传同步完成');a.push('自动重启');return a}\n"
 +	"if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入"
 +		" '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+'"
-+		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}\n"
-+	"if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI —— 擦除 ubi"
++		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}\n"
++	"if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI：擦除 ubi"
 +		" 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip"
 +		" 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}\n"
 +	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
@@ -1057,11 +1066,11 @@ new file mode 100644
 +		"push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+'"
 +		" 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移"
 +		" 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader"
-+		" 及其后全部内容'));if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}\n"
++		" 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}\n"
 +	"if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return"
 +		" r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^"
 +		"[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+'"
-+		" 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动断电重启')}\n"
++		" 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动重启')}\n"
 +	"if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return"
 +		" r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
 +		" 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot"
@@ -1074,11 +1083,12 @@ new file mode 100644
 +	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 +		" 将被清空');\n"
 +	"var utot=0;rows.forEach(function(r){utot+=r.f.size});\n"
-+	"if(INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的"
-+		" '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');\n"
++	"/* p4 是流式的，没有上限；别的页要先整个进内存才写 */\n"
++	"if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次上传"
++		" '+sz(utot)+'，超过设备单次可接收的 '+sz(INFO.uploadmax)+'：内存不足，设备将拒绝');\n"
 +	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
 +		" class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' ·"
-+		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});\n"
++		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认文件正确')});\n"
 +	"if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';\n"
 +	"E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div"
 +		" class=w>'+x+'</div>'});\n"
@@ -1095,33 +1105,54 @@ new file mode 100644
 +		");\n"
 +	"$$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});\n"
 +	"rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});\n"
-+	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked)};\n"
-+	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent='上传中…';prog.hid"
-+		"den=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
++	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked),btxt:btn.textContent"
++		"};\n"
++	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中"
++		"…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
 +	"x.upload.onprogress=function(e){if(!e.lengthComputable)return;var"
 +		" done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;"
 +		"if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}\n"
-+	"bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent='正在上传"
-+		" '+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' ·"
++	"bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正在写入 ':'正在上传"
++		" ')+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' ·"
 +		" '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);$('.pct',prog).textContent=sz(done)+'"
 +		" / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'};\n"
-+	"x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent='上传完成，设备正在校验…';"
-+		"$('.pct',prog).textContent=''};\n"
-+	"x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};\n"
-+	"x.onerror=function(){fail('连接中断，请检查网线后重试')};\n"
++	"x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent=p.id=='p4'?'传输完"
++		"成，设备正在写入最后一块…':'上传完成，设备正在校验…';$('.pct',prog).textContent=''};\n"
++	"x.onload=function(){if(x.status==200){done(x.responseText);return}\n"
++	"/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */\n"
++	"fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};\n"
++	"x.onerror=function(){fail('连接中断，请检查网线后重试',0)};\n"
++	"/* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；\n"
++	"偏移在请求行里，设备收到第一个包就知道该写到哪 */\n"
++	"if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);\n"
++	"x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}\n"
 +	"x.open('POST','/');x.send(fd)}\n"
-+	"function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app')"
-+		".removeAttribute('data-busy');prog.className='prog"
++	"function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#ap"
++		"p').removeAttribute('data-busy');prog.className='prog"
 +		" bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textC"
-+		"ontent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写'}\n"
-+	"function done(){var p=SENT.p,rows=SENT.rows;HBOFF=0;if(SENT.stay){var"
++		"ontent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;\n"
++	"/* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */\n"
++	"if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中"
++		"断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}\n"
++	"function done(resp){var p=SENT.p,rows=SENT.rows;HBOFF=0;\n"
++	"/* 流式那条路拿到 200 时已经写完了，去它自己的完成页 */\n"
++	"if(p.id=='p4'){stdone(resp);return}if(SENT.stay){var"
 +		" prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.cl"
 +		"assName='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat'"
 +		",prog).textContent='已上传 '+rows.map(function(r){return"
-+		" r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
-+		"Content='上传并刷写';clear(p);expect('write');return}\n"
++		" r.l}).join('、')+'，设备正在写入；指示灯恢复常态后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
++		"Content=SENT.btxt;clear(p);expect('write');return}\n"
 +	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
 +		"en','');hbstop();show('p7')}\n"
++	"/* 设备回的是 \"ok N bytes crc32 xxxxxxxx skipped M\" */\n"
++	"function stdone(t){STUCK='';var m=/ok (\\d+) bytes crc32 ([0-9a-f]+) skipped"
++		" (-?\\d+)/.exec(t||''),h='',k;\n"
++	"if(m){k=+m[3];\n"
++	"h='<tr><td>写入</td><td>'+sz(+m[1])+'（'+m[1]+' 字节）</td></tr>'+\n"
++	"'<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+\n"
++	"'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'}\n"
++	"else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';\n"
++	"$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}\n"
 +	"function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var"
 +		" lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classLis"
 +		"t.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode"
@@ -1233,6 +1264,7 @@ new file mode 100644
 +static u32	dump_last_seq;
 +static u32	dump_last_len;
 +static u32	dump_last_crc;
++static int	dump_last_holes;
 +static char	dump_last_name[128];
 +
 +
@@ -1538,39 +1570,6 @@ new file mode 100644
 +}
 +
 +/*
-+ * How many bytes a raw read starting at off can actually deliver.
-+ *
-+ * Reads skip bad blocks, the way the mtd command does, so that a backup and
-+ * a restore of the same range line up with each other.  That makes the chip
-+ * yield less than its nominal size: asking for mtd->size bytes walks off the
-+ * end long before it has that many, which is a download that dies at the
-+ * very end of a quarter-gigabyte transfer.  So this is the figure /info
-+ * reports and the figure /dump is sized against.
-+ */
-+static u64 flash_good_bytes(struct mtd_info *m, u64 off)
-+{
-+	u64 first = off & ~((u64)m->erasesize - 1);
-+	u64 good = 0;
-+	u64 blk;
-+
-+	if (off >= m->size)
-+		return 0;
-+
-+	for (blk = first; blk < m->size; blk += m->erasesize)
-+		if (!mtd_block_isbad(m, blk))
-+			good += m->erasesize;
-+
-+	/*
-+	 * off may sit inside the first block.  A bad one is skipped whole, so
-+	 * only a good one loses its head.
-+	 */
-+	if (good && !mtd_block_isbad(m, first))
-+		good -= off - first;
-+
-+	return good;
-+}
-+
-+/*
 + * ---- JSON ----------------------------------------------------------------
 + *
 + * The three GET endpoints build their reply in a static buffer each; this
@@ -1706,16 +1705,9 @@ new file mode 100644
 +
 +		P(",\"flash\":{\"name\":");
 +		S(master->name);
-+		/*
-+		 * "good" is what a raw backup can actually contain; the page
-+		 * sizes "whole chip" from it rather than from size, which
-+		 * would ask for bytes the bad blocks took away.
-+		 */
-+		P(",\"size\":%llu,\"good\":%llu,\"erase\":%u,\"page\":%u},"
-+		  "\"parts\":[",
-+		  (unsigned long long)master->size,
-+		  (unsigned long long)flash_good_bytes(master, 0),
-+		  master->erasesize, master->writesize);
++		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
++		  (unsigned long long)master->size, master->erasesize,
++		  master->writesize);
 +		first = 1;
 +		list_for_each_entry(part, &master->partitions, node) {
 +			P("%s{\"n\":", first ? "" : ",");
@@ -3070,7 +3062,6 @@ new file mode 100644
 + */
 +#define DUMP_HDR_SZ	512
 +#define DUMP_WIN_MAX	(8 << 20)
-+#define DUMP_WINS	512
 +
 +static char	dump_hdr[DUMP_HDR_SZ];
 +static int	dump_hdr_len;
@@ -3081,6 +3072,7 @@ new file mode 100644
 +static u32	dump_wlen;	/* valid bytes in it, 0 when empty */
 +static int	dump_busy;
 +static int	dump_raw;
++static u64	dump_off;	/* flash offset output offset 0 maps to */
 +static char	dump_vol[UBIVOL_NAME_MAX];
 +static struct mtd_info	*dump_mtd;
 +static char	dump_qs[160];
@@ -3099,13 +3091,16 @@ new file mode 100644
 +static ulong	dump_t0;
 +
 +/*
-+ * Flash offset each window starts at.  Bad blocks are skipped, so the map
-+ * from output offset to flash offset is not linear and cannot be computed --
-+ * but it can be remembered as the forward pass lays it down, which is all a
-+ * backward seek needs.  512 entries covers a 4 GiB chip at this window size.
++ * Blocks the forward pass could not read.  Recorded monotonically so a
++ * retransmit cannot count one twice; the list is capped but the count is
++ * not, and /dumpinfo reports it -- a backup with holes in it is still worth
++ * having, but only if you are told where they are.
 + */
-+static u64	dump_ckpt[DUMP_WINS];
-+static u8	dump_ckpt_ok[DUMP_WINS];
++#define DUMP_HOLES	16
++
++static u64	dump_hole[DUMP_HOLES];
++static int	dump_nhole;
++static u64	dump_hole_hi;
 +
 +/* Rolling over the forward pass, so the figure covers what was really sent. */
 +static u32	dump_crc;
@@ -3127,13 +3122,13 @@ new file mode 100644
 +	"HTTP/1.0 400 Bad Request\r\n"
 +	"Content-Type: text/plain; charset=utf-8\r\n"
 +	"Connection: close\r\n"
-+	"\r\n设备正在向浏览器传送备份，等它传完再上传；或者刷新页面放弃那次下载\n";
++	"\r\n设备正在传送备份，请等待其完成后再上传；或刷新页面放弃该次下载\n";
 +
 +static const char resp_dumpbusy[] =
 +	"HTTP/1.0 503 Service Unavailable\r\n"
 +	"Content-Type: text/plain; charset=utf-8\r\n"
 +	"Connection: close\r\n"
-+	"\r\n另一个备份正在传输，等它传完再试\n";
++	"\r\n另一个备份正在传输，请等待其完成后重试\n";
 +
 +/* One value out of "a=1&b=2"; 0 when the key is not there. */
 +static int qs_get(const char *qs, const char *key, char *out, int max)
@@ -3213,39 +3208,43 @@ new file mode 100644
 +}
 +
 +/*
-+ * Read len bytes of flash starting at offset off, skipping bad blocks the way
-+ * the mtd command does so that a dump and a restore of the same range line up
-+ * with each other.  *endp comes back as the flash offset just past what was
-+ * consumed -- that is what lets the next window carry on where this one
-+ * stopped, which a plain multiply cannot do once a block has been skipped.
++ * Read len bytes of flash at offset off, dd style: the buffer pointer and the
++ * flash offset move together, always, so a byte's place in the file is its
++ * place on the chip.  Nothing here consults the bad block table -- a block
++ * marked bad may still hold readable data, and refusing to look would be us
++ * deciding what somebody's backup is allowed to contain.
++ *
++ * Only a read that actually fails yields 0xff, because at that point there is
++ * nothing else to hand over.  It is noted rather than fatal: one unreadable
++ * block must not throw away the other 235 MiB.
 + */
-+static int dump_read_raw(u64 off, u32 len, u8 *buf, u64 *endp)
++static int dump_read_raw(u64 off, u32 len, u8 *buf)
 +{
 +	struct mtd_info *m = dump_mtd;
++
++	if (off + len > m->size)
++		return -1;
 +
 +	while (len) {
 +		u64 blk = off & ~((u64)m->erasesize - 1);
 +		size_t rl = 0;
-+		u32 n;
++		u32 n = m->erasesize - (u32)(off - blk);
 +		int ret;
 +
-+		if (off >= m->size) {
-+			printf("httpd: /dump ran off the end of the flash\n");
-+			return -1;
-+		}
-+		if (mtd_block_isbad(m, blk)) {
-+			off = blk + m->erasesize;
-+			continue;
-+		}
-+
-+		n = m->erasesize - (u32)(off - blk);
 +		if (n > len)
 +			n = len;
 +
 +		ret = mtd_read(m, off, n, &rl, buf);
 +		if (ret && ret != -EUCLEAN) {
-+			printf("httpd: /dump read at 0x%llx failed (%d)\n", off, ret);
-+			return -1;
++			memset(buf, 0xff, n);
++			if (blk >= dump_hole_hi) {
++				if (dump_nhole < DUMP_HOLES)
++					dump_hole[dump_nhole] = blk;
++				dump_nhole++;
++				dump_hole_hi = blk + m->erasesize;
++				printf("httpd: /dump cannot read the block at 0x%llx (%d), filling 0xff\n",
++				       blk, ret);
++			}
 +		}
 +
 +		buf += n;
@@ -3253,16 +3252,13 @@ new file mode 100644
 +		len -= n;
 +	}
 +
-+	*endp = off;
-+
 +	return 0;
 +}
 +
 +/* Bring the window holding output offset `want` into memory. */
 +static int dump_fill(u32 want)
 +{
-+	u32 idx = want / dump_win;
-+	u32 pos = idx * dump_win;
++	u32 pos = (want / dump_win) * dump_win;
 +	u32 len = dump_len - pos;
 +
 +	if (dump_wlen && pos == dump_wpos)
@@ -3276,20 +3272,10 @@ new file mode 100644
 +			       dump_vol, pos);
 +			return -1;
 +		}
-+	} else {
-+		u64 end;
-+
-+		if (idx >= DUMP_WINS || !dump_ckpt_ok[idx]) {
-+			printf("httpd: /dump has no checkpoint for window %u\n",
-+			       idx);
-+			return -1;
-+		}
-+		if (dump_read_raw(dump_ckpt[idx], len, (u8 *)dump_base, &end))
-+			return -1;
-+		if (idx + 1 < DUMP_WINS && !dump_ckpt_ok[idx + 1]) {
-+			dump_ckpt[idx + 1] = end;
-+			dump_ckpt_ok[idx + 1] = 1;
-+		}
++	} else if (dump_read_raw(dump_off + pos, len, (u8 *)dump_base)) {
++		printf("httpd: /dump reading flash at 0x%llx failed\n",
++		       dump_off + pos);
++		return -1;
 +	}
 +
 +	dump_wpos = pos;
@@ -3314,7 +3300,7 @@ new file mode 100644
 +	static char part_name[] = UBI_PART;
 +	char val[UBIVOL_NAME_MAX], what[80], name[128];
 +	ulong top, avail;
-+	u64 off = 0, good = 0;
++	u64 off = 0;
 +	u32 len = 0;
 +
 +	dump_busy = 1;
@@ -3322,11 +3308,12 @@ new file mode 100644
 +	dump_wlen = 0;
 +	dump_crc = 0;
 +	dump_crc_pos = 0;
-+	memset(dump_ckpt_ok, 0, sizeof(dump_ckpt_ok));
++	dump_nhole = 0;
++	dump_hole_hi = 0;
 +
 +	if (up_active) {
 +		dump_fail("503 Service Unavailable",
-+			  "设备正在接收上传，等这一次写完再备份");
++			  "设备正在接收上传，请等待本次写入完成后再备份");
 +		return;
 +	}
 +
@@ -3346,7 +3333,7 @@ new file mode 100644
 +		}
 +		if (ubi_part(part_name, NULL)) {
 +			dump_fail("500 Internal Server Error",
-+				  "UBI 挂不上，只能按 flash 偏移备份");
++				  "UBI 无法挂载，只能按 flash 偏移备份");
 +			return;
 +		}
 +		ubi = ubi_get_device(0);
@@ -3382,14 +3369,10 @@ new file mode 100644
 +			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
 +			return;
 +		}
-+		/*
-+		 * No len means "to the end of the chip", which is the good
-+		 * bytes from here on -- not the address span, which the bad
-+		 * blocks do not fill.
-+		 */
-+		good = flash_good_bytes(dump_mtd, off);
++		/* Every byte from here to the end, bad blocks included. */
 +		len = qs_get(dump_qs, "len", l, sizeof(l)) ?
-+			(u32)hextoul(l, NULL) : (u32)good;
++			(u32)hextoul(l, NULL) : (u32)(dump_mtd->size - off);
++		dump_off = off;
 +		snprintf(what, sizeof(what), "flash-0x%llx-0x%x", off, len);
 +	}
 +
@@ -3397,10 +3380,8 @@ new file mode 100644
 +		dump_fail("400 Bad Request", "长度为 0");
 +		return;
 +	}
-+	if (dump_raw && (u64)len > good) {
-+		dump_fail("400 Bad Request",
-+			  "从 0x%llx 起只读得出 %llu 字节（已扣掉坏块），要不了 %u",
-+			  off, good, len);
++	if (dump_raw && off + len > dump_mtd->size) {
++		dump_fail("400 Bad Request", "偏移加长度超过闪存容量");
 +		return;
 +	}
 +
@@ -3416,26 +3397,17 @@ new file mode 100644
 +		dump_win = len;
 +	if (dump_win < SZ_64K) {
 +		dump_fail("507 Insufficient Storage",
-+			  "内存不够，连一个读取窗口都放不下");
-+		return;
-+	}
-+	if (dump_raw && (u64)len > (u64)dump_win * DUMP_WINS) {
-+		dump_fail("507 Insufficient Storage",
-+			  "这一段太长，请分成几次备份");
++			  "内存不足，无法分配读取窗口");
 +		return;
 +	}
 +	dump_base = (top - dump_win) & ~0xffUL;
 +
-+	if (dump_raw) {
-+		dump_ckpt[0] = off;
-+		dump_ckpt_ok[0] = 1;
-+	}
 +	dump_len = len;
 +	dump_wpos = 0;
 +
 +	/* First window now, so a read error is still a status code. */
 +	if (dump_fill(0)) {
-+		dump_fail("500 Internal Server Error", "读取失败，见串口日志");
++		dump_fail("500 Internal Server Error", "读取失败，详见串口日志");
 +		return;
 +	}
 +
@@ -3462,8 +3434,8 @@ new file mode 100644
 +
 +	jb_init(&jb, dumpinfo_buf, sizeof(dumpinfo_buf));
 +	jb_printf(&jb, JSON_HDR("200 OK")
-+		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"name\":",
-+		  dump_last_seq, dump_last_len, dump_last_crc);
++		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d,\"name\":",
++		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes);
 +	jb_str(&jb, dump_last_name);
 +	jb_printf(&jb, "}");
 +
@@ -3514,8 +3486,359 @@ new file mode 100644
 +	return n;
 +}
 +
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++/*
++ * ---- POST /stock?off= ----------------------------------------------------
++ *
++ * A whole-chip restore does not fit in RAM.  From $loadaddr up to where
++ * U-Boot relocated itself is about 249 MiB on a 512 MiB board, and the raw
++ * image of a 256 MiB chip is 256 MiB -- so the only way to offer it at all
++ * was to make the user cut the file up and write it in pieces.  Splitting is
++ * our problem, not theirs.  This path never holds the image: bytes go to
++ * flash as they arrive and the size of the upload stops mattering.
++ *
++ * It is deliberately not multipart.  Every other form on the page carries
++ * several fields and is small enough to stage whole, and that code is
++ * untouched.  Streaming a multipart body would mean scanning for boundaries
++ * incrementally and inferring where the payload stops -- and being two bytes
++ * wrong about the closing delimiter puts two bytes of garbage in the last
++ * eraseblock.  A raw body leaves no such question: the offset is in the
++ * request line and the length is in Content-Length, both known from the
++ * first packet.
++ *
++ * The ring only has to absorb reordering.  The stack drops anything outside
++ * [rcv_nxt, rcv_nxt + rcv_wnd) before it ever reaches us, and rcv_wnd is
++ * PKTBUFSRX * TCP_MSS -- tens of kilobytes.  Four eraseblocks would do.
++ *
++ * What is given up is that a failed transfer no longer leaves the flash
++ * untouched.  That is what streaming means and it cannot be argued away, so
++ * the failure is made survivable instead: no reset on error, the page stays
++ * up in RAM, and it says plainly that the flash is now half written and the
++ * transfer has to be repeated before the board is rebooted.
++ */
++#define ST_RING_MAX	(4 << 20)
++
++static struct mtd_info	*st_mtd;
++static ulong	st_ring;	/* == up_base; a ring of whole eraseblocks */
++static u32	st_blk;		/* eraseblock size */
++static u32	st_nblk;	/* slots in the ring */
++static u32	st_hdr_end;	/* stream offset of the first body byte */
++static u32	st_body;	/* body length, from Content-Length */
++static u32	st_done;	/* body bytes already committed to flash */
++static u64	st_off;		/* flash offset body byte 0 belongs at */
++static u32	st_crc;		/* over the bytes received, to compare locally */
++static int	st_nskip;	/* bad blocks passed over */
++static u64	st_skip[16];
++static int	st_started;	/* at least one eraseblock has been written */
++static int	st_failed;
++static int	st_ok;
++static char	st_resp[512];
++static int	st_resp_len;
++
++static void st_reply(const char *status, const char *fmt, ...)
++{
++	char msg[256];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	printf("httpd: /stock: %s\n", msg);
++	st_resp_len = snprintf(st_resp, sizeof(st_resp),
++			       "HTTP/1.0 %s\r\n"
++			       "Content-Type: text/plain; charset=utf-8\r\n"
++			       "Connection: close\r\n"
++			       "\r\n%s\n", status, msg);
++}
++
++/* Refuse, and say whether the flash has already been changed. */
++static void st_fail(const char *fmt, ...)
++{
++	char msg[192];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	st_failed = 1;
++	if (st_started) {
++		httpd_blink_stop();
++		st_reply("500 Internal Server Error",
++			 "%s。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电",
++			 msg);
++	} else {
++		st_reply("400 Bad Request", "%s（闪存尚未改动）", msg);
++	}
++}
++
++/*
++ * Parse the head, which the CONN_UNKNOWN path has already staged at up_base,
++ * and lay the ring out over the same area.  Everything that can be refused is
++ * refused here -- once the first eraseblock is gone there is no going back.
++ */
++static int st_begin(u32 rx_bytes)
++{
++	char hdr[HDRBUF_SZ];
++	char qs[96], o[24];
++	const char *p, *sp;
++	int hdr_end, n, qlen = 0;
++	ulong avail, clen;
++	u32 body_here;
++
++	st_hdr_end = st_body = st_done = st_crc = 0;
++	st_nskip = st_started = st_failed = st_ok = 0;
++	st_resp_len = 0;
++
++	n = rx_bytes < HDRBUF_SZ - 1 ? rx_bytes : HDRBUF_SZ - 1;
++	memcpy(hdr, (const void *)up_base, n);
++	hdr[n] = '\0';
++
++	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
++	if (hdr_end < 0) {
++		st_fail("请求头不完整");
++		return -1;
++	}
++	hdr_end += 4;
++
++	/* "POST /stock?off=0x0 HTTP/1.1" */
++	p = memchr(hdr, '?', hdr_end);
++	if (p) {
++		sp = memchr(p, ' ', hdr_end - (p - hdr));
++		qlen = sp ? (int)(sp - p) - 1 : 0;
++		if (qlen > (int)sizeof(qs) - 1)
++			qlen = sizeof(qs) - 1;
++		if (qlen > 0)
++			memcpy(qs, p + 1, qlen);
++	}
++	qs[qlen > 0 ? qlen : 0] = '\0';
++	st_off = qs_get(qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
++
++	p = strstr(hdr, "Content-Length:");
++	if (!p) {
++		st_fail("没有 Content-Length");
++		return -1;
++	}
++	p += 15;
++	while (*p == ' ' || *p == '\t')
++		p++;
++	clen = simple_strtoul(p, NULL, 10);
++	if (!clen) {
++		st_fail("长度为 0");
++		return -1;
++	}
++
++	st_mtd = flash_master();
++	if (!st_mtd) {
++		st_fail("没有找到闪存设备");
++		return -1;
++	}
++	st_blk = st_mtd->erasesize;
++
++	if (st_off & (u64)(st_blk - 1)) {
++		st_fail("写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
++		return -1;
++	}
++	if (st_off + clen > st_mtd->size) {
++		st_fail("自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
++			st_off, clen, (unsigned long long)st_mtd->size);
++		return -1;
++	}
++
++	avail = upload_max();
++	st_nblk = (u32)(avail / st_blk);
++	if (st_nblk > ST_RING_MAX / st_blk)
++		st_nblk = ST_RING_MAX / st_blk;
++	if (st_nblk < 4) {
++		st_fail("内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
++		return -1;
++	}
++	st_ring = up_base;
++
++	st_hdr_end = (u32)hdr_end;
++	st_body = (u32)clen;
++
++	/* The head already carried some body bytes; move them into slot 0. */
++	body_here = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
++	if (body_here > st_nblk * st_blk)
++		body_here = st_nblk * st_blk;
++	if (body_here)
++		memmove((void *)st_ring,
++			(const void *)(up_base + st_hdr_end), body_here);
++
++	printf("httpd: /stock: %lu bytes to 0x%llx, ring %u x %u KiB at 0x%lx\n",
++	       clen, st_off, st_nblk, st_blk >> 10, st_ring);
++
++	return 0;
++}
++
++/* One eraseblock of the image, at the offset it belongs at. */
++static int st_put(u32 k, u32 n)
++{
++	u64 pos = st_off + (u64)k * st_blk;
++	const u8 *p = (const u8 *)(st_ring + (k % st_nblk) * st_blk);
++	struct erase_info ei;
++	size_t wl = 0;
++	int ret;
++
++	/* Over what arrived, so it can be compared with the file on disk. */
++	st_crc = crc32(st_crc, p, n);
++
++	/*
++	 * The isbad test is load bearing, exactly as in flash_raw():
++	 * nanddev_erase() clears a bad block's BBT entry and erases it anyway,
++	 * wiping the marker in its OOB.  Nothing may reach mtd_erase() without
++	 * passing this first.
++	 */
++	if (mtd_block_isbad(st_mtd, pos)) {
++		if (st_nskip < (int)ARRAY_SIZE(st_skip))
++			st_skip[st_nskip] = pos;
++		st_nskip++;
++
++		return 0;
++	}
++
++	memset(&ei, 0, sizeof(ei));
++	ei.mtd = st_mtd;
++	ei.addr = pos;
++	ei.len = st_blk;
++	ret = mtd_erase(st_mtd, &ei);
++	if (ret) {
++		st_fail("擦除 0x%llx 失败（%d）", pos, ret);
++		return -1;
++	}
++
++	ret = mtd_write(st_mtd, pos, n, &wl, p);
++	if (ret || wl != n) {
++		st_fail("写入 0x%llx 失败（%d，实际写入 %u/%u）", pos, ret,
++			(u32)wl, n);
++		return -1;
++	}
++
++	return 0;
++}
++
++/* Commit whatever whole blocks the contiguous prefix now covers. */
++static void st_commit(u32 rx_bytes)
++{
++	u32 have;
++	int i;
++
++	if (st_failed || st_ok || !st_body)
++		return;
++
++	have = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
++	if (have > st_body)
++		have = st_body;
++	if (have < st_done)
++		return;
++
++	while (have - st_done >= st_blk ||
++	       (have == st_body && st_done < st_body)) {
++		u32 n = have - st_done;
++
++		if (n > st_blk)
++			n = st_blk;
++		if (!st_started) {
++			st_started = 1;
++			httpd_blink_start();
++			printf("httpd: /stock: writing now, do not power off\n");
++		}
++		if (st_put(st_done / st_blk, n))
++			return;
++		st_done += n;
++
++		if (!(st_done & ((32 << 20) - 1)))
++			printf("httpd: /stock: %u of %u bytes\n", st_done,
++			       st_body);
++	}
++
++	if (st_done < st_body)
++		return;
++
++	httpd_blink_stop();
++	st_ok = 1;
++
++	if (st_nskip) {
++		printf("httpd: /stock: %d bad block(s) skipped, what the image "
++		       "held for them was not written:", st_nskip);
++		for (i = 0; i < st_nskip && i < (int)ARRAY_SIZE(st_skip); i++)
++			printf(" 0x%llx", st_skip[i]);
++		printf("%s\n", st_nskip > (int)ARRAY_SIZE(st_skip) ? " ..." : "");
++		printf("httpd: /stock: everything else landed at its own offset\n");
++	}
++	st_reply("200 OK", "ok %u bytes crc32 %08x skipped %d", st_body,
++		 st_crc, st_nskip);
++}
++
++/*
++ * Body bytes into the ring.  The return value is how many bytes counting from
++ * the start of this segment the stack may treat as received, so everything
++ * refused has to be a suffix -- which it is: the only reason to refuse is
++ * running past the far edge of the ring.
++ */
++static int st_rx(u32 rx_offs, const u8 *src, int len)
++{
++	u32 b, cap, pre = 0, skip;
++
++	if (st_failed || st_ok)
++		return len;		/* swallow the rest of the upload */
++
++	/* Bytes of the head; the CONN_UNKNOWN path already took those. */
++	if (rx_offs < st_hdr_end) {
++		skip = st_hdr_end - rx_offs;
++		if ((u32)len <= skip)
++			return len;
++		pre += skip;
++		src += skip;
++		len -= skip;
++		b = 0;
++	} else {
++		b = rx_offs - st_hdr_end;
++	}
++
++	/* Already committed to flash; its ring slot has moved on. */
++	if (b < st_done) {
++		skip = st_done - b;
++		if ((u32)len <= skip)
++			return (int)pre + len;
++		pre += skip;
++		src += skip;
++		len -= skip;
++		b = st_done;
++	}
++
++	cap = st_done + st_nblk * st_blk;
++	if (b >= cap)
++		return (int)pre;	/* 0 here means "send it again later" */
++	if ((u32)len > cap - b)
++		len = (int)(cap - b);
++
++	while (len) {
++		u32 k = b / st_blk, io = b % st_blk;
++		u32 n = st_blk - io;
++
++		if (n > (u32)len)
++			n = (u32)len;
++		memcpy((u8 *)(st_ring + (k % st_nblk) * st_blk) + io, src, n);
++		src += n;
++		b += n;
++		len -= n;
++		pre += n;
++	}
++
++	return (int)pre;
++}
++#endif /* CONFIG_CMD_HTTPD_STOCK_RESTORE */
++
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK)
++		return st_rx(rx_offs, buf, len);
++#endif
++
 +	/* A GET needs no body; drop whatever follows. */
 +	if (tcp->priv != CONN_UNKNOWN && tcp->priv != CONN_POST)
 +		return len;
@@ -3620,6 +3943,16 @@ new file mode 100644
 +				return;
 +			}
 +			up_active = 1;
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++			/* "POST /stock" -- straight to flash, never staged. */
++			if (rx_bytes > 11 && !memcmp(req + 4, " /stock", 7) &&
++			    (req[11] == '?' || req[11] == ' ')) {
++				tcp->priv = CONN_STOCK;
++				if (!st_begin(rx_bytes))
++					st_commit(rx_bytes);
++				return;
++			}
++#endif
 +			tcp->priv = CONN_POST;
 +		} else {
 +			void *cls = CONN_GET;
@@ -3669,6 +4002,13 @@ new file mode 100644
 +		}
 +	}
 +
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK) {
++		st_commit(rx_bytes);
++		return;
++	}
++#endif
++
 +	if (tcp->priv != CONN_POST)
 +		return;
 +
@@ -3716,6 +4056,12 @@ new file mode 100644
 +		s = resp_dumpbusy;
 +	} else if (tcp->priv == CONN_POSTBUSY) {
 +		s = resp_postbusy;
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	} else if (tcp->priv == CONN_STOCK) {
++		/* Nothing to say until it is over, either way. */
++		*len = st_resp_len;
++		return st_resp_len ? st_resp : NULL;
++#endif
 +	} else if (tcp->priv == CONN_DUMPINFO) {
 +		*len = dumpinfo_len;
 +		return dumpinfo_buf;
@@ -3767,6 +4113,7 @@ new file mode 100644
 +			dump_last_seq++;
 +			dump_last_len = dump_len;
 +			dump_last_crc = dump_crc;
++			dump_last_holes = dump_nhole;
 +			printf("httpd: /dump %s delivered, %u bytes, crc32 0x%08x\n",
 +			       dump_last_name, dump_len, dump_crc);
 +		}
@@ -3786,6 +4133,25 @@ new file mode 100644
 +	 * would break the stream, which is why this lives here.
 +	 */
 +	tcp_stream_close(tcp);
++
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK) {
++		if (st_ok) {
++			/* The bootloader this was running from is gone. */
++			reboot_pending = 1;
++			net_set_state(NETLOOP_SUCCESS);
++		} else {
++			/* Let them try again without touching the power. */
++			printf("httpd: /stock failed, ready for another attempt\n");
++			up_active = 0;
++			up_owner = NULL;
++			st_resp_len = 0;
++			st_failed = 0;
++		}
++
++		return;
++	}
++#endif
 +
 +	/* Same shape as flash_pending: act once the answer is out. */
 +	if (tcp->priv == CONN_REBOOT) {
@@ -3943,32 +4309,95 @@ new file mode 100644
 + * and the erase has to cover whole blocks -- "mtd erase" refuses a length
 + * that is not a multiple of one.
 + */
++/*
++ * Write an image back at a fixed offset, block by block, position preserving:
++ * the source pointer advances over a bad block just as the flash offset does,
++ * so byte N of the file always lands at flash offset off + N.
++ *
++ * This is not what "mtd write" does.  That command skips a bad block without
++ * advancing its buffer, which compacts the image -- and a factory dd dump has
++ * the bad blocks sitting in it, so everything past the first one would land
++ * an eraseblock early and every absolute offset the boot chain relies on
++ * would be wrong.
++ *
++ * mtd_erase() is called directly, and the isbad test above it is the only
++ * thing standing between a factory bad block and being erased: nanddev_erase()
++ * clears such a block's BBT entry and erases it anyway, which wipes the marker
++ * living in its OOB.  The block would then read as good forever after and get
++ * trusted with data.  Nothing here may reach mtd_erase() without passing that
++ * test first.
++ */
 +static int flash_raw(ulong addr, ulong off, u32 size)
 +{
 +	struct mtd_info *m = flash_master();
-+	char cmd[96];
-+	u64 elen;
++	const u8 *src = (const u8 *)addr;
++	u64 skipped[16];
++	int nskip = 0, i;
++	u64 pos = off;
++	u32 left = size;
 +
 +	if (!m)
 +		return -1;
 +
-+	elen = ((u64)size + m->erasesize - 1) & ~(u64)(m->erasesize - 1);
-+	if (off + elen > m->size)
-+		elen = m->size - off;
-+
-+	printf("httpd: erasing %s, 0x%llx bytes at 0x%lx\n", m->name, elen, off);
-+	snprintf(cmd, sizeof(cmd), "mtd erase %s 0x%lx 0x%llx", m->name, off, elen);
-+	if (run_command(cmd, 0)) {
-+		printf("httpd: erasing FAILED\n");
++	if (off & (m->erasesize - 1)) {
++		printf("httpd: 0x%lx is not on an erase block boundary\n", off);
++		return -1;
++	}
++	if ((u64)off + size > m->size) {
++		printf("httpd: 0x%lx + %u bytes runs past the end of %s\n",
++		       off, size, m->name);
 +		return -1;
 +	}
 +
-+	printf("httpd: writing %u bytes at 0x%lx\n", size, off);
-+	snprintf(cmd, sizeof(cmd), "mtd write %s 0x%lx 0x%lx 0x%x",
-+		 m->name, addr, off, size);
-+	if (run_command(cmd, 0)) {
-+		printf("httpd: writing FAILED\n");
-+		return -1;
++	printf("httpd: writing %u bytes to %s at 0x%lx, block by block\n",
++	       size, m->name, off);
++
++	while (left) {
++		u32 n = left < m->erasesize ? left : m->erasesize;
++		struct erase_info ei;
++		size_t wl = 0;
++		int ret;
++
++		if (mtd_block_isbad(m, pos)) {
++			if (nskip < (int)ARRAY_SIZE(skipped))
++				skipped[nskip] = pos;
++			nskip++;
++			goto next;
++		}
++
++		memset(&ei, 0, sizeof(ei));
++		ei.mtd = m;
++		ei.addr = pos;
++		ei.len = m->erasesize;
++		ret = mtd_erase(m, &ei);
++		if (ret) {
++			printf("httpd: erasing 0x%llx FAILED (%d)\n", pos, ret);
++			return -1;
++		}
++
++		ret = mtd_write(m, pos, n, &wl, src);
++		if (ret || wl != n) {
++			printf("httpd: writing 0x%llx FAILED (%d, %u of %u)\n",
++			       pos, ret, (u32)wl, n);
++			return -1;
++		}
++next:
++		/* Both, always -- that is the whole point. */
++		src  += m->erasesize;
++		pos  += m->erasesize;
++		left -= n;
++
++		if (!((pos - off) & ((32 << 20) - 1)))
++			printf("httpd: ... 0x%llx\n", pos);
++	}
++
++	if (nskip) {
++		printf("httpd: %d bad block(s) left untouched, so what the image "
++		       "holds for them was not written:", nskip);
++		for (i = 0; i < nskip && i < (int)ARRAY_SIZE(skipped); i++)
++			printf(" 0x%llx", skipped[i]);
++		printf("%s\n", nskip > (int)ARRAY_SIZE(skipped) ? " ..." : "");
++		printf("httpd: everything else landed at its own offset\n");
 +	}
 +
 +	return 0;

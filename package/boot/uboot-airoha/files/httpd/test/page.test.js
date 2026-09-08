@@ -94,28 +94,22 @@ function stayUpload(w) {
     url = null;
     $(w, '#dumpoff').value = '0x0'; $(w, '#dumplen').value = '0x20000000';
     w.dumpraw();
-    ok('超出可读容量不发请求',
-       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('超出容量不发请求',
+       url === null && /超过 flash 容量/.test(txt(w, '#dlh')), txt(w, '#dlh'));
     $(w, '#dumpoff').value = 'zz'; w.dumpraw();
     ok('偏移不是十六进制不发请求', url === null && /十六进制/.test(txt(w, '#dlh')));
-    ok('长度提示报的是可读字节数',
-       txt(w, '#dumphint').includes(w.sz(w.INFO.flash.good)) &&
-       /坏块/.test(txt(w, '#dumphint')), txt(w, '#dumphint'));
+    ok('长度提示报的是整片容量',
+       txt(w, '#dumphint').includes(w.sz(w.INFO.flash.size)),
+       txt(w, '#dumphint'));
 
-    /* 有坏块的机器：能读出来的比标称容量少，上限得跟着它走 */
-    const good0 = w.INFO.flash.good;
-    w.INFO.flash.good = good0 - 0x40000;        /* 两个坏块 */
+    /* 位置保持：坏块在文件里占着位子，所以整片就是标称容量 */
     url = null;
     $(w, '#dumpoff').value = '0x0';
-    $(w, '#dumplen').value = '0x' + good0.toString(16);
+    $(w, '#dumplen').value = '0x' + w.INFO.flash.size.toString(16);
     w.dumpraw();
-    ok('坏块吃掉的那部分要不到',
-       url === null && /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
-    $(w, '#dumplen').value = '0x' + (good0 - 0x40000).toString(16);
-    w.dumpraw();
-    ok('刚好可读的长度放行',
-       url === '/dump?off=0x0&len=0x' + (good0 - 0x40000).toString(16), url);
-    w.INFO.flash.good = good0;
+    ok('整整一片的长度是收的',
+       url === '/dump?off=0x0&len=0x' + w.INFO.flash.size.toString(16), url);
+    ok('设备详情里没有 good 这个字段', w.INFO.flash.good === undefined);
     ok('p10 上回车不弹写入确认框', w.ask() === false && !on(w, '#mask'));
   }
 
@@ -178,7 +172,7 @@ function stayUpload(w) {
     w.askenvdef();
     $(w, '#yes').click();
     await sleep(600);
-    ok('保存失败要说断电即失', /保存失败.*断电即失/.test(txt(w, '#envh')), txt(w, '#envh'));
+    ok('保存失败要说明改动没落盘', /保存失败.*仅存于内存/.test(txt(w, '#envh')), txt(w, '#envh'));
   }
 
   console.log('\n--- 心跳与断开 ---');
@@ -195,7 +189,7 @@ function stayUpload(w) {
        $(w, '#lived').className);
     await sleep(4500);                       // 第二次失败才算断开
     ok('连掉两次才弹框', on(w, '#off'));
-    ok('说的是已断开', /已断开与路由器连接/.test(txt(w, '#offt')), txt(w, '#offt'));
+    ok('说的是已断开', /连接已断开/.test(txt(w, '#offt')), txt(w, '#offt'));
     ok('给了排查线索', /网线|重启|写入/.test(txt(w, '#offb')));
     ok('有重新连接按钮', !$(w, '#offr').hidden);
     ok('点变红', $(w, '#lived').className === 'dot s2');
@@ -276,7 +270,7 @@ function stayUpload(w) {
     ok('写入期间提醒别断电', /不要断电|请勿断电/.test(txt(w, '#offb')));
     await sleep(9000);                       // 桩在 200 之后哑 7 秒
     ok('设备回来覆盖层消失', !on(w, '#off'), txt(w, '#offt'));
-    ok('进度条改成写完了', /设备写完了/.test(txt(w, '#p3 .pwhat')), txt(w, '#p3 .pwhat'));
+    ok('进度条改成写完了', /写入完成/.test(txt(w, '#p3 .pwhat')), txt(w, '#p3 .pwhat'));
     ok('进度条转绿', $(w, '#p3 .prog').className === 'prog ok');
   }
 
@@ -302,7 +296,7 @@ function stayUpload(w) {
       .find(r => /^ri/.test(r.cells[0].textContent))
       .querySelector('button').click();
     await sleep(700);
-    ok('先说正在读并传送', /正在读并传送 ri 卷/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('先说正在读并传送', /正在读取并传送 ri 卷/.test(txt(w, '#dlh')), txt(w, '#dlh'));
     ok('读的时候还没有 crc', !/crc32/.test(txt(w, '#dlh')));
     await sleep(4500);
     ok('传完出现一行记录', w.document.querySelectorAll('#dll tr').length === 1);
@@ -310,8 +304,8 @@ function stayUpload(w) {
     ok('记录带文件名', /\.bin$/.test(row.cells[0].textContent), row.cells[0].textContent);
     ok('记录带长度', row.cells[1].textContent === '256 KiB', row.cells[1].textContent);
     ok('记录带 crc32', /^[0-9a-f]+$/.test(row.cells[2].textContent), row.cells[2].textContent);
-    ok('说清这个数怎么用', /本地核对/.test(txt(w, '#dllh')));
-    ok('说清多大都是一个文件', /都是一个文件/.test(txt(w, '#p10')));
+    ok('说清这个数怎么用', /本地文件核对/.test(txt(w, '#dllh')));
+    ok('说清长度不受限', /不限长度/.test(txt(w, '#p10')));
     ok('读取期间没弹断开框', !on(w, '#off'));
 
     // 分段存档的人需要每一段的 crc，新的不能盖掉旧的
@@ -347,7 +341,24 @@ function stayUpload(w) {
     $(w, '#dumplen').value = '0x' + (w.INFO.flash.size + 0x20000).toString(16);
     w.dumpraw();
     ok('还是拦得住超出容量的', url === null &&
-       /最多只读得出/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+       /超过 flash 容量/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+  }
+
+  console.log('\n--- 读不出来的块要报出来 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p10]').click();
+    w.dlrow({ name: 'nokia-xg-040g-md-flash.bin', len: 268435456,
+              crc: '3f2a91c4', holes: 3 });
+    ok('洞数写在状态行上', /3 个块读取失败/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+    ok('填的是什么也说了', /ff/.test(txt(w, '#dlh')));
+    ok('那一行带标记', /3 块读取失败/.test($(w, '#dll').textContent));
+
+    w.dlrow({ name: 'nokia-xg-040g-md-ri.bin', len: 65536,
+              crc: 'aabbccdd', holes: 0 });
+    ok('没有洞就还是「传输完成」', txt(w, '#dlh') === '传输完成', txt(w, '#dlh'));
+    ok('那一行不带标记',
+       !/读取失败/.test([...$(w, '#dll').querySelectorAll('tr')].pop().textContent));
   }
 
   console.log('\n--- 设备拒绝时不用干等四分钟 ---');
@@ -378,13 +389,132 @@ function stayUpload(w) {
     ok('轮询确实停了', txt(w, '#dlh') === before, txt(w, '#dlh'));
   }
 
-  console.log('\n--- 太大的镜像不用传就知道 ---');
+  console.log('\n--- 刷回原厂写到一半失败 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const pick = () => {
+      const i = $(w, '#p4 input[name=stock]');
+      const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+      Object.defineProperty(f, 'size', { value: 1 << 20 });
+      Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    };
+
+    pick();
+    setsel(w, 'post', 'fail500');
+    w.send();
+    await sleep(3200);
+    ok('没跑去完成页', !on(w, '#p13') && !on(w, '#p7'));
+    ok('说的是写入失败不是被拒绝',
+       /设备写入失败（500）/.test(txt(w, '#p4 .pwhat')), txt(w, '#p4 .pwhat'));
+    ok('设备那句话完整带出来',
+       /闪存已写入一部分/.test(txt(w, '#p4 .pwhat')) &&
+       /不要断电/.test(txt(w, '#p4 .pwhat')));
+    ok('长句不再被省略号切掉',
+       w.getComputedStyle($(w, '#p4 .pwhat')).whiteSpace === 'normal',
+       w.getComputedStyle($(w, '#p4 .pwhat')).whiteSpace);
+    ok('顶上挂出不一致的红条', !$(w, '#ban').hasAttribute('hidden') &&
+       /不要重启设备/.test(txt(w, '#bant')), txt(w, '#bant'));
+    ok('按钮还能再来一次', !$(w, '#p4 button[type=submit]').disabled &&
+       txt(w, '#p4 button[type=submit]') === '刷写');
+
+    /* 换到别的页红条也得跟着 —— 它说的是设备的状态，不是这一页的 */
+    $(w, '.nav[data-p=p1]').click();
+    ok('切页红条还在', !$(w, '#ban').hasAttribute('hidden'));
+
+    $(w, '.nav[data-p=p4]').click();
+    pick();
+    setsel(w, 'post', 'ok');
+    w.send();
+    await sleep(3200);
+    ok('重写成功后落到完成页', on(w, '#p13'));
+    ok('红条跟着消失', $(w, '#ban').hasAttribute('hidden'));
+  }
+
+  console.log('\n--- 400 是没开始写，不该吓人 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 1 << 20 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    setsel(w, 'post', 'reject');
+    w.send();
+    await sleep(3200);
+    ok('说的是被拒绝', /设备拒绝了上传（400）/.test(txt(w, '#p4 .pwhat')),
+       txt(w, '#p4 .pwhat'));
+    ok('不挂不一致的红条', $(w, '#ban').hasAttribute('hidden'));
+  }
+
+  console.log('\n--- 刷回原厂写完是它自己的完成页 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 1 << 20 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    w.send();
+    await sleep(3200);
+    ok('不落到上传完成页', !on(w, '#p7'));
+    ok('落到写入完成页', on(w, '#p13'));
+    ok('标题是写入完成', txt(w, '#p13 h1') === '写入完成', txt(w, '#p13 h1'));
+    ok('说的是已经写完而不是正在写', !/正在写入/.test(txt(w, '#p13 .sub')),
+       txt(w, '#p13 .sub'));
+
+    const rows = [...w.document.querySelectorAll('#stres tr')];
+    ok('设备回报三项都在', rows.length === 3, rows.length);
+    ok('写入长度对得上', /1\.0 MiB/.test(rows[0].textContent),
+       rows[0].textContent);
+    ok('crc32 报出来了', /^[0-9a-f]{1,8}$/.test(rows[1].cells[1].textContent),
+       rows[1].cells[1].textContent);
+    ok('没有坏块就写无', rows[2].cells[1].textContent === '无',
+       rows[2].cells[1].textContent);
+    ok('说清 crc32 拿来跟备份对', /与备份时记录的值一致/.test(txt(w, '#p13')));
+    ok('心跳停了', w.HB === 0);
+
+    w.stdone('ok 100 bytes crc32 aabbccdd skipped 3');
+    ok('跳过的坏块说清楚',
+       /跳过 3 块/.test($(w, '#stres').textContent),
+       $(w, '#stres').textContent);
+    w.stdone('something else entirely');
+    ok('回报不认识就原样贴出',
+       /something else entirely/.test($(w, '#stres').textContent));
+  }
+
+  console.log('\n--- 刷回原厂只有「刷写」一个动作 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    ok('按钮就叫刷写', txt(w, '#p4 button[type=submit]') === '刷写',
+       txt(w, '#p4 button[type=submit]'));
+    ok('别的页还是上传并刷写',
+       txt(w, '#p1 button[type=submit]') === '上传并刷写');
+    ok('说清是边收边写', /边接收边写入/.test(txt(w, '#p4')));
+
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 1 << 20 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    setsel(w, 'post', 'drop');
+    w.send();
+    ok('进行中不叫上传中',
+       txt(w, '#p4 button[type=submit]') === '写入中\u2026',
+       txt(w, '#p4 button[type=submit]'));
+    await sleep(3200);
+    ok('失败后按钮还原成刷写', txt(w, '#p4 button[type=submit]') === '刷写',
+       txt(w, '#p4 button[type=submit]'));
+  }
+
+  console.log('\n--- 刷回原厂：整片多大都收，走裸端点 ---');
   {
     const w = await boot();
     const max = w.INFO.uploadmax;
     ok('设备报了上传上限', max > 0, max);
     $(w, '.nav[data-p=p4]').click();
-    ok('「刷回原厂」页上写着上限', txt(w, '#upmax') === w.sz(max), txt(w, '#upmax'));
+    ok('页上写的是 flash 容量而不是内存上限',
+       txt(w, '#upmax') === w.sz(w.INFO.flash.size), txt(w, '#upmax'));
 
     const pick = (n) => {
       const i = $(w, '#p4 input[name=stock]');
@@ -393,19 +523,67 @@ function stayUpload(w) {
       Object.defineProperty(i, 'files', { value: [f], configurable: true });
     };
 
-    pick(max + 1024);
+    /* 整片 256 MiB 比内存上限还大 —— 流式之后这不该再是错误 */
+    pick(w.INFO.flash.size);
     w.ask();
-    ok('超了就弹框', on(w, '#mask'));
-    ok('说清超了多少', /超过设备一次能收下的/.test(txt(w, '#abody')), txt(w, '#abody'));
-    ok('这是硬错误，不给「仍要写入」', $(w, '#yes').hidden);
+    ok('整片不再被内存上限拦下',
+       !/超过设备单次可接收的/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('还是给「仍要写入」', !$(w, '#yes').hidden);
     w.hide();
 
-    // 原厂 all_flash 是 235.6 MiB，本来就在上限之内 —— 别把它也拦了
     pick(0xEBA0000);
     w.ask();
     ok('原厂镜像照样放行', !$(w, '#yes').hidden);
-    ok('也没有多余的报错', !/超过设备一次能收下的/.test(txt(w, '#abody')));
     w.hide();
+  }
+
+  console.log('\n--- 刷回原厂发的是裸 body，不是表单 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 0x10000000 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    $(w, '#p4 input[name=stockoff]').value = '0x8000000';
+
+    let sent = null;
+    const XHR = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () {
+      const x = new XHR();
+      const open = x.open.bind(x), send = x.send.bind(x);
+      x.open = (m, u) => { sent = { m, u }; return open(m, u); };
+      x.send = (b) => { sent.body = b; return send(b); };
+      return x;
+    };
+    w.send();
+    w.XMLHttpRequest = XHR;
+
+    ok('走 /stock 并带上偏移', sent && sent.u === '/stock?off=0x8000000',
+       sent && sent.u);
+    ok('body 就是文件本身，没有 FormData 包装',
+       sent && sent.body === f, sent && String(sent.body));
+
+    /* 别的页仍然是表单 */
+    let sent2 = null;
+    const w2 = await boot();
+    $(w2, '.nav[data-p=p1]').click();
+    const i2 = $(w2, '#p1 input[name=firmware]');
+    const f2 = new w2.File([new Uint8Array(4)], 'x.itb');
+    Object.defineProperty(i2, 'files', { value: [f2], configurable: true });
+    const XHR2 = w2.XMLHttpRequest;
+    w2.XMLHttpRequest = function () {
+      const x = new XHR2();
+      const open = x.open.bind(x), send = x.send.bind(x);
+      x.open = (m, u) => { sent2 = { m, u }; return open(m, u); };
+      x.send = (b) => { sent2.body = b; return send(b); };
+      return x;
+    };
+    w2.send();
+    w2.XMLHttpRequest = XHR2;
+    ok('引导升级还是 POST /', sent2 && sent2.u === '/', sent2 && sent2.u);
+    ok('引导升级还是 FormData',
+       sent2 && sent2.body instanceof w2.FormData, sent2 && String(sent2.body));
   }
 
   console.log('\n--- 健康检查分组 ---');
@@ -437,7 +615,7 @@ function stayUpload(w) {
     await sleep(600);
     ok('没有 fip 卷的红条还在', !$(w, '#ban').hasAttribute('hidden') &&
        /没有 U-Boot/.test(txt(w, '#bant')));
-    ok('日常刷机页说清断电就退出', /断电重启就退出/.test(txt(w, '#p1')));
+    ok('日常刷机页说清设备不会自己走', /不会自行引导/.test(txt(w, '#p1')));
 
     const who = [...w.document.querySelectorAll('a')]
       .filter(a => a.textContent === 'Loong');
