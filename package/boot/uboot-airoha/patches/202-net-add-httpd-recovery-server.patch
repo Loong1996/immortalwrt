@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4447 @@
+@@ -0,0 +1,4678 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -467,6 +467,8 @@ new file mode 100644
 +	".drop{display:flex;align-items:center;gap:1rem;background:var(--card);border:1.5px dashed"
 +		" var(--btnb);border-radius:9px;padding:1rem 1.1rem;cursor:pointer}\n"
 +	".drop:hover,.drop.has,.drop.over{border-color:var(--blue);border-style:solid}\n"
++	".fr.over{background:var(--fill)}\n"
++	".fr.over::after{content:\"松手放到这里\";position:absolute;right:.9rem;color:var(--blue);font-size:.9em}\n"
 +	".drop .ic{width:40px;height:40px;border-radius:9px;background:var(--fill);color:var(--blue);disp"
 +		"lay:inline-flex;align-items:center;justify-content:center;flex:none}\n"
 +	".drop .ic svg{width:20px;height:20px}\n"
@@ -482,7 +484,7 @@ new file mode 100644
 +	".ps{display:flex;justify-content:space-between;color:var(--c2);margin-top:.4rem;font-variant-num"
 +		"eric:tabular-nums}\n"
 +	".ps span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}\n"
-+	".ps .pct{flex:none;margin-left:1rem}\n"
++	".ps .pct{flex:none;margin-left:1rem;max-width:60%}\n"
 +	".prog.ok .pbar{background:var(--grn)}.prog.ok .ps{color:var(--grn)}\n"
 +	".prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red);align-items:flex-start}.pro"
 +		"g.bad .pwhat{white-space:normal;overflow:visible;text-overflow:clip}\n"
@@ -553,6 +555,8 @@ new file mode 100644
 +		"ar(--c3)}\n"
 +	".dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}\n"
 +	".kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}\n"
++	".kv td.hot{color:var(--red)}\n"
++	".kv td.cmd{color:var(--c2);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}\n"
 +	".row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}\n"
 +	".log{margin:0;padding:.7rem .9rem;max-height:min(360px,60vh);overflow:auto;font-family:ui-monosp"
 +		"ace,Menlo,Consolas,monospace;font-size:.88em;line-height:1.4;white-space:pre-wrap;word-break:bre"
@@ -708,6 +712,8 @@ new file mode 100644
 +	"<div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span><button type=button class=pb"
 +		" onclick=dumpall()>整片下载</button><button type=button class=\"pb pri\""
 +		" onclick=dumpraw()>下载区段</button></div>\n"
++	"<div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
++		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p5>\n"
 +	"<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>\n"
@@ -720,7 +726,8 @@ new file mode 100644
 +	"<div class=box><table class=kv id=chk><tr><td colspan=2>未执行检查</td></tr></table></div>\n"
 +	"<div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb"
 +		" onclick=check()>开始检查</button><button type=button class=pb"
-+		" onclick=diag(this)>复制诊断信息</button></div>\n"
++		" onclick=diag(this)>复制诊断信息</button><button type=button class=pb"
++		" onclick=diagfile(this)>下载诊断包</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p11>\n"
 +	"<h1>环境变量</h1><p class=sub>U-Boot 当前环境变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。</p>\n"
@@ -730,6 +737,8 @@ new file mode 100644
 +	"<div class=box><table class=kv id=envt><tr><td>正在读取…</td></tr></table></div>\n"
 +	"<div class=row><button type=button class=pb id=envb onclick=getenv()>重新读取</button><button"
 +		" type=button class=pb onclick=envcopy(this)>复制全部</button></div>\n"
++	"<p class=bh>引导菜单<small id=bmh>设备启动时的菜单，由 bootmenu_* 拼出</small></p>\n"
++	"<div class=box><table class=kv id=bmenu><tr><td>正在读取…</td></tr></table></div>\n"
 +	"<p class=bh>恢复默认环境</p>\n"
 +	"<div class=box>\n"
 +	"<div class=\"fr wide\"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的"
@@ -741,8 +750,11 @@ new file mode 100644
 +	"<div class=pane id=p9>\n"
 +	"<h1>串口日志</h1><p class=sub>U-Boot 本次上电以来的控制台输出。反馈问题时请与健康检查结果一并附上。</p>\n"
 +	"<div class=box><pre class=log id=log>未读取</pre></div>\n"
-+	"<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button"
-+		" type=button class=pb onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
++	"<p class=note id=logovf hidden>日志缓冲已满，后续输出未记录。重启后重新开始记录。</p>\n"
++	"<div class=row><label><input type=checkbox class=sw id=logf"
++		" onchange=logfollow()>实时跟随</label><button type=button class=pb id=logb"
++		" onclick=getlog()>读取日志</button><button type=button class=pb"
++		" onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p12>\n"
 +	"<h1>重启</h1><p class=sub>执行 reset，不改动闪存。用于连续写入多个卷之后。</p>\n"
@@ -825,13 +837,25 @@ new file mode 100644
 +	"<script>\n"
 +	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
 +	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
++	"var RT=0,RN=0,RATE=0;\n"
 +	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
++	"var DLT=0,DLN=0,DLRATE=0;\n"
++	"var LOGN=0,LOGT=null;\n"
++	"/* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */\n"
++	"var WRSPD=1400000;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
 +		".setAttribute('data-t',n);try{localStorage.setItem('xgtheme',n)}catch(e){}}\n"
 +	"function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?(n/1024).toFixed(0)+'"
 +		" KiB':n+' B'}\n"
++	"function spd(b){return b>=1048576?(b/1048576).toFixed(1)+' MiB/s':b>=1024?(b/1024).toFixed(0)+'"
++		" KiB/s':Math.round(b)+' B/s'}\n"
++	"/* 秒数说成人话；超过一小时就不必精确到秒了 */\n"
++	"function dur(s){s=Math.round(s);\n"
++	"if(s<60)return s+' 秒';\n"
++	"var m=Math.floor(s/60);if(m<60)return m+' 分 '+(s%60)+' 秒';\n"
++	"return Math.floor(m/60)+' 小时 '+(m%60)+' 分'}\n"
 +	"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;"
 +		"')}\n"
 +	"function pane(){return $('.pane[data-on]')}\n"
@@ -852,11 +876,15 @@ new file mode 100644
 +	"function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var"
 +		" fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选"
 +		" '+fs.length+' 个文件 · '+sz(n):'未选择文件'}\n"
-+	"function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)}});$$"
-+		"('.drop').forEach(function(d){d.ondragover=function(e){e.preventDefault();d.classList.add('over'"
-+		")};d.ondragleave=function(){d.classList.remove('over')};d.ondrop=function(e){e.preventDefault();"
-+		"d.classList.remove('over');var i=$('input[type=file]',d);if(e.dataTransfer.files.length){try{i.f"
-+		"iles=e.dataTransfer.files;onfile(i)}catch(x){}}}})}\n"
++	"/* 每个文件框都能拖：大框是 .drop，表格里的是它所在的 .fr */\n"
++	"function drag(d,i){if(!d||d.__drag)return;d.__drag=1;\n"
++	"d.ondragover=function(e){e.preventDefault();d.classList.add('over')};\n"
++	"d.ondragleave=function(){d.classList.remove('over')};\n"
++	"d.ondrop=function(e){e.preventDefault();d.classList.remove('over');\n"
++	"if(e.dataTransfer&&e.dataTransfer.files.length){try{i.files=e.dataTransfer.files;onfile(i)}catch"
++		"(x){}}}}\n"
++	"function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)};\n"
++	"drag(i.closest?(i.closest('.drop')||i.closest('.fr')):null,i)})}\n"
 +	"function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return"
 +		" parseInt(v,16)}\n"
 +	"function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span"
@@ -884,8 +912,9 @@ new file mode 100644
 +	"var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()}"
 +		";\n"
 +	"x.timeout=2500;\n"
-+	"x.onload=function(){var u=-1;try{u=JSON.parse(x.responseText).up}catch(e){}fin(x.status==200,u)}"
-+		";\n"
++	"x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}\n"
++	"if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}\n"
++	"fin(x.status==200,u)};\n"
 +	"x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};\n"
 +	"x.open('GET','/ping');x.send()}\n"
 +	"function seen(o,u){\n"
@@ -940,24 +969,47 @@ new file mode 100644
 +	"function dlrefused(f){var t='';\n"
 +	"try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}\n"
 +	"t=t.replace(/\\s+/g,' ').trim();if(!t)return;\n"
-+	"DLBAD=1;$('#dlh').textContent='设备拒绝了本次备份：'+t}\n"
++	"DLBAD=1;dlstop('bad');\n"
++	"$('.pwhat',$('#dlprog')).textContent='设备拒绝了本次备份';\n"
++	"$('#dlh').textContent='设备拒绝了本次备份：'+t}\n"
 +	"function sink(u,what,n){silent();DLBAD=0;\n"
++	"DLT=Date.now();DLN=0;DLRATE=0;\n"
++	"var pg=$('#dlprog');pg.hidden=false;pg.className='prog';\n"
++	"$('.pbar',pg).className='pbar ind';$('.pbar',pg).style.width='100%';\n"
++	"$('.pwhat',pg).textContent='正在读取并传送 '+what;$('.pct',pg).textContent='';\n"
 +	"$('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
 +	"get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}\n"
-+	"/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */\n"
++	"/*\n"
++	"* 同一个 /dumpinfo：传输中报进度，读完报 crc32。页面本来每两秒就在问它，\n"
++	"* 不必再开一个端点。\n"
++	"*/\n"
 +	"function dlpoll(k){if(DLBAD)return;\n"
 +	"get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;\n"
 +	"dlrow(r);return}\n"
++	"if(st==200&&r&&r.busy&&r.total)dlprog(r);\n"
 +	"if(k<120)setTimeout(function(){dlpoll(k+1)},2000);\n"
-+	"else $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'})}\n"
++	"else{dlstop('bad');\n"
++	"$('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'}})}\n"
++	"function dlprog(r){var pg=$('#dlprog'),p=r.sent/r.total,\n"
++	"now=Date.now(),dt=(now-DLT)/1000;\n"
++	"if(dt>=1.5){DLRATE=(r.sent-DLN)/dt;DLT=now;DLN=r.sent}\n"
++	"$('.pbar',pg).className='pbar';$('.pbar',pg).style.width=(p*100)+'%';\n"
++	"$('.pct',pg).textContent=sz(r.sent)+' / '+sz(r.total)+' · '\n"
++	"+(p*100).toFixed(0)+'%'\n"
++	"+(DLRATE>0?' · '+spd(DLRATE)+' · 剩余 '+dur((r.total-r.sent)/DLRATE):'')}\n"
++	"function dlstop(cls){var pg=$('#dlprog');pg.className='prog'+(cls?' '+cls:'');\n"
++	"$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';\n"
++	"$('.pct',pg).textContent=''}\n"
 +	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 +	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
 +	"function dlrow(r){var t=$('#dll'),h=r.holes||0;\n"
 +	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
 +		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 +	"$('#dllh').hidden=false;\n"
++	"dlstop(h?'':'ok');\n"
++	"$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';\n"
 +	"$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「串口日志」':'传输完成'}\n"
 +	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
 +		"=x});\n"
@@ -980,7 +1032,7 @@ new file mode 100644
 +		"r r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st==503){$('#envt').innerHTML='<tr><td>设备正在写入，稍后再试</td></tr>';return}\n"
 +	"if(!r||!r.env){$('#envt').innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
-+	"ENV=r;envfill()})}\n"
++	"ENV=r;envfill();bmfill()})}\n"
 +	"function envrows(){if(!ENV)return[];var q=$('#envq').value.trim().toLowerCase(),k=$('#envkey').c"
 +		"hecked;\n"
 +	"return ENV.env.filter(function(e){if(k&&!ENVKEY.test(e.k))return false;\n"
@@ -991,6 +1043,25 @@ new file mode 100644
 +	"rows.forEach(function(e){h+='<tr><td>'+esc(e.k)+'</td><td class=envv>'+esc(e.v)+'</td></tr>'});\n"
 +	"t.innerHTML=h||'<tr><td>没有匹配的变量</td></tr>';\n"
 +	"$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容见串口':'')}\n"
++	"/*\n"
++	"* bootmenu_<n>=<标题>=<命令>，标题取到第一个 = 为止（U-Boot 自己就是\n"
++	"* 这么切的）。标题里可能裹着 ANSI 颜色，串口上红的那几条是危险项，\n"
++	"* 这里照样标红。\n"
++	"*/\n"
++	"function bmfill(){var t=$('#bmenu'),m={},h='',d;\n"
++	"if(!ENV){t.innerHTML='<tr><td>正在读取…</td></tr>';return}\n"
++	"ENV.env.forEach(function(e){var g=/^bootmenu_(\\d+)$/.exec(e.k);\n"
++	"if(g)m[+g[1]]=e.v;if(e.k=='bootmenu_delay')d=e.v});\n"
++	"Object.keys(m).map(Number).sort(function(a,b){return a-b})\n"
++	".forEach(function(i){var v=m[i],p=v.indexOf('='),\n"
++	"ti=p<0?v:v.slice(0,p),cm=p<0?'':v.slice(p+1),\n"
++	"hot=/\\x1b\\[[0-9;]*3[147]m/.test(ti);\n"
++	"ti=ti.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'');\n"
++	"h+='<tr><td class=n>'+i+'</td><td'+(hot?' class=hot':'')+'>'+esc(ti)\n"
++	"+'</td><td class=cmd>'+esc(cm)+'</td></tr>'});\n"
++	"t.innerHTML=h||'<tr><td>没有 bootmenu_* 条目</td></tr>';\n"
++	"$('#bmh').textContent=h?'设备启动时的菜单'+(d?'，'+d+' 秒内不按键就走 bootcmd':'')+'；红色是会写闪存的条目'\n"
++	":'环境里没有引导菜单：串口上不会停，直接走 bootcmd'}\n"
 +	"function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\\n'))}\n"
 +	"function askenvdef(){$('#atitle').textContent='环境变量';\n"
 +	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default -a \\u0026\\u0026"
@@ -1034,6 +1105,22 @@ new file mode 100644
 +		" s'+i.s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+i.s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;"
 +		"$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 ·"
 +		" '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}\n"
++	"/*\n"
++	"* 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码\n"
++	"* 后的字符串、数不出字节数，所以偏移得由设备说。\n"
++	"*/\n"
++	"function logfollow(){clearTimeout(LOGT);LOGT=null;\n"
++	"var on=$('#logf').checked;$('#logb').disabled=on;\n"
++	"if(!on)return;\n"
++	"LOGN=0;$('#log').textContent='';logtick()}\n"
++	"function logtick(){if(!$('#logf').checked)return;\n"
++	"get('/log?from='+LOGN,function(st,t){if(!$('#logf').checked)return;\n"
++	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
++	"if(i>0){var o=parseInt(t.slice(0,i),10);\n"
++	"if(o>=LOGN){LOGN=o;\n"
++	"var add=t.slice(i+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,'');\n"
++	"if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}\n"
++	"LOGT=setTimeout(logtick,2000)})}\n"
 +	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.dis"
 +		"abled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'')"
 +		".replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
@@ -1048,6 +1135,42 @@ new file mode 100644
 +		" '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI:"
 +		" none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+':"
 +		" '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\\n'))}\n"
++	"/* 复制那份是给聊天窗口用的；这份是给附件用的，把日志和 env 也带上 */\n"
++	"function diagtext(){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];\n"
++	"s.push('导出于 '+new Date().toLocaleString());s.push('');\n"
++	"s.push('== 设备 ==');\n"
++	"if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+':"
++		" '+r.cells[1].textContent)});\n"
++	"if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used"
++		" '+v.u)});else s.push('UBI: none')}\n"
++	"else s.push('(/info 读取失败)');\n"
++	"s.push('');s.push('== 健康检查 ==');\n"
++	"if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});\n"
++	"else s.push('(未运行)');\n"
++	"s.push('');s.push('== 环境变量 ==');\n"
++	"if(ENV)ENV.env.forEach(function(e){s.push(e.k+'='+e.v)});\n"
++	"else s.push('(未读取)');\n"
++	"s.push('');s.push('== 串口日志 ==');\n"
++	"s.push($('#log').textContent);\n"
++	"return s.join('\\n')}\n"
++	"/* 要等 /log 和 /env 回来才拼得全，所以按回调串起来 */\n"
++	"function diagfile(b){var o=b.textContent;b.disabled=true;\n"
++	"b.textContent='正在收集…';\n"
++	"var fin=function(){b.disabled=false;b.textContent=o;\n"
++	"var n=(INFO&&INFO.model||'device').replace(/[^A-Za-z0-9_.-]+/g,'-').toLowerCase();\n"
++	"save(n+'-diag.txt',diagtext())};\n"
++	"var step2=function(){if(ENV)return fin();\n"
++	"get('/env',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"if(r&&r.env){ENV=r;envfill();bmfill()}fin()})};\n"
++	"if($('#log').textContent.length>20)return step2();\n"
++	"get('/log',function(st,t){if(st==200)$('#log').textContent=t.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'"
++		"').replace(/\\r/g,'');step2()})}\n"
++	"/* 存文件全在浏览器里完成，设备不参与 */\n"
++	"function save(name,text){try{\n"
++	"var b=new Blob([text],{type:'text/plain;charset=utf-8'}),\n"
++	"u=URL.createObjectURL(b),a=document.createElement('a');\n"
++	"a.href=u;a.download=name;document.body.appendChild(a);a.click();\n"
++	"document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},1000)}catch(e){}}\n"
 +	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
 +	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移"
@@ -1107,6 +1230,7 @@ new file mode 100644
 +	"rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});\n"
 +	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked),btxt:btn.textContent"
 +		"};\n"
++	"RT=Date.now();RN=0;RATE=0;\n"
 +	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中"
 +		"…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
 +	"x.upload.onprogress=function(e){if(!e.lengthComputable)return;var"
@@ -1114,10 +1238,16 @@ new file mode 100644
 +		"if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}\n"
 +	"bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正在写入 ':'正在上传"
 +		" ')+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' ·"
-+		" '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);$('.pct',prog).textContent=sz(done)+'"
-+		" / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'};\n"
++		" '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);\n"
++	"/* 速率按最近 1.5 秒算，瞬时值抖得没法看 */\n"
++	"var now=Date.now(),dt=(now-RT)/1000;\n"
++	"if(dt>=1.5){RATE=(done-RN)/dt;RT=now;RN=done}\n"
++	"$('.pct',prog).textContent=sz(done)+' / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'+(RATE>0?'"
++		" · '+spd(RATE)+' · 剩余 '+dur((tot-done)/RATE):'')};\n"
 +	"x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent=p.id=='p4'?'传输完"
-+		"成，设备正在写入最后一块…':'上传完成，设备正在校验…';$('.pct',prog).textContent=''};\n"
++		"成，设备正在写入最后一块…':'上传完成，设备开始写入闪存';\n"
++	"/* 写入期间设备不响应网络，报不出进度；能给的只有一个估计 */\n"
++	"$('.pct',prog).textContent=p.id=='p4'?'':'预计 '+dur(Math.max(8,tot/WRSPD))};\n"
 +	"x.onload=function(){if(x.status==200){done(x.responseText);return}\n"
 +	"/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */\n"
 +	"fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};\n"
@@ -1932,26 +2062,26 @@ new file mode 100644
 +		;			/* this build does not version its env */
 +	else if (!cur)
 +		chk_item(jb, first, "envver", CHK_WARN,
-+			 "环境里没有 envver，这一版 U-Boot 是 %s：菜单是旧的，下次正常启动会自动刷新",
++			 "环境中无 envver，当前 U-Boot 为 %s。引导菜单为旧版本，下次正常启动时自动刷新",
 +			 def);
 +	else if (!strcmp(cur, def))
-+		chk_item(jb, first, "envver", CHK_OK, "%s，与这一版 U-Boot 一致",
++		chk_item(jb, first, "envver", CHK_OK, "%s，与当前 U-Boot 一致",
 +			 cur);
 +	else
 +		chk_item(jb, first, "envver", CHK_WARN,
-+			 "闪存里是 %s，这一版 U-Boot 是 %s：下次正常启动会自动刷新菜单",
++			 "闪存中为 %s，当前 U-Boot 为 %s。下次正常启动时自动刷新引导菜单",
 +			 cur, def);
 +
 +	cur = env_get("bootcmd");
 +	def = defenv_get("bootcmd");
 +	if (!cur)
 +		chk_item(jb, first, "bootcmd", CHK_FAIL,
-+			 "没有设置：设备不会自动启动，可在「环境变量」页恢复默认");
++			 "未设置，设备不会自行引导。可在「环境变量」页恢复默认值");
 +	else if (def && !strcmp(cur, def))
-+		chk_item(jb, first, "bootcmd", CHK_OK, "与这一版的默认一致");
++		chk_item(jb, first, "bootcmd", CHK_OK, "与当前版本默认值一致");
 +	else if (def)
 +		chk_item(jb, first, "bootcmd", CHK_WARN,
-+			 "与这一版的默认不同，被改过：%s", cur);
++			 "与当前版本默认值不同，已被修改：%s", cur);
 +	else
 +		chk_item(jb, first, "bootcmd", CHK_OK, "%s", cur);
 +
@@ -1963,10 +2093,10 @@ new file mode 100644
 +			dn++;
 +	}
 +	if (!n)
-+		chk_item(jb, first, "引导菜单", CHK_WARN, "没有条目");
++		chk_item(jb, first, "引导菜单", CHK_WARN, "无条目");
 +	else if (dn && n != dn)
 +		chk_item(jb, first, "引导菜单", CHK_WARN,
-+			 "%d 项，这一版的默认是 %d 项", n, dn);
++			 "%d 项，当前版本默认为 %d 项", n, dn);
 +	else
 +		chk_item(jb, first, "引导菜单", CHK_OK, "%d 项", n);
 +}
@@ -1981,7 +2111,7 @@ new file mode 100644
 +
 +	chk_item(jb, first, "磨损", worn ? CHK_WARN : CHK_OK,
 +		 "擦写次数最大 %d、平均 %d%s", ubi->max_ec, ubi->mean_ec,
-+		 worn ? "，已接近 SLC 颗粒的常见寿命，留意坏块增长" : "");
++		 worn ? "，接近 SLC 颗粒常见寿命，需留意坏块增长" : "");
 +}
 +
 +/* Every block of the chip; the one holding the BL2 is the one that matters. */
@@ -2010,14 +2140,14 @@ new file mode 100644
 +
 +	if (inbl2)
 +		chk_item(jb, first, "坏块", CHK_FAIL,
-+			 "%d 个，其中 bl2 分区所在块已坏，BootROM 可能读不到 BL2：%s",
++			 "%d 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：%s",
 +			 nbad, list);
 +	else if (nbad)
 +		chk_item(jb, first, "坏块", CHK_WARN,
-+			 "%d 个，由 UBI 自行避开：%s%s", nbad, list,
++			 "%d 个，已由 UBI 避开：%s%s", nbad, list,
 +			 n >= (int)sizeof(list) - 12 ? " …" : "");
 +	else
-+		chk_item(jb, first, "坏块", CHK_OK, "没有");
++		chk_item(jb, first, "坏块", CHK_OK, "无");
 +}
 +
 +static void chk_bl2(struct jbuf *jb, int *first, u8 *buf)
@@ -2041,13 +2171,13 @@ new file mode 100644
 +	if (get_unaligned_le32(buf + BL2_IMAGE_OFF) == FIP_TOC_MAGIC)
 +		chk_item(jb, first, "BL2", CHK_OK, "0x%x 处有 BL2 镜像%s",
 +			 BL2_IMAGE_OFF,
-+			 ret == -EUCLEAN ? "（本次读取纠正过位翻转）" : "");
++			 ret == -EUCLEAN ? "（本次读取已纠正位翻转）" : "");
 +	else if (all_ff(buf, BL2_IMAGE_OFF + 64))
 +		chk_item(jb, first, "BL2", CHK_FAIL,
-+			 "bl2 分区是空的：断电后 BootROM 找不到 BL2，请在「引导升级」里上传");
++			 "bl2 分区为空。断电后 BootROM 无法找到 BL2，请在「引导升级」页上传");
 +	else
 +		chk_item(jb, first, "BL2", CHK_WARN,
-+			 "0x%x 处没有 BL2 镜像头，可能是原厂或第三方引导程序", BL2_IMAGE_OFF);
++			 "0x%x 处无 BL2 镜像头，可能为原厂或第三方引导程序", BL2_IMAGE_OFF);
 +}
 +
 +/*
@@ -2067,7 +2197,7 @@ new file mode 100644
 +	ret = ubi_volume_read(v->name, (char *)buf, 0, v->used_bytes);
 +	if (ret) {
 +		chk_item(jb, first, what, CHK_FAIL,
-+			 "读取失败（%d）：卷内数据校验不过，内容已损坏", ret);
++			 "读取失败（%d），卷内数据校验未通过，内容已损坏", ret);
 +		return -1;
 +	}
 +
@@ -2082,7 +2212,7 @@ new file mode 100644
 +
 +	if (!v) {
 +		chk_item(jb, first, "fip 卷", CHK_FAIL,
-+			 "不存在：闪存里没有 U-Boot，断电后无法启动，请在「引导升级」里上传 U-Boot 文件");
++			 "不存在。闪存中无 U-Boot，断电后无法启动，请在「引导升级」页上传 U-Boot 文件");
 +		return;
 +	}
 +	n = chk_read_static(jb, first, "fip 卷", v, buf, max);
@@ -2105,7 +2235,7 @@ new file mode 100644
 +
 +	if (!v) {
 +		chk_item(jb, first, "fit 卷", CHK_FAIL,
-+			 "不存在：闪存里没有固件，请在「日常刷机」里上传");
++			 "不存在。闪存中无固件，请在「日常刷机」页上传");
 +		return;
 +	}
 +	ret = ubi_volume_read(v->name, (char *)buf, 0, 4096);
@@ -2122,7 +2252,7 @@ new file mode 100644
 +	tot = fdt_totalsize(buf);
 +	if (tot > v->used_bytes)
 +		chk_item(jb, first, "fit 卷", CHK_FAIL,
-+			 "镜像声明 %u 字节，卷内只有 %lld：固件不完整，请重新上传",
++			 "镜像声明 %u 字节，卷内仅 %lld 字节。固件不完整，请重新上传",
 +			 tot, v->used_bytes);
 +	else
 +		chk_item(jb, first, "fit 卷", CHK_OK, "FIT 镜像，%u 字节", tot);
@@ -2224,7 +2354,7 @@ new file mode 100644
 +
 +	if (fit_stitch(v, buf, max)) {
 +		chk_item(jb, first, "固件", CHK_WARN,
-+			 "读不出镜像里的描述，只能确认它是一个 FIT");
++			 "无法读取镜像描述，仅能确认为 FIT 格式");
 +		return;
 +	}
 +
@@ -2245,7 +2375,7 @@ new file mode 100644
 +	}
 +
 +	if (!desc && !when[0] && !compat) {
-+		chk_item(jb, first, "固件", CHK_WARN, "镜像里没有描述信息");
++		chk_item(jb, first, "固件", CHK_WARN, "镜像中无描述信息");
 +		return;
 +	}
 +
@@ -2271,13 +2401,13 @@ new file mode 100644
 +	snprintf(what, sizeof(what), "%s 卷", name);
 +	if (!ubi_vol_find(ubi, name)) {
 +		chk_item(jb, first, what, CHK_WARN,
-+			 "不存在：U-Boot 环境无处保存，首次正常启动时会自动创建");
++			 "不存在。U-Boot 环境无处保存，首次正常启动时自动创建");
 +		return 0;
 +	}
 +
 +	strlcpy(vol, name, sizeof(vol));
 +	if (ubi_volume_read(vol, (char *)b, 0, sizeof(b))) {
-+		chk_item(jb, first, what, CHK_WARN, "存在，但读不出内容");
++		chk_item(jb, first, what, CHK_WARN, "存在，无法读取内容");
 +		return 0;
 +	}
 +	*crc = get_unaligned_le32(b);
@@ -2288,7 +2418,7 @@ new file mode 100644
 +		chk_item(jb, first, what, CHK_OK, "存在，与 %s 一致", other);
 +	else
 +		chk_item(jb, first, what, CHK_WARN,
-+			 "存在，CRC 0x%08x，与 %s 的 0x%08x 不同：两份环境不一样，启动时用较新的一份",
++			 "存在，CRC 0x%08x，与 %s 的 0x%08x 不同。两份环境内容不一致，启动时使用较新的一份",
 +			 *crc, other, othercrc);
 +
 +	return 1;
@@ -2305,14 +2435,14 @@ new file mode 100644
 +
 +	snprintf(what, sizeof(what), "%s 卷", f->name);
 +	if (!v) {
-+		chk_item(jb, first, what, CHK_WARN, "读不到：卷不存在");
++		chk_item(jb, first, what, CHK_WARN, "无法读取，卷不存在");
 +		return;
 +	}
 +	n = chk_read_static(jb, first, what, v, buf, max);
 +	if (n < 0)
 +		return;
 +	if (all_ff(buf, n)) {
-+		chk_item(jb, first, what, CHK_WARN, "读到了，内容为空");
++		chk_item(jb, first, what, CHK_WARN, "已读取，内容为空");
 +		return;
 +	}
 +	if (fvol_mac_off(f->name, &macoff) && macoff + 6 <= (ulong)n) {
@@ -2322,14 +2452,14 @@ new file mode 100644
 +			memcpy(chk_fmac, m, sizeof(chk_fmac));
 +			chk_fmac_ok = 1;
 +			fmt_mac(mac, sizeof(mac), m);
-+			chk_item(jb, first, what, CHK_OK, "读到了，MAC %s", mac);
++			chk_item(jb, first, what, CHK_OK, "已读取，MAC %s", mac);
 +		} else {
 +			chk_item(jb, first, what, CHK_WARN,
-+				 "读到了，没有有效 MAC");
++				 "已读取，无有效 MAC");
 +		}
 +		return;
 +	}
-+	chk_item(jb, first, what, CHK_OK, "读到了");
++	chk_item(jb, first, what, CHK_OK, "已读取");
 +}
 +
 +static void chk_mac(struct jbuf *jb, int *first)
@@ -2340,7 +2470,7 @@ new file mode 100644
 +	if (!env_get("ethaddr")) {
 +		fmt_mac(mac, sizeof(mac), net_ethaddr);
 +		chk_item(jb, first, "U-Boot MAC", CHK_WARN,
-+			 "环境里没有 ethaddr，本次启动用的是随机地址 %s", mac);
++			 "环境中无 ethaddr，本次启动使用随机地址 %s", mac);
 +	} else if (!eth_env_get_enetaddr("ethaddr", addr)) {
 +		chk_item(jb, first, "U-Boot MAC", CHK_FAIL,
 +			 "ethaddr 不是有效地址");
@@ -2353,7 +2483,7 @@ new file mode 100644
 +		fmt_mac(mac, sizeof(mac), addr);
 +		fmt_mac(fac, sizeof(fac), chk_fmac);
 +		chk_item(jb, first, "U-Boot MAC", CHK_WARN,
-+			 "%s，与出厂数据里的 %s 不同：重建 UBI 之后常见，把备份的出厂卷写回即可",
++			 "%s，与出厂数据中的 %s 不同。重建 UBI 后常见，将备份的出厂卷写回即可",
 +			 mac, fac);
 +	} else {
 +		fmt_mac(mac, sizeof(mac), addr);
@@ -2404,7 +2534,7 @@ new file mode 100644
 +	chk_group("UBI");
 +	if (ubi_part(part_name, NULL)) {
 +		chk_item(&jb, &first, "UBI", CHK_FAIL,
-+			 "无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
++			 "无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
 +	} else {
 +		struct ubi_device *ubi = ubi_get_device(0);
 +
@@ -2455,6 +2585,17 @@ new file mode 100644
 + * skipped, and why a write failed -- the lines this file prints while
 + * flashing go there too.  The buffer is read through a copy of its control
 + * block, so nothing is consumed.
++ *
++ * ?from=N serves only what follows byte N, so the page can follow the
++ * console the way tail -f does instead of re-fetching 64 KiB every couple
++ * of seconds.  That is sound because the record is append-only: U-Boot
++ * stops recording when the buffer fills (GD_FLG_RECORD_OVF) rather than
++ * wrapping, so a byte at offset N stays the byte at offset N.
++ *
++ * The "buffer is full" notice is deliberately NOT part of that stream --
++ * it sits at the end of the body, so a follower would be handed it again
++ * on every poll.  /ping carries the flag instead, and the page says it
++ * once, next to the log rather than inside it.
 + */
 +#if IS_ENABLED(CONFIG_CONSOLE_RECORD)
 +static char log_buf[CONFIG_CONSOLE_RECORD_OUT_SIZE + 512];
@@ -2462,17 +2603,25 @@ new file mode 100644
 +
 +static int httpd_log(void)
 +{
++	static const char hdr[] =
++		"HTTP/1.0 200 OK\r\n"
++		"Content-Type: text/plain; charset=utf-8\r\n"
++		"Connection: close\r\n"
++		"\r\n";
 +	static const char full[] =
-+		"\n[日志缓冲已满，之后的输出没有记录]\n";
++		"\n[日志缓冲已满，后续输出未记录]\n";
 +	struct membuf copy = *(struct membuf *)&gd->console_out;
++	char from[24], pre[16];
++	unsigned long skip = 0;
 +	char *data;
-+	int n, len, i;
++	int n, len, i, body, tail, k, back, follow;
 +
-+	n = snprintf(log_buf, sizeof(log_buf),
-+		     "HTTP/1.0 200 OK\r\n"
-+		     "Content-Type: text/plain; charset=utf-8\r\n"
-+		     "Connection: close\r\n"
-+		     "\r\n");
++	follow = qs_get(log_qs, "from", from, sizeof(from));
++	if (follow)
++		skip = dectoul(from, NULL);
++
++	n = snprintf(log_buf, sizeof(log_buf), "%s", hdr);
++	body = n;
 +	for (i = 0; i < 2; i++) {
 +		len = membuf_getraw(&copy, sizeof(log_buf) - n - sizeof(full),
 +				    true, &data);
@@ -2481,6 +2630,47 @@ new file mode 100644
 +		memcpy(log_buf + n, data, len);
 +		n += len;
 +	}
++
++	/*
++	 * Following: hand back only what is new, after one line saying how far
++	 * that reaches.  The page cannot work the offset out on its own -- it
++	 * holds decoded text, not bytes -- so the device has to say it.
++	 *
++	 * The notice below belongs to the whole-log view; a follower would be
++	 * handed it again on every poll, so /ping carries that flag instead.
++	 */
++	if (follow) {
++		if (skip > (unsigned long)(n - body))
++			skip = n - body;
++		tail = n - body - (int)skip;
++
++		/*
++		 * Never end inside a UTF-8 sequence: each response is decoded on
++		 * its own, so a split one leaves a replacement character behind
++		 * for good.  Walk back to the last lead byte and drop it if what
++		 * follows is short; the next poll picks it up whole.
++		 */
++		for (k = tail, back = 0; k > 0 && back < 4; k--, back++) {
++			unsigned char c = log_buf[body + skip + k - 1];
++			int need;
++
++			if ((c & 0xc0) == 0x80)
++				continue;	/* continuation, keep walking */
++			need = c < 0x80 ? 1 : (c & 0xe0) == 0xc0 ? 2 :
++				(c & 0xf0) == 0xe0 ? 3 : 4;
++			if (back + 1 < need)
++				tail = k - 1;
++			break;
++		}
++
++		k = snprintf(pre, sizeof(pre), "%lu\n",
++			     skip + (unsigned long)tail);
++		memmove(log_buf + body + k, log_buf + body + skip, tail);
++		memcpy(log_buf + body, pre, k);
++
++		return body + k + tail;
++	}
++
 +	if (gd->flags & GD_FLG_RECORD_OVF) {
 +		memcpy(log_buf + n, full, sizeof(full) - 1);
 +		n += sizeof(full) - 1;
@@ -2517,8 +2707,16 @@ new file mode 100644
 +
 +static int httpd_ping(void)
 +{
++	/*
++	 * ovf rides along here because the page polls this anyway, and because
++	 * a follower on /log?from= would otherwise never learn that the record
++	 * stopped growing for a reason.
++	 */
 +	return snprintf(ping_buf, sizeof(ping_buf),
-+			JSON_HDR("200 OK") "{\"up\":%lu}", get_timer(0));
++			JSON_HDR("200 OK") "{\"up\":%lu,\"ovf\":%d}",
++			get_timer(0),
++			IS_ENABLED(CONFIG_CONSOLE_RECORD) &&
++			(gd->flags & GD_FLG_RECORD_OVF) ? 1 : 0);
 +}
 +
 +/*
@@ -3076,6 +3274,7 @@ new file mode 100644
 +static char	dump_vol[UBIVOL_NAME_MAX];
 +static struct mtd_info	*dump_mtd;
 +static char	dump_qs[160];
++static char	log_qs[32];
 +
 +/*
 + * When bytes last actually went out.  A download that the browser abandons
@@ -3107,6 +3306,15 @@ new file mode 100644
 +static u32	dump_crc_pos;
 +
 +/*
++ * The high-water mark of what tx() has handed to the stack.  A pull
++ * callback is asked for arbitrary offsets -- a retransmit asks for one
++ * already served -- so progress is the highest offset reached, never the
++ * last one asked for.  Reported live by /dumpinfo, which the page is
++ * already polling every couple of seconds while the transfer runs.
++ */
++static u32	dump_sent;
++
++/*
 + * There is one staging area and one header buffer, so a second download
 + * would take both away from the first.  Refuse it out of a buffer of its
 + * own rather than through dump_fail(), which would write over exactly the
@@ -3122,13 +3330,13 @@ new file mode 100644
 +	"HTTP/1.0 400 Bad Request\r\n"
 +	"Content-Type: text/plain; charset=utf-8\r\n"
 +	"Connection: close\r\n"
-+	"\r\n设备正在传送备份，请等待其完成后再上传；或刷新页面放弃该次下载\n";
++	"\r\n设备正在传输备份。请等待传输完成后再上传，或刷新页面放弃该次下载\n";
 +
 +static const char resp_dumpbusy[] =
 +	"HTTP/1.0 503 Service Unavailable\r\n"
 +	"Content-Type: text/plain; charset=utf-8\r\n"
 +	"Connection: close\r\n"
-+	"\r\n另一个备份正在传输，请等待其完成后重试\n";
++	"\r\n另一个备份正在传输，请等待传输完成后重试\n";
 +
 +/* One value out of "a=1&b=2"; 0 when the key is not there. */
 +static int qs_get(const char *qs, const char *key, char *out, int max)
@@ -3306,6 +3514,7 @@ new file mode 100644
 +	dump_busy = 1;
 +	dump_t0 = get_timer(0);
 +	dump_wlen = 0;
++	dump_sent = 0;
 +	dump_crc = 0;
 +	dump_crc_pos = 0;
 +	dump_nhole = 0;
@@ -3313,7 +3522,7 @@ new file mode 100644
 +
 +	if (up_active) {
 +		dump_fail("503 Service Unavailable",
-+			  "设备正在接收上传，请等待本次写入完成后再备份");
++			  "设备正在接收上传，请等待写入完成后再备份");
 +		return;
 +	}
 +
@@ -3431,11 +3640,20 @@ new file mode 100644
 +static int httpd_dumpinfo(void)
 +{
 +	struct jbuf jb;
++	u32 sent = 0;
++
++	/* The header is not part of what the user asked for; do not count it. */
++	if (dump_sent > (u32)dump_hdr_len)
++		sent = dump_sent - (u32)dump_hdr_len;
++	if (sent > dump_len)
++		sent = dump_len;
 +
 +	jb_init(&jb, dumpinfo_buf, sizeof(dumpinfo_buf));
 +	jb_printf(&jb, JSON_HDR("200 OK")
-+		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d,\"name\":",
-+		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes);
++		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"holes\":%d"
++		  ",\"busy\":%d,\"sent\":%u,\"total\":%u,\"name\":",
++		  dump_last_seq, dump_last_len, dump_last_crc, dump_last_holes,
++		  dump_busy ? 1 : 0, sent, dump_busy ? dump_len : 0);
 +	jb_str(&jb, dump_last_name);
 +	jb_printf(&jb, "}");
 +
@@ -3457,6 +3675,8 @@ new file mode 100644
 +		if (n > maxlen)
 +			n = maxlen;
 +		memcpy(buf, dump_hdr + off, n);
++		if (off + n > dump_sent)
++			dump_sent = off + n;
 +
 +		return n;
 +	}
@@ -3482,6 +3702,8 @@ new file mode 100644
 +	if (n > maxlen)
 +		n = maxlen;
 +	memcpy(buf, (const void *)(dump_base + (want - dump_wpos)), n);
++	if (off + n > dump_sent)
++		dump_sent = off + n;
 +
 +	return n;
 +}
@@ -3879,7 +4101,7 @@ new file mode 100644
 +	sp = memchr(path, ' ', eol - 4);
 +	plen = sp ? sp - path : eol - 4;
 +
-+	/* Only /dump takes arguments; for everything else the path is all. */
++	/* /dump and /log take arguments; for everything else the path is all. */
 +	q = memchr(path, '?', plen);
 +	if (q) {
 +		qlen = plen - (q - path) - 1;
@@ -3890,8 +4112,17 @@ new file mode 100644
 +		return CONN_INFO;
 +	if (plen == 6 && !memcmp(path, "/check", 6))
 +		return CONN_CHECK;
-+	if (plen == 4 && !memcmp(path, "/log", 4))
++	if (plen == 4 && !memcmp(path, "/log", 4)) {
++		int k = qlen;
++
++		if (k > (int)sizeof(log_qs) - 1)
++			k = sizeof(log_qs) - 1;
++		if (k > 0)
++			memcpy(log_qs, q + 1, k);
++		log_qs[k > 0 ? k : 0] = '\0';
++
 +		return CONN_LOG;
++	}
 +	if (plen == 5 && !memcmp(path, "/ping", 5))
 +		return CONN_PING;
 +	if (plen == 4 && !memcmp(path, "/env", 4))
