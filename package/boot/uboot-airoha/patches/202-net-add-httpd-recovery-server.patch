@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,5259 @@
+@@ -0,0 +1,5499 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -284,6 +284,8 @@ new file mode 100644
 +#define CONN_SCAN		((void *)15)
 +#define CONN_BOOT		((void *)16)
 +#define CONN_BOOTONCE		((void *)17)
++#define CONN_NETSET		((void *)18)
++#define CONN_NETDHCP		((void *)19)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -730,6 +732,18 @@ new file mode 100644
 +	"<p class=bh>网络<small>连不上设备时先看这里</small></p>\n"
 +	"<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>\n"
 +	"<p class=note id=portn hidden>端口号按交换机内部顺序排，不一定等于机壳上的丝印。没有回应的端口不列出。</p>\n"
++	"<p class=bh>改地址<small>改完要用新地址重新打开这个页面</small></p>\n"
++	"<div class=box>\n"
++	"<div class=fr><span class=fl>IP<small>设备自己的地址</small></span><span class=fc><input type=text"
++		" id=nip class=mono style=\"width:160px\"><span class=fn>电脑要在同一网段</span></span></div>\n"
++	"<div class=fr><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono"
++		" value=255.255.255.0 style=\"width:160px\"></span></div>\n"
++	"<div class=\"fr wide\"><span class=fl>保存到闪存<small>不保存的话断电就回到原来的地址。填错了地址，断电是唯一的退路</small></span><sp"
++		"an class=\"fc end\"><input type=checkbox class=sw id=nsave value=1></span></div>\n"
++	"</div>\n"
++	"<p class=note id=nh>把设备放进已有网络里，最稳的做法是在这里填一个那个网段里的空闲地址 —— 地址是你自己定的，改完就知道去哪找它。</p>\n"
++	"<div class=row><button type=button class=pb onclick=askdhcp()>向上级路由要地址</button><button"
++		" type=button class=\"pb pri\" onclick=asknetset()>应用</button></div>\n"
 +	"<p class=bh>UBI 卷<small id=ubih></small></p>\n"
 +	"<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>\n"
 +	"</div>\n"
@@ -761,8 +775,8 @@ new file mode 100644
 +	"<p class=bh>恢复默认环境</p>\n"
 +	"<div class=box>\n"
 +	"<div class=\"fr wide\"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的"
-+		" bootcmd、引导菜单与网络设置并保存</small></span><span class=\"fc end\"><button type=button class=\"pb red\""
-+		" onclick=askenvdef()>恢复默认</button></span></div>\n"
++		" bootcmd、引导菜单与网络设置并保存</small></span><span class=\"fc end\"><span class=fs id=envdh></span><button"
++		" type=button class=\"pb red\" onclick=askenvdef()>恢复默认</button></span></div>\n"
 +	"</div>\n"
 +	"<p class=note>出厂 MAC 位于 ri 卷，<b>不受影响</b>；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。</p>\n"
 +	"</div>\n"
@@ -982,6 +996,49 @@ new file mode 100644
 +	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
++	"var IP4=/^(\\d{1,3}\\.){3}\\d{1,3}$/;\n"
++	"function asknetset(){var ip=$('#nip').value.trim(),\n"
++	"mk=$('#nmask').value.trim()||'255.255.255.0',\n"
++	"sv=$('#nsave').checked;\n"
++	"$('#atitle').textContent='改地址';\n"
++	"if(!IP4.test(ip)){$('#nh').textContent='IP 不是一个合法的地址';return}\n"
++	"if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}\n"
++	"$('#abody').innerHTML='<div class=r><span>新地址</span><span class=v>'+esc(ip)+' /"
++		" '+esc(mk)+'</span></div>'+\n"
++	"'<div class=w>改完这个页面就断了，要用 http://'+esc(ip)+'/ 重新打开</div>'+\n"
++	"'<div class=w>电脑也得在同一网段，否则谁都找不到它</div>'+\n"
++	"(sv?'<div class=w><b>会保存到闪存</b>：填错了地址，断电也回不去</div>'\n"
++	":'<div class=w>不保存，断电就回到原来的地址</div>');\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='改地址';\n"
++	"YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}\n"
++	"function donetset(ip,mk,sv){\n"
++	"get('/netset?ip='+encodeURIComponent(ip)+'&mask='+encodeURIComponent(mk)\n"
++	"+'&save='+(sv?1:0),function(st,t){\n"
++	"if(st!=200||!/^ok /.test((t||'').trim())){\n"
++	"$('#nh').textContent='设备没有接受：'+((t||'').trim()||st);return}\n"
++	"hbstop();gone('设备已移到 '+ip,\n"
++	"'这个页面连的是旧地址，不会自己回来。用 <b>http://'+esc(ip)+'/</b> 重新打开。'\n"
++	"+(sv?'':'断电会回到原来的地址。'),'http://'+ip+'/')})}\n"
++	"function askdhcp(){$('#atitle').textContent='向上级路由要地址';\n"
++	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>dhcp</span></div>'+\n"
++	"'<div class=w><b>拿到的地址是路由器给的，这个页面事先不知道是多少。</b>要去上级路由的客户端列表里按 MAC"
++		" 找：'+esc((INFO&&INFO.mac)||'')+'</div>'+\n"
++	"'<div class=w>要不到地址会退回现在这个地址</div>'+\n"
++	"'<div class=w>不保存，断电就回到原来的地址</div>';\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='去要';YES=dodhcp;\n"
++	"$('#mask').setAttribute('data-on','')}\n"
++	"function dodhcp(){get('/netdhcp',function(){});hbstop();\n"
++	"gone('设备正在要地址',\n"
++	"'拿到之后它就在新地址上了。去上级路由的客户端列表里找 <b>'\n"
++	"+esc((INFO&&INFO.mac)||'')+'</b>。要不到会退回原来的地址，断电也会回到原来的地址。','')}\n"
++	"/* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */\n"
++	"function gone(title,body,url){\n"
++	"$('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';\n"
++	"$('#offt').textContent=title;\n"
++	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+body+'</div>'\n"
++	"+(url?'<div class=hint>10 秒后自动跳过去。</div>':'');\n"
++	"$('#offr').hidden=true;$('#off').setAttribute('data-on','');\n"
++	"if(url)setTimeout(function(){location.href=url},10000)}\n"
 +	"function askboot(){$('#atitle').textContent='启动系统';\n"
 +	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+\n"
 +	"'<div class=w>闪存内容不受影响；启动不起来会回到本页面</div>';\n"
@@ -1116,10 +1173,11 @@ new file mode 100644
 +	"'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启生效</div>';\n"
 +	"var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on'"
 +		",'')}\n"
-+	"function envdef(){$('#envh').textContent='正在恢复…';\n"
-+	"get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并"
-+		"保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
-+	"else $('#envh').textContent='恢复失败（'+st+'）'})}\n"
++	"/* 自己的位置：#envh 归 envfill() 管，紧接着的 getenv() 会把它写掉 */\n"
++	"function envdef(){$('#envdh').textContent='正在恢复…';\n"
++	"get('/envreset',function(st,t){if(st==200){$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复"
++		"并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
++	"else $('#envdh').textContent='恢复失败（'+st+'）'})}\n"
 +	"/*\n"
 +	"* 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是\n"
 +	"* 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口\n"
@@ -1143,7 +1201,9 @@ new file mode 100644
 +	"(p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')\n"
 +	"+(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
 +	"t.innerHTML=h;\n"
-+	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length)}\n"
++	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length);\n"
++	"if(!$('#nip').value)$('#nip').value=n.ip||'';\n"
++	"if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}\n"
 +	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<"
 +		"tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
 +	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
@@ -3375,6 +3435,146 @@ new file mode 100644
 +	return bootonce_len;
 +}
 +
++/*
++ * ---- GET /netset?ip=&mask=&save=, GET /netdhcp ---------------------------
++ *
++ * The address this page is reachable at, changed from the page itself.
++ *
++ * Both are deferred: the answer has to leave on the old address, because
++ * the browser is holding a connection to it and a reply sourced from the
++ * new one would simply be dropped.  So the request only records what to
++ * do, the netloop ends, and the change happens in httpd() before the
++ * server is started again.
++ *
++ * Not saved unless asked.  A wrong address here means the device is gone
++ * until somebody works out where it went, and a recovery tool should not
++ * make that survive a power cycle by default.
++ *
++ * /netdhcp has a problem no code here can fix: after it succeeds the
++ * device is at an address the browser does not know.  The lease comes from
++ * the upstream router, so that is where the user has to look -- by MAC.
++ * The page says so before it starts.  It is offered anyway because putting
++ * the device on an existing network is sometimes the only way in, and it
++ * falls back to the static address when no lease arrives.
++ */
++static char netset_buf[256];
++static int netset_len;
++static int netchange_pending;	/* 1 = static, 2 = dhcp */
++static char netset_ip[20];
++static char netset_mask[20];
++static int netset_save;
++static char netset_qs[96];
++
++/* Dotted quad, and not one that cannot be an interface address. */
++static int ip_ok(const char *s, struct in_addr *out)
++{
++	unsigned long v[4];
++	const char *p = s;
++	u32 a;
++	int i;
++
++	for (i = 0; i < 4; i++) {
++		char *e;
++
++		v[i] = simple_strtoul(p, &e, 10);
++		if (e == p || v[i] > 255)
++			return 0;
++		if (i < 3 && *e != '.')
++			return 0;
++		if (i == 3 && *e)
++			return 0;
++		p = e + 1;
++	}
++	a = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
++	if (!a || a == 0xffffffff || v[0] == 0 || v[0] == 127 || v[0] >= 224)
++		return 0;
++	if (out)
++		out->s_addr = htonl(a);
++
++	return 1;
++}
++
++static int netset_reply(const char *fmt, ...)
++{
++	char msg[160];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	netset_len = snprintf(netset_buf, sizeof(netset_buf),
++			      "HTTP/1.0 200 OK\r\n"
++			      "Content-Type: text/plain; charset=utf-8\r\n"
++			      "Connection: close\r\n"
++			      "\r\n%s\n", msg);
++
++	return netset_len;
++}
++
++static int httpd_netset(void)
++{
++	char ip[20], mask[20], sv[8];
++
++	netchange_pending = 0;
++
++	if (!qs_get(netset_qs, "ip", ip, sizeof(ip)) || !ip_ok(ip, NULL))
++		return netset_reply("bad ip");
++	if (qs_get(netset_qs, "mask", mask, sizeof(mask))) {
++		if (!ip_ok(mask, NULL) && strcmp(mask, "255.255.255.0"))
++			return netset_reply("bad mask");
++	} else {
++		strlcpy(mask, "255.255.255.0", sizeof(mask));
++	}
++
++	strlcpy(netset_ip, ip, sizeof(netset_ip));
++	strlcpy(netset_mask, mask, sizeof(netset_mask));
++	netset_save = qs_get(netset_qs, "save", sv, sizeof(sv)) && sv[0] == '1';
++	netchange_pending = 1;
++
++	return netset_reply("ok %s %s %s", netset_ip, netset_mask,
++			    netset_save ? "saved" : "ram");
++}
++
++/* Apply what /netset or /netdhcp asked for, once the answer is out. */
++static void netchange_apply(void)
++{
++	char back[20];
++	const char *cur;
++	int mode = netchange_pending;
++
++	netchange_pending = 0;
++	if (!mode)
++		return;
++
++	if (mode == 1) {
++		printf("httpd: moving to %s/%s%s\n", netset_ip, netset_mask,
++		       netset_save ? " (saved)" : " (this boot only)");
++		env_set("ipaddr", netset_ip);
++		env_set("netmask", netset_mask);
++		if (netset_save && run_command("saveenv", 0))
++			printf("httpd: saving failed; this lasts until reboot\n");
++
++		return;
++	}
++
++	cur = env_get("ipaddr");
++	strlcpy(back, cur ? cur : "", sizeof(back));
++
++	/* An empty bootfile keeps net_loop(DHCP) from going on to tftp. */
++	env_set("bootfile", NULL);
++	printf("httpd: asking the upstream router for an address\n");
++	if (net_loop(DHCP) < 0) {
++		printf("httpd: no lease; staying at %s\n", back);
++		if (back[0])
++			env_set("ipaddr", back);
++
++		return;
++	}
++	printf("httpd: now at %pI4 -- look for %pM on the router\n",
++	       &net_ip, net_ethaddr);
++}
++
 +/* Undo /bootonce.  Called once, as early as the server runs. */
 +static void bootonce_disarm(void)
 +{
@@ -4660,6 +4860,19 @@ new file mode 100644
 +		return CONN_BOOT;
 +	if (plen == 9 && !memcmp(path, "/bootonce", 9))
 +		return CONN_BOOTONCE;
++	if (plen == 8 && !memcmp(path, "/netdhcp", 8))
++		return CONN_NETDHCP;
++	if (plen == 7 && !memcmp(path, "/netset", 7)) {
++		int k = qlen;
++
++		if (k > (int)sizeof(netset_qs) - 1)
++			k = sizeof(netset_qs) - 1;
++		if (k > 0)
++			memcpy(netset_qs, q + 1, k);
++		netset_qs[k > 0 ? k : 0] = '\0';
++
++		return CONN_NETSET;
++	}
 +	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
 +		return CONN_DUMPINFO;
 +	if (plen == 5 && !memcmp(path, "/dump", 5)) {
@@ -4742,6 +4955,10 @@ new file mode 100644
 +				envreset_len = httpd_envreset();
 +			else if (cls == CONN_BOOTONCE)
 +				bootonce_len = httpd_bootonce();
++			else if (cls == CONN_NETSET)
++				netset_len = httpd_netset();
++			else if (cls == CONN_NETDHCP)
++				netset_len = netset_reply("ok dhcp");
 +			else if (cls == CONN_DUMPINFO)
 +				dumpinfo_len = httpd_dumpinfo();
 +			else if (cls == CONN_DUMP) {
@@ -4817,6 +5034,9 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_BOOTONCE) {
 +		*len = bootonce_len;
 +		return bootonce_buf;
++	} else if (tcp->priv == CONN_NETSET || tcp->priv == CONN_NETDHCP) {
++		*len = netset_len;
++		return netset_buf;
 +	} else if (tcp->priv == CONN_BOOT) {
 +		s = resp_reboot;
 +	} else if (tcp->priv == CONN_REBOOT) {
@@ -4936,6 +5156,20 @@ new file mode 100644
 +	if (tcp->priv == CONN_BOOT) {
 +		boot_pending = 1;
 +		net_set_state(NETLOOP_SUCCESS);
++
++		return;
++	}
++
++	if (tcp->priv == CONN_NETDHCP) {
++		netchange_pending = 2;
++		net_set_state(NETLOOP_SUCCESS);
++
++		return;
++	}
++
++	if (tcp->priv == CONN_NETSET) {
++		if (netchange_pending)
++			net_set_state(NETLOOP_SUCCESS);
 +
 +		return;
 +	}
@@ -5340,6 +5574,12 @@ new file mode 100644
 +		if (reboot_pending) {
 +			printf("httpd: rebooting on request\n");
 +			run_command("reset", 0);
++
++			return CMD_RET_SUCCESS;
++		}
++
++		if (netchange_pending) {
++			netchange_apply();
 +
 +			return CMD_RET_SUCCESS;
 +		}
