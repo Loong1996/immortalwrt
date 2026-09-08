@@ -159,7 +159,7 @@ function stayUpload(w) {
     w.askenvdef();
     $(w, '#yes').click();
     await sleep(600);
-    ok('恢复成功说重启后生效', /已恢复并保存，重启后生效/.test(txt(w, '#envh')), txt(w, '#envh'));
+    ok('恢复成功说重启后生效', /已恢复并保存，重启后生效/.test(txt(w, '#envdh')), txt(w, '#envdh'));
   }
 
   console.log('\n--- UBI 挂不上时恢复默认环境 ---');
@@ -172,7 +172,11 @@ function stayUpload(w) {
     w.askenvdef();
     $(w, '#yes').click();
     await sleep(600);
-    ok('保存失败要说明改动没落盘', /保存失败.*仅存于内存/.test(txt(w, '#envh')), txt(w, '#envh'));
+    ok('保存失败要说明改动没落盘', /保存失败.*仅存于内存/.test(txt(w, '#envdh')), txt(w, '#envdh'));
+    /* 结果不能被紧随其后的重新读取写掉 —— CI 上就是这么红的 */
+    await sleep(900);
+    ok('重新读取之后结果还在', /保存失败/.test(txt(w, '#envdh')),
+       txt(w, '#envdh'));
   }
 
   console.log('\n--- 心跳与断开 ---');
@@ -875,6 +879,65 @@ function stayUpload(w) {
     w.INFO.ports = [];
     w.netfill();
     ok('没有端口就不摆那条说明', $(w, '#portn').hidden);
+  }
+
+  console.log('\n--- 改地址 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('当前地址预填进去了', $(w, '#nip').value === '192.168.1.1',
+       $(w, '#nip').value);
+
+    $(w, '#nip').value = '不是地址';
+    w.asknetset();
+    ok('格式不对就不弹框', !on(w, '#mask'));
+    ok('并且说清哪里不对', /不是一个合法的地址/.test(txt(w, '#nh')),
+       txt(w, '#nh'));
+
+    $(w, '#nip').value = '192.168.9.1';
+    w.asknetset();
+    ok('合法的才弹框', on(w, '#mask'));
+    ok('确认框写清新地址', /192\.168\.9\.1/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    ok('说清页面会断', /重新打开/.test(txt(w, '#abody')));
+    ok('不保存时说清断电会回去', /断电就回到原来的地址/.test(txt(w, '#abody')));
+
+    $(w, '#nsave').checked = true;
+    w.asknetset();
+    ok('保存时把话说重', /断电也回不去/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    $(w, '#nsave').checked = false;
+
+    w.asknetset();
+    $(w, '#yes').click();
+    await sleep(600);
+    ok('改完盖一层说明', on(w, '#off'));
+    ok('说清设备去哪了', /设备已移到 192\.168\.9\.1/.test(txt(w, '#offt')),
+       txt(w, '#offt'));
+    ok('给出新地址的链接文字', /192\.168\.9\.1/.test(txt(w, '#offb')));
+    ok('不给「重新连接」按钮 —— 旧地址上没人了', $(w, '#offr').hidden);
+    ok('心跳停了，不再空敲旧地址', w.HB === 0);
+  }
+
+  console.log('\n--- 向上级路由要地址 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    w.askdhcp();
+    ok('要确认', on(w, '#mask'));
+    ok('说清页面事先不知道新地址',
+       /这个页面事先不知道是多少/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('给出要找的 MAC', /90:03:2e:12:34:56/.test(txt(w, '#abody')));
+    ok('说清要不到会退回去', /退回现在这个地址/.test(txt(w, '#abody')));
+
+    $(w, '#yes').click();
+    await sleep(400);
+    ok('盖一层说明', on(w, '#off') && /设备正在要地址/.test(txt(w, '#offt')),
+       txt(w, '#offt'));
+    ok('说清去哪找', /客户端列表/.test(txt(w, '#offb')), txt(w, '#offb'));
+    ok('心跳停了', w.HB === 0);
   }
 
   console.log('\n--- 全片扫描 ---');
