@@ -61,26 +61,27 @@ Notable points:
     spliced into net/httpd.c by files/httpd/gen.py, one string literal per
     source line.  Edit the HTML and rerun the script.
 
-diff -Nur pre/include/net-legacy.h post/include/net-legacy.h
+diff --git a/include/net-legacy.h b/include/net-legacy.h
 --- a/include/net-legacy.h
 +++ b/include/net-legacy.h
-@@ -303,8 +303,11 @@
+@@ -303,9 +303,12 @@ extern int		net_restart_wrap;	/* Tried all network devices */
  enum proto_t {
  	BOOTP, RARP, ARP, TFTPGET, DHCP, DHCP6, PING, PING6, DNS, NFS, CDP,
  	NETCONS, SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT_UDP, FASTBOOT_TCP,
 -	WOL, UDP, NCSI, WGET, RS
 +	WOL, UDP, NCSI, WGET, RS, HTTPD
  };
-+
+ 
 +/* net/httpd.c */
 +void httpd_start_server(void);
- 
++
  /* Indicates whether the file name was specified on the command line */
  extern bool	net_boot_file_name_explicit;
-diff -Nur pre/net/Kconfig post/net/Kconfig
+ 
+diff --git a/net/Kconfig b/net/Kconfig
 --- a/net/Kconfig
 +++ b/net/Kconfig
-@@ -212,6 +212,43 @@
+@@ -212,6 +212,53 @@ config PROT_TCP
  	  Enable a generic tcp framework that allows defining a custom
  	  handler for tcp protocol.
  
@@ -108,6 +109,16 @@ diff -Nur pre/net/Kconfig post/net/Kconfig
 +	  written when its length matches the size exactly.  Leave empty on
 +	  a board that has no such volumes.
 +
++config HTTPD_FACTORY_MAC
++	string "httpd - where the factory MAC lives"
++	depends on CMD_HTTPD
++	default ""
++	help
++	  The UBI volume and hex offset holding the factory MAC address, as
++	  "volume:offset", e.g. "ri:0x3e".  The health check reads it and
++	  reports whether it is a valid address and whether it is the one in
++	  use.  Leave empty on a board whose MAC does not come from a volume.
++
 +config CMD_HTTPD_STOCK_RESTORE
 +	bool "httpd - raw flash write (back to stock)"
 +	depends on CMD_HTTPD
@@ -124,10 +135,10 @@ diff -Nur pre/net/Kconfig post/net/Kconfig
  config PROT_TCP_SACK
  	bool "TCP SACK support"
  	depends on PROT_TCP
-diff -Nur pre/net/Makefile post/net/Makefile
+diff --git a/net/Makefile b/net/Makefile
 --- a/net/Makefile
 +++ b/net/Makefile
-@@ -25,6 +25,7 @@
+@@ -25,6 +25,7 @@ obj-$(CONFIG_CMD_SNTP) += sntp.o
  obj-$(CONFIG_CMD_TFTPBOOT) += tftp.o
  obj-$(CONFIG_$(PHASE_)UDP_FUNCTION_FASTBOOT)  += fastboot_udp.o
  obj-$(CONFIG_$(PHASE_)TCP_FUNCTION_FASTBOOT)  += fastboot_tcp.o
@@ -135,10 +146,11 @@ diff -Nur pre/net/Makefile post/net/Makefile
  obj-$(CONFIG_CMD_WOL)  += wol.o
  obj-$(CONFIG_PROT_UDP) += udp.o
  obj-$(CONFIG_PROT_TCP) += tcp.o
-diff -Nur pre/net/httpd.c post/net/httpd.c
---- a/net/httpd.c
+diff --git a/net/httpd.c b/net/httpd.c
+new file mode 100644
+--- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,1923 @@
+@@ -0,0 +1,2602 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -164,6 +176,10 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 + *   device details   GET /info, JSON read at request time from the device
 + *                    tree, MTD and UBI -- the page itself carries no board
 + *                    name, so one build of it serves every board
++ *   health check     GET /check (BL2, bad blocks, the UBI volumes the boot
++ *                    needs, factory volumes, U-Boot MAC)
++ *   serial log       GET /log, the console output recorded since power-on
++ *                    (CONFIG_CONSOLE_RECORD)
 + *
 + * The page lives in files/httpd/page.html next to this package; gen.py
 + * splices it in between the PAGE_BEGIN / PAGE_END markers below.  Edit the
@@ -186,10 +202,13 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +#include <stdarg.h>
 +#include <ubi_uboot.h>
 +#include <linux/kernel.h>
++#include <linux/err.h>
 +#include <linux/libfdt.h>
 +#include <linux/mtd/mtd.h>
++#include <membuf.h>
 +#include <linux/string.h>
 +#include <asm/global_data.h>
++#include <asm/unaligned.h>
 +#include <version_string.h>
 +#include <vsprintf.h>
 +#include "../drivers/mtd/ubi/ubi.h"
@@ -199,7 +218,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +#define HTTPD_PORT		80
 +
 +/* Version of the recovery page itself, shown in the sidebar and on the console. */
-+#define WEB_VERSION		"0.2.0"
++#define WEB_VERSION		"0.3.0"
 +
 +#define PROJECT_HOST		"github.com/Loong1996/ImmortalWrt-Airoha"
 +#define PROJECT_URL		"https://" PROJECT_HOST
@@ -214,6 +233,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +#define CONN_GET		((void *)1)
 +#define CONN_POST		((void *)2)
 +#define CONN_INFO		((void *)3)
++#define CONN_CHECK		((void *)4)
++#define CONN_LOG		((void *)5)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -311,15 +332,16 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		"--sep:rgba(255,255,255,.1);--blue:#2f7ff2;--red:#ff5f57;--org:#f0a04a;--grn:#4cd964;--fill:#3a3a"
 +		"3d;--btn:#3a3a3d;--btnb:rgba(255,255,255,.14)}\n"
 +	"*{box-sizing:border-box}\n"
-+	"html,body{height:100%}\n"
++	"[hidden]{display:none!important}\n"
++	"html,body{height:100%;max-width:100%;overflow-x:hidden}\n"
 +	"body{margin:0;background:var(--bg);color:var(--fg);font:13px/1.5"
 +		" -apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"PingFang SC\",\"Microsoft YaHei\",\"Helvetica"
 +		" Neue\",sans-serif}\n"
 +	"a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}\n"
 +	"svg{width:1em;height:1em;vertical-align:-.15em;fill:none;stroke:currentColor;stroke-width:2;stro"
 +		"ke-linecap:round;stroke-linejoin:round}\n"
-+	".app{display:grid;grid-template-columns:200px minmax(0,1fr);min-height:100%;background:var(--bg)"
-+		"}\n"
++	".app{display:grid;grid-template-columns:minmax(9.5rem,12.5rem)"
++		" minmax(0,1fr);min-height:100%;width:100%;max-width:100%;background:var(--bg)}\n"
 +	"input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}\n"
 +	".pb{border:1px solid var(--btnb);background:var(--btn);color:var(--fg);border-radius:6px;font:in"
 +		"herit;padding:.22rem .8rem;cursor:pointer;box-shadow:0 .5px 1px"
@@ -353,7 +375,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	".fc{display:flex;align-items:center;gap:.6rem;min-width:0}\n"
 +	".fc.end{justify-content:flex-end}\n"
 +	"input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radi"
-+		"us:5px;font:inherit;padding:.22rem .5rem;width:220px;outline:0}\n"
++		"us:5px;font:inherit;padding:.22rem .5rem;width:100%;max-width:220px;outline:0}\n"
 +	"input[type=text]:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}\n"
 +	"input::placeholder{color:var(--c3)}\n"
 +	".note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}\n"
@@ -374,7 +396,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	".nav .ic svg{width:13px;height:13px}\n"
 +	".nav[aria-current]{background:var(--blue);color:#fff}\n"
 +	".n1 .ic{background:#0a84ff}.n2 .ic{background:#5e5ce6}.n3 .ic{background:#8e8e93}.n4"
-+		" .ic{background:#ff9f0a}.n5 .ic,.n6 .ic{background:#64748b}\n"
++		" .ic{background:#ff9f0a}.n5 .ic{background:#64748b}.n6 .ic{background:#af52de}.n7"
++		" .ic{background:#30d158}.n8 .ic{background:#64d2ff}\n"
 +	".nav[aria-current] .ic{background:rgba(255,255,255,.28)}\n"
 +	"[data-busy] .nav{opacity:.45;pointer-events:none}\n"
 +	".nsep{height:1px;background:var(--sep);margin:.45rem .5rem}\n"
@@ -383,7 +406,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		" .55rem;font:inherit;font-size:1rem;line-height:1.3;cursor:pointer}\n"
 +	".tb:hover{color:var(--fg)}\n"
 +	".pane{display:none;padding:1.4rem 1.6rem 1.4rem;min-width:0}\n"
-+	".pane[data-on]{display:flex;flex-direction:column;min-height:560px}\n"
++	".pane[data-on]{display:flex;flex-direction:column;min-height:0;flex:1}\n"
 +	"h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}\n"
 +	".sub{color:var(--c2);margin:0 0 1.1rem}\n"
 +	".drop{display:flex;align-items:center;gap:1rem;background:var(--card);border:1.5px dashed"
@@ -437,8 +460,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	".steps b{color:var(--org);font-weight:500}\n"
 +	".mask{position:fixed;inset:0;background:rgba(0,0,0,.28);display:none;z-index:9;padding:1rem}\n"
 +	".mask[data-on]{display:flex}\n"
-+	".alert{margin:auto;width:340px;background:var(--card);border-radius:12px;padding:1.2rem 1.2rem"
-+		" 1rem;box-shadow:0 24px 60px -10px rgba(0,0,0,.5),0 0 0 1px var(--sep)}\n"
++	".alert{margin:auto;width:min(340px,100%);background:var(--card);border-radius:12px;padding:1.2re"
++		"m 1.2rem 1rem;box-shadow:0 24px 60px -10px rgba(0,0,0,.5),0 0 0 1px var(--sep)}\n"
 +	".alert .hd{display:flex;align-items:center;gap:.7rem;margin-bottom:.8rem}\n"
 +	".alert .mi{width:38px;height:38px;border-radius:9px;background:var(--org);color:#fff;display:inl"
 +		"ine-flex;align-items:center;justify-content:center;flex:none}\n"
@@ -454,9 +477,24 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	".e{font-size:.9em;color:var(--red);margin-top:.5rem;line-height:1.45;font-weight:500}\n"
 +	".btns{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1rem}\n"
 +	".demo{color:var(--c3);font-size:.85em;margin-top:1.4rem}\n"
++	".ban{margin:1.2rem 1.6rem 0;padding:.65rem .9rem;border-radius:9px;background:rgba(217,52,43,.08"
++		");border:1px solid rgba(217,52,43,.35);color:var(--red);font-weight:500;line-height:1.45;display"
++		":flex;gap:.6rem;align-items:flex-start}\n"
++	".ban svg{flex:none;margin-top:.2em;stroke-width:2.2}\n"
++	".ban b{font-weight:600}\n"
++	".dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.5rem;background:v"
++		"ar(--c3)}\n"
++	".dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}\n"
++	".kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}\n"
++	".row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}\n"
++	".log{margin:0;padding:.7rem .9rem;max-height:min(360px,60vh);overflow:auto;font-family:ui-monosp"
++		"ace,Menlo,Consolas,monospace;font-size:.88em;line-height:1.4;white-space:pre-wrap;word-break:bre"
++		"ak-all;color:var(--fg)}\n"
++	"@media (max-width:860px){.fr{grid-template-columns:1fr}input[type=text]{max-width:100%}.kv"
++		" td:first-child{width:auto}}\n"
 +	"@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px"
-+		" solid var(--sep)}.pane[data-on]{min-height:0}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem"
-+		"}}\n"
++		" solid var(--sep)}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.ban{margin:1rem 1rem"
++		" 0}.pane{padding:1rem}}\n"
 +	"</style>\n"
 +	"</head><body><div class=app id=app>\n"
 +	"<div class=side>\n"
@@ -477,11 +515,19 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"<button class=\"nav n5\" data-p=p5 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><rect x=\"4\" y=\"5\" width=\"16\" height=\"12\" rx=\"2\"/><path d=\"M8 21h8M12"
 +		" 17v4\"/></svg></span>设备详情</button>\n"
++	"<button class=\"nav n7\" data-p=p8 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M22 12h-4l-3 7-6-14-3 7H2\"/></svg></span>健康检查</button>\n"
++	"<button class=\"nav n8\" data-p=p9 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M7 9l3 3-3 3M13"
++		" 15h4\"/></svg></span>串口日志</button>\n"
 +	"<button class=\"nav n6\" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v5M12 8h.01\"/></svg></span>关于</button>\n"
 +	"<button type=button class=tb onclick=tg() title=\"切换深浅色\">&#9680;</button>\n"
 +	"</div>\n"
 +	"<form method=post enctype=multipart/form-data onsubmit=\"return ask()\">\n"
++	"<div class=ban id=ban hidden><svg viewBox=\"0 0 24 24\"><path d=\"M12 9v4M12 17h.01M10.3 3.9L2.4"
++		" 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z\"/></svg><span"
++		" id=bant></span></div>\n"
 +	"<div class=pane id=p1 data-on>\n"
 +	"<h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>\n"
 +	"<label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox=\"0 0 24"
@@ -564,6 +610,19 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"<p class=bh>UBI 卷<small id=ubih></small></p>\n"
 +	"<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>\n"
 +	"</div>\n"
++	"<div class=pane id=p8>\n"
++	"<h1>健康检查</h1><p class=sub>BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备不响应，需要几秒。</p>\n"
++	"<div class=box><table class=kv id=chk><tr><td colspan=2>还没有检查</td></tr></table></div>\n"
++	"<div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb"
++		" onclick=check()>开始检查</button><button type=button class=pb"
++		" onclick=diag(this)>复制诊断信息</button></div>\n"
++	"</div>\n"
++	"<div class=pane id=p9>\n"
++	"<h1>串口日志</h1><p class=sub>U-Boot 自本次上电以来的控制台输出。没有 USB-TTL 时，求助请把这段和健康检查一起贴出。</p>\n"
++	"<div class=box><pre class=log id=log>还没有读取</pre></div>\n"
++	"<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button"
++		" type=button class=pb onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
++	"</div>\n"
 +	"<div class=pane id=p6>\n"
 +	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
 +	"<div class=about><span class=logo><svg viewBox=\"0 0 24 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4"
@@ -608,7 +667,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"</div></div>\n"
 +	"</div>\n"
 +	"<script>\n"
-+	"var INFO=null,FV=[],SENT=null;\n"
++	"var INFO=null,FV=[],SENT=null,CHK=null;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
@@ -621,8 +680,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else"
 +		" p.removeAttribute('data-on')})}\n"
 +	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
-+		"se x.removeAttribute('aria-current')});show(b.getAttribute('data-p'));if(b.getAttribute('data-p'"
-+		")=='p5'&&!INFO)info()}\n"
++		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
++		"FO)info();if(id=='p8'&&!CHK)check();if(id=='p9')getlog()}\n"
 +	"function files(p){return $$('input[type=file]',p).filter(function(i){return"
 +		" i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files["
 +		"0]}})}\n"
@@ -644,10 +703,14 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		" class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input"
 +		" type=file name=\"fvol_'+esc(v.n)+'\" data-l=\"'+esc(v.n)+'\"><span class=pb>选择文件…</span><span"
 +		" class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}\n"
-+	"function info(){var x=new XMLHttpRequest();x.onload=function(){try{INFO=JSON.parse(x.responseTex"
-+		"t)}catch(e){INFO=null}fill()};x.onerror=function(){INFO=null;fill()};x.open('GET','/info');x.sen"
-+		"d()}\n"
-+	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;if(!INFO){d.innerHTML='<tr><td"
++	"function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x"
++		".onerror=function(){cb(0,'')};x.open('GET',u);x.send()}\n"
++	"function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}\n"
++	"function banner(){var t='';if(INFO){if(!INFO.ubi)t='<b>闪存里没有可挂载的 UBI。</b>这是首次迁移：到「引导升级」里同时上传"
++		" BL2、U-Boot 与固件，并打开「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存里没有 U-Boot（fip 卷）。</b>现在运行的 U-Boot"
++		" 只在内存里，断电即失：请到「引导升级」里上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidde"
++		"n');else $('#ban').setAttribute('hidden','')}\n"
++	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td"
 +		" colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
 +	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
 +		"FO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页"
@@ -657,12 +720,38 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td"
 +		" class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;\n"
 +	"if(INFO.uboot)$('#based').textContent=INFO.uboot;\n"
++	"$('.nav[data-p=p9]').hidden=!INFO.log;\n"
 +	"FV=INFO.fv||[];fvrows();\n"
 +	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
 +	"$('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;\n"
-+	"h='<tr><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
-+	"(INFO.ubi.vols||[]).forEach(function(v){h+='<tr><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
++	"h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
++	"(INFO.ubi.vols||[]).slice().sort(function(a,b){return"
++		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
++		" class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
 +		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
++	"function check(){var b=$('#chkb'),t=$('#chk');b.disabled=true;b.textContent='检查中…';t.innerHTML='"
++		"<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabled=false;"
++		"b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td"
++		" colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td"
++		" colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var"
++		" h='',c=[0,0,0];r.items.forEach(function(i){c[i.s]++;h+='<tr><td><span class=\"dot"
++		" s'+i.s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+i.s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;"
++		"$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 ·"
++		" '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}\n"
++	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.dis"
++		"abled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'')"
++		".replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
++	"function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.styl"
++		"e.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.ex"
++		"ecCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator."
++		"clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textConte"
++		"nt=o},1500)}\n"
++	"function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev"
++		" tr').forEach(function(r){s.push(r.cells[0].textContent+':"
++		" '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol"
++		" '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI:"
++		" none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+':"
++		" '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\\n'))}\n"
 +	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
 +	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+'"
@@ -684,9 +773,15 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		" r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^"
 +		"[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+'"
 +		" 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动断电重启')}\n"
-+	"if(p.id=='p2'){if($('[name=format]',p).checked)W.push('重建 UBI 将清除出厂 MAC、U-Boot"
-+		" 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或"
-+		" U-Boot，本次只写入固件')}\n"
++	"if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return"
++		" r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
++		" 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot"
++		" 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot"
++		" 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return"
++		" r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}\n"
++	"if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');\n"
++	"if((p.id=='p1'||(p.id=='p3'&&!$('[name=stay]',p).checked))&&INFO&&INFO.ubi&&!INFO.ubi.fip)E.push"
++		"('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));\n"
 +	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 +		" 将被清空');\n"
 +	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
@@ -733,7 +828,8 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		",prog).textContent='已上传 '+rows.map(function(r){return"
 +		" r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
 +		"Content='上传并刷写';clear(p);return}\n"
-+	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';show('p7')}\n"
++	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
++		"en','');show('p7')}\n"
 +	"function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var"
 +		" lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classLis"
 +		"t.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode"
@@ -1129,18 +1225,47 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +}
 +
 +/*
-+ * ---- GET /info -----------------------------------------------------------
++ * ---- JSON ----------------------------------------------------------------
 + *
-+ * Everything the page shows about the board, read when asked rather than
-+ * baked in at build time.  Attaching UBI here is what the boot script would
-+ * have done anyway; on a board with no UBI yet the field is simply null.
++ * The three GET endpoints build their reply in a static buffer each; this
++ * is the little writer they share.  Overflow is not an error at write time:
++ * the buffer is simply cut and the fact reported once at the end.
 + */
-+static int json_str(char *b, int max, const char *s)
-+{
-+	int n = 0;
++struct jbuf {
++	char	*b;
++	int	max;
++	int	n;
++};
 +
-+	if (max < 3)
-+		return 0;
++static void jb_init(struct jbuf *j, char *b, int max)
++{
++	j->b = b;
++	j->max = max;
++	j->n = 0;
++	b[0] = '\0';
++}
++
++static void jb_printf(struct jbuf *j, const char *fmt, ...)
++{
++	va_list ap;
++
++	if (j->n >= j->max)
++		return;
++	va_start(ap, fmt);
++	j->n += vsnprintf(j->b + j->n, j->max - j->n, fmt, ap);
++	va_end(ap);
++}
++
++/* A JSON string: quotes and backslashes escaped, control bytes blanked. */
++static void jb_str(struct jbuf *j, const char *s)
++{
++	char *b = j->b;
++	int n = j->n, max = j->max;
++
++	if (max - n < 3) {
++		j->n = max;
++		return;
++	}
 +	b[n++] = '"';
 +	for (; *s && n < max - 3; s++) {
 +		if (*s == '"' || *s == '\\')
@@ -1149,33 +1274,61 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	}
 +	b[n++] = '"';
 +	b[n] = '\0';
-+
-+	return n;
++	j->n = n;
 +}
 +
++static int jb_done(struct jbuf *j, const char *what)
++{
++	if (j->n >= j->max) {
++		printf("httpd: %s truncated at %d bytes\n", what, j->n);
++		j->n = j->max - 1;
++	}
++
++	return j->n;
++}
++
++#define JSON_HDR(status)						\
++	"HTTP/1.0 " status "\r\n"					\
++	"Content-Type: application/json; charset=utf-8\r\n"		\
++	"Connection: close\r\n"						\
++	"\r\n"
++
++/* A volume by name on an attached device, or NULL. */
++static struct ubi_volume *ubi_vol_find(struct ubi_device *ubi, const char *name)
++{
++	int i;
++
++	for (i = 0; i < ubi->vtbl_slots; i++)
++		if (ubi->volumes[i] && !strcmp(ubi->volumes[i]->name, name))
++			return ubi->volumes[i];
++
++	return NULL;
++}
++
++/*
++ * ---- GET /info -----------------------------------------------------------
++ *
++ * Everything the page shows about the board, read when asked rather than
++ * baked in at build time.  Attaching UBI here is what the boot script would
++ * have done anyway; on a board with no UBI yet the field is simply null.
++ *
++ * "fip" inside "ubi" says whether the flash holds a U-Boot at all.  A board
++ * running a U-Boot that came in over xmodem has none, and the page turns
++ * that into a warning before the user reboots into nothing.
++ */
 +static int httpd_info(void)
 +{
 +	static char part_name[] = UBI_PART;
 +	struct mtd_info *master;
++	struct jbuf jb;
 +	const char *s;
-+	int n, len, i, first;
++	int len, i, first;
 +
-+#define P(...)	do {							\
-+	if (n < (int)sizeof(info_buf))					\
-+		n += snprintf(info_buf + n, sizeof(info_buf) - n,	\
-+			      __VA_ARGS__);				\
-+} while (0)
-+#define S(str)	do {							\
-+	if (n < (int)sizeof(info_buf))					\
-+		n += json_str(info_buf + n, sizeof(info_buf) - n, str);	\
-+} while (0)
++#define P(...)	jb_printf(&jb, __VA_ARGS__)
++#define S(str)	jb_str(&jb, str)
 +
-+	n = 0;
-+	P("HTTP/1.0 200 OK\r\n"
-+	  "Content-Type: application/json; charset=utf-8\r\n"
-+	  "Connection: close\r\n"
-+	  "\r\n"
-+	  "{\"web\":\"" WEB_VERSION "\",\"model\":");
++	jb_init(&jb, info_buf, sizeof(info_buf));
++	P(JSON_HDR("200 OK") "{\"web\":\"" WEB_VERSION "\",\"model\":");
 +
 +	s = fdt_getprop(gd->fdt_blob, 0, "model", NULL);
 +	S(s ? s : "");
@@ -1223,6 +1376,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	}
 +
 +	P(",\"stock\":%d", IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE) ? 1 : 0);
++	P(",\"log\":%d", IS_ENABLED(CONFIG_CONSOLE_RECORD) ? 1 : 0);
 +
 +	P(",\"fv\":[");
 +	for (i = 0; i < nfvols; i++) {
@@ -1236,15 +1390,17 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		struct ubi_device *ubi = ubi_get_device(0);
 +
 +		if (ubi) {
-+			P(",\"ubi\":{\"leb\":%d,\"pebs\":%d,\"vols\":[",
-+			  ubi->leb_size, ubi->good_peb_count);
++			P(",\"ubi\":{\"leb\":%d,\"pebs\":%d,\"fip\":%d,\"vols\":[",
++			  ubi->leb_size, ubi->good_peb_count,
++			  ubi_vol_find(ubi, "fip") ? 1 : 0);
 +			first = 1;
 +			for (i = 0; i < ubi->vtbl_slots; i++) {
 +				struct ubi_volume *v = ubi->volumes[i];
 +
 +				if (!v)
 +					continue;
-+				P("%s{\"n\":", first ? "" : ",");
++				P("%s{\"i\":%d,\"n\":", first ? "" : ",",
++				  v->vol_id);
 +				S(v->name);
 +				P(",\"t\":\"%s\",\"s\":%lld,\"u\":%lld}",
 +				  v->vol_type == UBI_DYNAMIC_VOLUME ?
@@ -1266,15 +1422,439 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +#undef P
 +#undef S
 +
-+	if (n >= (int)sizeof(info_buf)) {
-+		printf("httpd: /info truncated at %d bytes\n", n);
-+		n = sizeof(info_buf) - 1;
++	return jb_done(&jb, "/info");
++}
++
++static int info_len;
++
++/*
++ * ---- GET /check ----------------------------------------------------------
++ *
++ * A health check, run when asked: is there a BL2 where the BootROM looks
++ * for one, how many blocks are bad, does the UBI attach, are the volumes
++ * the boot needs present and intact.  Factory volumes report whether they
++ * can be read; the ri volume also shows the MAC stored in it.  Each item
++ * is one row on the page with a green / amber / red mark.
++ *
++ * Static volumes are read in full: UBI checks their CRC on the way, which
++ * is what turns "the volume exists" into "the volume is intact".  The reads
++ * land at $loadaddr, which is free whenever no upload is in flight.
++ */
++#define CHK_OK		0
++#define CHK_WARN	1
++#define CHK_FAIL	2
++
++/* Both the BL2 image and the FIP are fiptool containers. */
++#define FIP_TOC_MAGIC	0xaa640001
++#define FIT_MAGIC	0xd00dfeed
++/*
++ * Where the BootROM expects the BL2 container inside the bl2 partition; the
++ * 2 KiB before it are left erased (see httpd_write_bl2 in the defenv).
++ */
++#define BL2_PART	"bl2"
++#define BL2_IMAGE_OFF	0x800
++
++static char check_buf[6144];
++static int check_len;
++
++static void chk_item(struct jbuf *jb, int *first, const char *name, int status,
++		     const char *fmt, ...)
++{
++	char v[192];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(v, sizeof(v), fmt, ap);
++	va_end(ap);
++
++	jb_printf(jb, "%s{\"n\":", *first ? "" : ",");
++	jb_str(jb, name);
++	jb_printf(jb, ",\"s\":%d,\"v\":", status);
++	jb_str(jb, v);
++	jb_printf(jb, "}");
++	*first = 0;
++
++	printf("httpd: check %s: %s%s\n", name,
++	       status == CHK_OK ? "" : status == CHK_WARN ? "[warn] " : "[FAIL] ",
++	       v);
++}
++
++static int all_ff(const u8 *p, int n)
++{
++	while (n--)
++		if (*p++ != 0xff)
++			return 0;
++
++	return 1;
++}
++
++/* ASCII only: mixing %pM with UTF-8 in one format string garbles the MAC. */
++static void fmt_mac(char *dst, int dstsz, const u8 *m)
++{
++	snprintf(dst, dstsz, "%02x:%02x:%02x:%02x:%02x:%02x",
++		 m[0], m[1], m[2], m[3], m[4], m[5]);
++}
++
++/*
++ * CONFIG_HTTPD_FACTORY_MAC is "volume:offset".  1 if this factory volume
++ * is the one that holds the MAC, with *off set to the byte offset.
++ */
++static int fvol_mac_off(const char *vol, ulong *off)
++{
++#ifdef CONFIG_HTTPD_FACTORY_MAC
++	const char *spec = CONFIG_HTTPD_FACTORY_MAC;
++	const char *colon;
++	int n;
++
++	if (!spec || !*spec)
++		return 0;
++	colon = strchr(spec, ':');
++	if (!colon)
++		return 0;
++	n = colon - spec;
++	if (n <= 0 || strncmp(spec, vol, n) || vol[n])
++		return 0;
++	*off = hextoul(colon + 1, NULL);
++	return 1;
++#else
++	return 0;
++#endif
++}
++
++/* Every block of the chip; the one holding the BL2 is the one that matters. */
++static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
++{
++	struct mtd_info *bl2 = get_mtd_device_nm(BL2_PART);
++	char list[80];
++	int n = 0, nbad = 0, inbl2 = 0;
++	loff_t off;
++
++	if (IS_ERR(bl2))
++		bl2 = NULL;
++
++	for (off = 0; off < m->size; off += m->erasesize) {
++		if (!mtd_block_isbad(m, off))
++			continue;
++		nbad++;
++		if (bl2 && off >= bl2->offset && off < bl2->offset + bl2->size)
++			inbl2 = 1;
++		if (n < (int)sizeof(list) - 12)
++			n += snprintf(list + n, sizeof(list) - n, "%s0x%llx",
++				      n ? " " : "", (unsigned long long)off);
++	}
++	if (bl2)
++		put_mtd_device(bl2);
++
++	if (inbl2)
++		chk_item(jb, first, "坏块", CHK_FAIL,
++			 "%d 个，其中 bl2 分区所在块已坏，BootROM 可能读不到 BL2：%s",
++			 nbad, list);
++	else if (nbad)
++		chk_item(jb, first, "坏块", CHK_WARN,
++			 "%d 个，由 UBI 自行避开：%s%s", nbad, list,
++			 n >= (int)sizeof(list) - 12 ? " …" : "");
++	else
++		chk_item(jb, first, "坏块", CHK_OK, "没有");
++}
++
++static void chk_bl2(struct jbuf *jb, int *first, u8 *buf)
++{
++	struct mtd_info *bl2 = get_mtd_device_nm(BL2_PART);
++	size_t rl = 0;
++	int ret;
++
++	if (IS_ERR(bl2)) {
++		chk_item(jb, first, "BL2", CHK_WARN, "没有名为 " BL2_PART " 的分区，无法检查");
++		return;
++	}
++
++	ret = mtd_read(bl2, 0, BL2_IMAGE_OFF + 64, &rl, buf);
++	put_mtd_device(bl2);
++
++	if (ret && ret != -EUCLEAN) {
++		chk_item(jb, first, "BL2", CHK_FAIL, "bl2 分区读取失败（%d）", ret);
++		return;
++	}
++	if (get_unaligned_le32(buf + BL2_IMAGE_OFF) == FIP_TOC_MAGIC)
++		chk_item(jb, first, "BL2", CHK_OK, "0x%x 处有 BL2 镜像%s",
++			 BL2_IMAGE_OFF,
++			 ret == -EUCLEAN ? "（本次读取纠正过位翻转）" : "");
++	else if (all_ff(buf, BL2_IMAGE_OFF + 64))
++		chk_item(jb, first, "BL2", CHK_FAIL,
++			 "bl2 分区是空的：断电后 BootROM 找不到 BL2，请在「引导升级」里上传");
++	else
++		chk_item(jb, first, "BL2", CHK_WARN,
++			 "0x%x 处没有 BL2 镜像头，可能是原厂或第三方引导程序", BL2_IMAGE_OFF);
++}
++
++/*
++ * Read a whole static volume; UBI verifies the CRC of every LEB on the way.
++ * Returns the number of bytes now at buf, or -1 with the item reported.
++ */
++static int chk_read_static(struct jbuf *jb, int *first, const char *what,
++			   struct ubi_volume *v, u8 *buf, ulong max)
++{
++	int ret;
++
++	if (v->used_bytes <= 0 || (ulong)v->used_bytes > max) {
++		chk_item(jb, first, what, CHK_FAIL, "卷内 %lld 字节，无法读取",
++			 v->used_bytes);
++		return -1;
++	}
++	ret = ubi_volume_read(v->name, (char *)buf, 0, v->used_bytes);
++	if (ret) {
++		chk_item(jb, first, what, CHK_FAIL,
++			 "读取失败（%d）：卷内数据校验不过，内容已损坏", ret);
++		return -1;
++	}
++
++	return v->used_bytes;
++}
++
++static void chk_fip(struct jbuf *jb, int *first, struct ubi_device *ubi,
++		    u8 *buf, ulong max)
++{
++	struct ubi_volume *v = ubi_vol_find(ubi, "fip");
++	int n;
++
++	if (!v) {
++		chk_item(jb, first, "fip 卷", CHK_FAIL,
++			 "不存在：闪存里没有 U-Boot，断电后无法启动，请在「引导升级」里上传 U-Boot 文件");
++		return;
++	}
++	n = chk_read_static(jb, first, "fip 卷", v, buf, max);
++	if (n < 0)
++		return;
++	if (get_unaligned_le32(buf) == FIP_TOC_MAGIC)
++		chk_item(jb, first, "fip 卷", CHK_OK, "%d 字节，校验通过", n);
++	else
++		chk_item(jb, first, "fip 卷", CHK_FAIL,
++			 "卷内不是 FIP（头 0x%08x），请重新上传 U-Boot 文件",
++			 get_unaligned_le32(buf));
++}
++
++static void chk_fit(struct jbuf *jb, int *first, struct ubi_device *ubi,
++		    u8 *buf)
++{
++	struct ubi_volume *v = ubi_vol_find(ubi, "fit");
++	u32 tot;
++	int ret;
++
++	if (!v) {
++		chk_item(jb, first, "fit 卷", CHK_FAIL,
++			 "不存在：闪存里没有固件，请在「日常刷机」里上传");
++		return;
++	}
++	ret = ubi_volume_read(v->name, (char *)buf, 0, 4096);
++	if (ret) {
++		chk_item(jb, first, "fit 卷", CHK_FAIL, "读取失败（%d）", ret);
++		return;
++	}
++	if (get_unaligned_be32(buf) != FIT_MAGIC) {
++		chk_item(jb, first, "fit 卷", CHK_FAIL,
++			 "卷内不是 FIT 镜像（头 0x%08x），请重新上传固件",
++			 get_unaligned_be32(buf));
++		return;
++	}
++	tot = fdt_totalsize(buf);
++	if (tot > v->used_bytes)
++		chk_item(jb, first, "fit 卷", CHK_FAIL,
++			 "镜像声明 %u 字节，卷内只有 %lld：固件不完整，请重新上传",
++			 tot, v->used_bytes);
++	else
++		chk_item(jb, first, "fit 卷", CHK_OK, "FIT 镜像，%u 字节", tot);
++}
++
++static void chk_envvol(struct jbuf *jb, int *first, struct ubi_device *ubi,
++		       const char *name)
++{
++	char what[UBIVOL_NAME_MAX + 8];
++
++	snprintf(what, sizeof(what), "%s 卷", name);
++	if (ubi_vol_find(ubi, name))
++		chk_item(jb, first, what, CHK_OK, "存在");
++	else
++		chk_item(jb, first, what, CHK_WARN,
++			 "不存在：U-Boot 环境无处保存，首次正常启动时会自动创建");
++}
++
++static void chk_fvol(struct jbuf *jb, int *first, struct ubi_device *ubi,
++		     struct fvol *f, u8 *buf, ulong max)
++{
++	struct ubi_volume *v = ubi_vol_find(ubi, f->name);
++	char what[UBIVOL_NAME_MAX + 8];
++	char mac[18];
++	ulong macoff;
++	int n;
++
++	snprintf(what, sizeof(what), "%s 卷", f->name);
++	if (!v) {
++		chk_item(jb, first, what, CHK_WARN, "读不到：卷不存在");
++		return;
++	}
++	n = chk_read_static(jb, first, what, v, buf, max);
++	if (n < 0)
++		return;
++	if (all_ff(buf, n)) {
++		chk_item(jb, first, what, CHK_WARN, "读到了，内容为空");
++		return;
++	}
++	if (fvol_mac_off(f->name, &macoff) && macoff + 6 <= (ulong)n) {
++		const u8 *m = buf + macoff;
++
++		if (is_valid_ethaddr(m) && !is_broadcast_ethaddr(m)) {
++			fmt_mac(mac, sizeof(mac), m);
++			chk_item(jb, first, what, CHK_OK, "读到了，MAC %s", mac);
++		} else {
++			chk_item(jb, first, what, CHK_WARN,
++				 "读到了，没有有效 MAC");
++		}
++		return;
++	}
++	chk_item(jb, first, what, CHK_OK, "读到了");
++}
++
++static void chk_mac(struct jbuf *jb, int *first)
++{
++	char mac[18];
++	u8 addr[6];
++
++	if (!env_get("ethaddr")) {
++		fmt_mac(mac, sizeof(mac), net_ethaddr);
++		chk_item(jb, first, "U-Boot MAC", CHK_WARN,
++			 "环境里没有 ethaddr，本次启动用的是随机地址 %s", mac);
++	} else if (!eth_env_get_enetaddr("ethaddr", addr)) {
++		chk_item(jb, first, "U-Boot MAC", CHK_FAIL,
++			 "ethaddr 不是有效地址");
++	} else {
++		fmt_mac(mac, sizeof(mac), addr);
++		chk_item(jb, first, "U-Boot MAC", CHK_OK, "%s", mac);
++	}
++}
++
++static int httpd_check(void)
++{
++	static char part_name[] = UBI_PART;
++	struct mtd_info *master;
++	struct jbuf jb;
++	u8 *buf = (u8 *)up_base;
++	ulong max = upload_max();
++	int first = 1, i;
++
++	jb_init(&jb, check_buf, sizeof(check_buf));
++
++	/* $loadaddr is the staging area of an upload in flight. */
++	if (up_active) {
++		jb_printf(&jb, JSON_HDR("503 Service Unavailable") "{\"busy\":1}");
++		return jb_done(&jb, "/check");
++	}
++
++	printf("httpd: running the health check\n");
++	jb_printf(&jb, JSON_HDR("200 OK") "{\"items\":[");
++
++	master = flash_master();
++	if (!master) {
++		chk_item(&jb, &first, "闪存", CHK_FAIL, "没有找到闪存设备");
++		goto out;
++	}
++	chk_item(&jb, &first, "闪存", CHK_OK, "%s，%llu MiB，擦除块 %u KiB",
++		 master->name, (unsigned long long)master->size >> 20,
++		 master->erasesize >> 10);
++
++	chk_badblocks(&jb, &first, master);
++	chk_bl2(&jb, &first, buf);
++
++	if (ubi_part(part_name, NULL)) {
++		chk_item(&jb, &first, "UBI", CHK_FAIL,
++			 "无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
++	} else {
++		struct ubi_device *ubi = ubi_get_device(0);
++
++		if (!ubi) {
++			chk_item(&jb, &first, "UBI", CHK_FAIL, "已挂载但无法访问");
++			goto out;
++		}
++		chk_item(&jb, &first, "UBI", CHK_OK,
++			 "%d 个卷，坏块 %d 个，空闲 %d 个逻辑擦除块",
++			 ubi->vol_count, ubi->bad_peb_count, ubi->avail_pebs);
++
++		chk_fip(&jb, &first, ubi, buf, max);
++		chk_fit(&jb, &first, ubi, buf);
++#ifdef CONFIG_ENV_UBI_VOLUME
++		chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME);
++#endif
++#ifdef CONFIG_ENV_UBI_VOLUME_REDUND
++		chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME_REDUND);
++#endif
++		for (i = 0; i < nfvols; i++)
++			chk_fvol(&jb, &first, ubi, &fvols[i], buf, max);
++
++		ubi_put_device(ubi);
++	}
++
++	chk_mac(&jb, &first);
++out:
++	jb_printf(&jb, "]}");
++
++	return jb_done(&jb, "/check");
++}
++
++/*
++ * ---- GET /log ------------------------------------------------------------
++ *
++ * The console output since power-on, from U-Boot's own recording buffer
++ * (CONFIG_CONSOLE_RECORD).  For the user without a serial adapter this is
++ * the only way to see which flash chip was found, which blocks were
++ * skipped, and why a write failed -- the lines this file prints while
++ * flashing go there too.  The buffer is read through a copy of its control
++ * block, so nothing is consumed.
++ */
++#if IS_ENABLED(CONFIG_CONSOLE_RECORD)
++static char log_buf[CONFIG_CONSOLE_RECORD_OUT_SIZE + 512];
++static int log_len;
++
++static int httpd_log(void)
++{
++	static const char full[] =
++		"\n[日志缓冲已满，之后的输出没有记录]\n";
++	struct membuf copy = *(struct membuf *)&gd->console_out;
++	char *data;
++	int n, len, i;
++
++	n = snprintf(log_buf, sizeof(log_buf),
++		     "HTTP/1.0 200 OK\r\n"
++		     "Content-Type: text/plain; charset=utf-8\r\n"
++		     "Connection: close\r\n"
++		     "\r\n");
++	for (i = 0; i < 2; i++) {
++		len = membuf_getraw(&copy, sizeof(log_buf) - n - sizeof(full),
++				    true, &data);
++		if (len <= 0)
++			break;
++		memcpy(log_buf + n, data, len);
++		n += len;
++	}
++	if (gd->flags & GD_FLG_RECORD_OVF) {
++		memcpy(log_buf + n, full, sizeof(full) - 1);
++		n += sizeof(full) - 1;
 +	}
 +
 +	return n;
 +}
++#else
++static const char log_buf[] =
++	"HTTP/1.0 404 Not Found\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n"
++	"this U-Boot was built without CONFIG_CONSOLE_RECORD\n";
++static int log_len;
 +
-+static int info_len;
++static int httpd_log(void)
++{
++	return strlen(log_buf);
++}
++#endif
 +
 +/*
 + * ---- upload --------------------------------------------------------------
@@ -1444,19 +2024,36 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 + */
 +static int httpd_validate(void)
 +{
++	static char part_name[] = UBI_PART;
 +	char buf[UBIVOL_NAME_MAX];
++	struct ubi_device *ubi;
 +	struct up_part *p;
++	int nvols = 0;
++	int needs_ubi, stay, has_fip;
 +	int i;
 +
 +	for (i = 0; i < up_nparts; i++) {
 +		struct fvol *v = fvol_find(up_parts[i].name);
 +
++		if (v)
++			nvols++;
 +		if (v && up_parts[i].size != v->size) {
 +			httpd_reject("%s is %u bytes, the %s volume holds "
 +				     "exactly %u", up_parts[i].name,
 +				     up_parts[i].size, v->name, v->size);
 +			return -1;
 +		}
++	}
++
++	/*
++	 * Rebuilding ubi erases the fip volume with everything else; without
++	 * a FIP to put back there is no U-Boot to boot into afterwards.  The
++	 * page refuses this too, but the page is not the only client.
++	 */
++	if (part_find(FIELD_FORMAT) && !part_find(FIELD_FIP)) {
++		httpd_reject("rebuilding UBI without a U-Boot FIP would leave "
++			     "nothing to boot");
++		return -1;
 +	}
 +
 +	p = part_find(FIELD_UBIVOL_FILE);
@@ -1494,6 +2091,54 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		}
 +	}
 +#endif
++
++	/*
++	 * What the flash is in a state to take.  The page checks the same
++	 * things against its copy of /info, but the page is not the only
++	 * client and its copy can be stale or missing, so the answer has to
++	 * come from the flash as it is now -- and before the 200 goes out,
++	 * because after that the only place a failure shows is the serial
++	 * console.
++	 *
++	 * A whole-flash restore replaces everything and is exempt.  A rebuild
++	 * needs nothing from the UBI that is there (and brings its own FIP,
++	 * checked above).  Everything else either writes into that UBI, or
++	 * ends in a reset that BL2 has to boot from -- which takes a fip
++	 * volume, or a FIP in this upload, or no reset at all.
++	 */
++	if (part_find(FIELD_STOCK) || part_find(FIELD_FORMAT))
++		return 0;
++
++	needs_ubi = part_find(FIELD_FIP) || part_find(FIELD_FIT) ||
++		    part_find(FIELD_UBIVOL_FILE) || nvols;
++	stay = part_find(FIELD_STAY) != NULL;
++
++	if (ubi_part(part_name, NULL)) {
++		if (needs_ubi)
++			httpd_reject("no usable UBI on the flash to write "
++				     "into: tick \"rebuild UBI\" and upload "
++				     "BL2, U-Boot and firmware together");
++		else if (!stay)
++			httpd_reject("no usable UBI on the flash, so nothing "
++				     "would boot after the reset: upload BL2 "
++				     "together with U-Boot and firmware, with "
++				     "\"rebuild UBI\" ticked");
++		else
++			return 0;
++		return -1;
++	}
++
++	ubi = ubi_get_device(0);
++	has_fip = ubi && ubi_vol_find(ubi, "fip") != NULL;
++	if (ubi)
++		ubi_put_device(ubi);
++
++	if (!has_fip && !part_find(FIELD_FIP) && !stay) {
++		httpd_reject("the flash has no U-Boot (no fip volume) and "
++			     "this upload brings none: nothing would boot "
++			     "after the reset. Upload the U-Boot FIP as well");
++		return -1;
++	}
 +
 +	return 0;
 +}
@@ -1581,7 +2226,7 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
 +	/* A GET needs no body; drop whatever follows. */
-+	if (tcp->priv == CONN_GET || tcp->priv == CONN_INFO)
++	if (tcp->priv != CONN_UNKNOWN && tcp->priv != CONN_POST)
 +		return len;
 +
 +	/*
@@ -1600,6 +2245,34 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	memcpy((char *)up_base + rx_offs, buf, len);
 +
 +	return len;
++}
++
++/*
++ * Which GET this is, from its request line: the page, or one of the JSON /
++ * text endpoints.  NULL while the line is still incomplete; anything too
++ * long to be one of ours is answered with the page.
++ */
++static void *httpd_classify_get(const char *req, u32 rx_bytes)
++{
++	int n = rx_bytes < 128 ? rx_bytes : 128;
++	int eol = mem_find(req, n, "\r\n", 2);
++	const char *path = req + 4, *sp;
++	int plen;
++
++	if (eol < 0)
++		return n < 128 ? NULL : CONN_GET;
++
++	sp = memchr(path, ' ', eol - 4);
++	plen = sp ? sp - path : eol - 4;
++
++	if (plen == 5 && !memcmp(path, "/info", 5))
++		return CONN_INFO;
++	if (plen == 6 && !memcmp(path, "/check", 6))
++		return CONN_CHECK;
++	if (plen == 4 && !memcmp(path, "/log", 4))
++		return CONN_LOG;
++
++	return CONN_GET;
 +}
 +
 +static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
@@ -1623,16 +2296,23 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +			up_active = 1;
 +			tcp->priv = CONN_POST;
 +		} else {
-+			/* "GET /info " is 10 bytes; wait for the request line. */
-+			if (!memcmp(req, "GET ", 4) && rx_bytes < 10)
-+				return;
-+			if (rx_bytes >= 10 && !memcmp(req, "GET /info ", 10)) {
-+				info_len = httpd_info();
-+				tcp->priv = CONN_INFO;
-+			} else {
-+				tcp->priv = CONN_GET;
++			void *cls = CONN_GET;
++
++			if (!memcmp(req, "GET ", 4)) {
++				cls = httpd_classify_get(req, rx_bytes);
++				if (!cls)
++					return;	/* request line incomplete */
 +			}
++			tcp->priv = cls;
 +			up_owner = NULL;	/* release the staging area */
++
++			/* Built now, while the request is still at up_base. */
++			if (cls == CONN_INFO)
++				info_len = httpd_info();
++			else if (cls == CONN_CHECK)
++				check_len = httpd_check();
++			else if (cls == CONN_LOG)
++				log_len = httpd_log();
 +			return;
 +		}
 +	}
@@ -1663,6 +2343,12 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	} else if (tcp->priv == CONN_INFO) {
 +		*len = info_len;
 +		return info_buf;
++	} else if (tcp->priv == CONN_CHECK) {
++		*len = check_len;
++		return check_buf;
++	} else if (tcp->priv == CONN_LOG) {
++		*len = log_len;
++		return log_buf;
 +	} else {
 +		s = NULL;
 +	}
@@ -2034,9 +2720,14 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +		flash_pending = 0;
 +		if (httpd_flash()) {
 +			/*
-+			 * Deliberately no reset: the caller loops back into
-+			 * httpd so the user can retry without touching the
-+			 * power.
++			 * Deliberately no reset, so the user can retry
++			 * without touching the power: boot_httpd_forever
++			 * re-enters httpd, the bootmenu entry returns to the
++			 * menu.  The page has already reported success by
++			 * now (the 200 went out before the write), so this
++			 * failure shows only on the console -- which is why
++			 * httpd_validate() refuses in advance everything
++			 * that can be known to fail.
 +			 */
 +			return CMD_RET_FAILURE;
 +		}
@@ -2062,10 +2753,10 @@ diff -Nur pre/net/httpd.c post/net/httpd.c
 +	"      flashed by the matching httpd_* / ubi_write_* env scripts,\n"
 +	"      or by a built-in equivalent when those are not defined"
 +);
-diff -Nur pre/net/net.c post/net/net.c
+diff --git a/net/net.c b/net/net.c
 --- a/net/net.c
 +++ b/net/net.c
-@@ -508,6 +508,11 @@
+@@ -508,6 +508,11 @@ restart:
  			fastboot_tcp_start_server();
  			break;
  #endif
@@ -2077,7 +2768,7 @@ diff -Nur pre/net/net.c post/net/net.c
  #if defined(CONFIG_CMD_DHCP)
  		case DHCP:
  			bootp_reset();
-@@ -1510,6 +1515,7 @@
+@@ -1510,6 +1515,7 @@ common:
  	case FASTBOOT_UDP:
  	case FASTBOOT_TCP:
  	case TFTPSRV:

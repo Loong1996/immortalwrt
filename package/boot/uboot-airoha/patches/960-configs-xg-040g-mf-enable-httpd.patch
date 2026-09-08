@@ -18,15 +18,27 @@ size, and their stock images were found to share one layout -- both are
 0xEBA0000 bytes with every partition at the same offset, established by
 locating each dumped partition inside both all_flash images.
 
+diff --git a/configs/an7583_nokia_xg-040g-mf_defconfig b/configs/an7583_nokia_xg-040g-mf_defconfig
 --- a/configs/an7583_nokia_xg-040g-mf_defconfig
 +++ b/configs/an7583_nokia_xg-040g-mf_defconfig
-@@ -41,6 +41,11 @@ CONFIG_CMD_TFTPSRV=y
+@@ -20,6 +20,9 @@ CONFIG_LOGLEVEL=9
+ CONFIG_LOG=y
+ CONFIG_SYS_PBSIZE=1049
+ CONFIG_SYS_CONSOLE_IS_IN_ENV=y
++CONFIG_CONSOLE_RECORD=y
++CONFIG_CONSOLE_RECORD_OUT_SIZE=0x10000
++CONFIG_CONSOLE_RECORD_OUT_SIZE_F=0x800
+ # CONFIG_DISPLAY_BOARDINFO is not set
+ CONFIG_HUSH_PARSER=y
+ CONFIG_SYS_PROMPT="AN7583> "
+@@ -41,6 +44,12 @@ CONFIG_CMD_MTD_NAND_READ_TEST=y
  CONFIG_CMD_MTD_NAND_WRITE_TEST=y
  CONFIG_CMD_PART=y
  CONFIG_CMD_TFTPSRV=y
 +CONFIG_PROT_TCP=y
 +CONFIG_CMD_HTTPD=y
 +CONFIG_HTTPD_FACTORY_VOLS="ri:0x40000 bosa:0x40000"
++CONFIG_HTTPD_FACTORY_MAC="ri:0x3e"
 +CONFIG_CMD_HTTPD_STOCK_RESTORE=y
 +CONFIG_CYCLIC=y
  CONFIG_CMD_RARP=y
