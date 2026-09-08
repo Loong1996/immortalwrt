@@ -86,7 +86,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .ps span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ps .pct{flex:none;margin-left:1rem}
 .prog.ok .pbar{background:var(--grn)}.prog.ok .ps{color:var(--grn)}
-.prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red)}
+.prog.bad .pbar{background:var(--red)}.prog.bad .ps{color:var(--red);align-items:flex-start}.prog.bad .pwhat{white-space:normal;overflow:visible;text-overflow:clip}
 .kv{width:100%;border-collapse:collapse}
 .kv td{padding:.5rem .9rem;vertical-align:top;border-top:1px solid var(--sep);word-break:break-all}
 .kv tr:first-child td{border-top:0}
@@ -172,8 +172,8 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=pane id=p1 data-on>
 <h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>
 <label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span><span class=tx><span class=t><span class=fn style="color:inherit">选择固件文件</span></span><span class="s mono">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>
-<p class=note>设备现在停在恢复模式，不会自己去启动系统。<b>不想刷了直接断电重启就退出了</b>，只要没有开始写入，闪存一个字节都没动过。</p>
-<div class=act><span class=st>还没有选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
+<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。</p>
+<div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
@@ -188,21 +188,21 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=box>
 <div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失</small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
 </div>
-<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一，擦掉就再也拿不回来 —— 先到「<a href="#" onclick="return jump('p10')">备份下载</a>」里存一份。</p>
-<p class=note>仅升级 U-Boot 时无需重建 UBI，只选择 U-Boot 文件即可，rootfs_data 保留。</p>
-<div class=act><span class=st>还没有选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
+<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一且不可再生，请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
+<p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>
+<div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
 <!--#if STOCK-->
 <div class=pane id=p4>
-<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>
+<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>
 <div class=box>
 <div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
-<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片；也可只写某个分区</span></span></div>
+<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
 </div>
-<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href="#" onclick="return jump('p10')">备份下载</a>」里可以现在就存一份。镜像边传边写、不经过内存，所以整片多大都收得下（上限就是 flash 容量 <span id=upmax>—</span>）。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。整片写入耗时显著长于固件写入 —— <b>一旦开始写，中途失败必须重传成功才能重启</b>。</p>
-<div class=act><span class=st>还没有选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
+<p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。</p>
+<div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 <!--#endif-->
@@ -218,23 +218,23 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=box style="margin-top:1rem">
 <div class="fr wide"><span class=fl>写入后不重启<small>连续写入多个卷时使用；完成后刷新页面继续</small></span><span class="fc end"><input type=checkbox class=sw name=stay value=1></span></div>
 </div>
-<div class=act><span class=st>还没有选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
+<div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
 <div class=pane id=p10>
-<h1>备份下载</h1><p class=sub>把闪存内容读出来存到电脑。边读边传，多大都是一个文件；传输期间页面偶尔不响应是正常的。</p>
-<p class=bh>UBI 卷<small>逐机唯一、丢了就拿不回来的出厂数据在 ri 与 bosa 里</small></p>
+<h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>
+<p class=bh>UBI 卷<small>逐机唯一的出厂数据位于 ri 与 bosa 卷</small></p>
 <div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>
-<p class=bh>原始区段<small>绕过 UBI 按 flash 偏移读，与「刷回原厂」的写入一一对应</small></p>
+<p class=bh>原始区段<small>绕过 UBI 按 flash 偏移读取，偏移与「刷回原厂」一致</small></p>
 <div class=box>
 <div class=fr><span class=fl>起始偏移<small>十六进制</small></span><span class=fc><input type=text id=dumpoff class=mono value=0x0 style="width:130px"><span class=fn>0 为片首</span></span></div>
-<div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text id=dumplen class=mono placeholder="留空到片尾" style="width:130px"><span class=fn id=dumphint>留空就读到片尾</span></span></div>
+<div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text id=dumplen class=mono placeholder="留空到片尾" style="width:130px"><span class=fn id=dumphint>留空读至片尾</span></span></div>
 </div>
-<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>文件偏移就是 flash 偏移</b>，坏块在文件里照样占着位子 ——和 <code>dd</code> 出来的镜像一个格式，所以别人给的 <code>all_flash.bin</code> 能写进来，这里备份的也能拿去烧录器。写回时坏块只是不写，后面的内容不会跟着挪位。</p>
-<p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>
-<div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div class=box><table class=kv id=dll></table></div></div>
-<div class=act><span class=st id=dlh>选一个卷，或填偏移与长度</span><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
+<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>
+<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
+<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
+<div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
 </div>
 
 <div class=pane id=p5>
@@ -245,32 +245,32 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 
 <div class=pane id=p8>
-<h1>健康检查</h1><p class=sub>BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备不响应，需要几秒。</p>
-<div class=box><table class=kv id=chk><tr><td colspan=2>还没有检查</td></tr></table></div>
+<h1>健康检查</h1><p class=sub>检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。</p>
+<div class=box><table class=kv id=chk><tr><td colspan=2>未执行检查</td></tr></table></div>
 <div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb onclick=check()>开始检查</button><button type=button class=pb onclick=diag(this)>复制诊断信息</button></div>
 </div>
 
 <div class=pane id=p11>
-<h1>环境变量</h1><p class=sub>U-Boot 当前的 env。只读 —— bootcmd 或引导菜单被改坏是机器起不来的常见原因，这里能看出来。</p>
+<h1>环境变量</h1><p class=sub>U-Boot 当前环境变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。</p>
 <div class=bar><input type=text id=envq placeholder="过滤名称或值" oninput=envfill() style="max-width:200px"><label><input type=checkbox class=sw id=envkey onchange=envfill()>只看关键项</label><span class=fs id=envh></span></div>
 <div class=box><table class=kv id=envt><tr><td>正在读取…</td></tr></table></div>
 <div class=row><button type=button class=pb id=envb onclick=getenv()>重新读取</button><button type=button class=pb onclick=envcopy(this)>复制全部</button></div>
 <p class=bh>恢复默认环境</p>
 <div class=box>
-<div class="fr wide"><span class=fl>恢复成这一版 U-Boot 自带的默认值<small>清掉自定义的 bootcmd、引导菜单与网络设置并保存</small></span><span class="fc end"><button type=button class="pb red" onclick=askenvdef()>恢复默认</button></span></div>
+<div class="fr wide"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的 bootcmd、引导菜单与网络设置并保存</small></span><span class="fc end"><button type=button class="pb red" onclick=askenvdef()>恢复默认</button></span></div>
 </div>
-<p class=note>出厂 MAC 存在 ri 卷里，<b>不受影响</b>；固件与用户配置也不受影响。恢复后需重启才生效。若 UBI 挂不上，保存会失败 —— 改动只在内存里，断电即失。</p>
+<p class=note>出厂 MAC 位于 ri 卷，<b>不受影响</b>；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。</p>
 </div>
 
 <div class=pane id=p9>
-<h1>串口日志</h1><p class=sub>U-Boot 自本次上电以来的控制台输出。没有 USB-TTL 时，求助请把这段和健康检查一起贴出。</p>
-<div class=box><pre class=log id=log>还没有读取</pre></div>
+<h1>串口日志</h1><p class=sub>U-Boot 本次上电以来的控制台输出。反馈问题时请与健康检查结果一并附上。</p>
+<div class=box><pre class=log id=log>未读取</pre></div>
 <div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
 </div>
 
 <div class=pane id=p12>
-<h1>重启</h1><p class=sub>等同于断电再上电，不改动闪存。连着写完几个卷之后用它，省得去够电源。</p>
-<p class=note>重启后正常引导系统，起不来才会回到这个页面。设备回来之后本页面自动刷新。</p>
+<h1>重启</h1><p class=sub>执行 reset，不改动闪存。用于连续写入多个卷之后。</p>
+<p class=note>重启后正常引导，引导失败时回到本页面。设备恢复响应后本页面自动刷新。</p>
 <div class=act><span class=st></span><button type=button class="pb red" onclick=askreboot()>立即重启</button></div>
 </div>
 
@@ -287,12 +287,22 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 
 <div class=pane id=p7>
-<h1>上传完成</h1><p class=sub>本页面已无作用，可以关闭，网线也可断开。设备正在自行写入，完成后自动重启。</p>
-<div class=fin><span class=ic><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><div><b>接下来只需看设备面板</b>
+<h1>上传完成</h1><p class=sub>设备正在写入，完成后自动重启。本页面可以关闭。</p>
+<div class=fin><span class=ic><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><div><b>通过设备指示灯判断进度</b>
 <table class=lt><tr><td>齐闪</td><td>正在写入，<b>请勿断电</b></td></tr><tr><td>熄灭</td><td>写入完成，自动重启；约 1–2 分钟后可重新连接</td></tr></table></div></div>
 <p class=bh>本次写入步骤</p>
 <div class=box style="padding:.7rem 1rem"><ol class=steps id=steps></ol></div>
 </div>
+
+<!--#if STOCK-->
+<div class=pane id=p13>
+<h1>写入完成</h1><p class=sub>镜像已全部写入闪存，设备正在重启。本页面可以关闭。</p>
+<div class=fin><span class=ic><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><div><b>设备回报</b>
+<table class=lt id=stres></table></div></div>
+<p class=note>crc32 由设备对收到的字节计算，与备份时记录的值一致即说明传输无误。</p>
+<p class=note>重启约需 1–2 分钟。整片写入后本页面所属的 U-Boot 已被覆盖，设备将按镜像中的引导程序启动。</p>
+</div>
+<!--#endif-->
 
 </form>
 <iframe id=dlsink hidden title=download></iframe>
@@ -310,7 +320,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <script>
 var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;
 var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;
-var DLSEQ=0,DLBAD=0;
+var DLSEQ=0,DLBAD=0,STUCK='';
 function $(s,r){return (r||document).querySelector(s)}
 function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
 function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d.setAttribute('data-t',n);try{localStorage.setItem('xgtheme',n)}catch(e){}}
@@ -322,13 +332,13 @@ function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-cur
 function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
 function files(p){return $$('input[type=file]',p).filter(function(i){return i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files[0]}})}
 function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}
-function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):'还没有选择文件'}
+function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):'未选择文件'}
 function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)}});$$('.drop').forEach(function(d){d.ondragover=function(e){e.preventDefault();d.classList.add('over')};d.ondragleave=function(){d.classList.remove('over')};d.ondrop=function(e){e.preventDefault();d.classList.remove('over');var i=$('input[type=file]',d);if(e.dataTransfer.files.length){try{i.files=e.dataTransfer.files;onfile(i)}catch(x){}}}})}
 function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return parseInt(v,16)}
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
 function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
 function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}
-function banner(){var t='';if(INFO){if(!INFO.ubi)t='<b>闪存里没有可挂载的 UBI。</b>这是首次迁移：到「引导升级」里同时上传 BL2、U-Boot 与固件，并打开「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存里没有 U-Boot（fip 卷）。</b>现在运行的 U-Boot 只在内存里，断电即失：请到「引导升级」里上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
+function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
 var ICON_OFF='<path d="M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20"/>';
 var ICON_WR='<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/>';
 var ICON_RB='<path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/>';
@@ -358,9 +368,9 @@ function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}
 /* 已知会静默，但用户自己发起的：只变点，不弹框 */
 function silent(){SILENT=1;MISS=0}
 function offline(why){var i,t,b,r=0;
-if(why=='write'){i=ICON_WR;t='设备正在写入';b='面板齐闪，<b>不要断电</b>。写完自动恢复。'}
-else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，回来后自动刷新。'}
-else{i=ICON_OFF;t='已断开与路由器连接';b='设备没有回应。检查网线与电源。面板齐闪说明在写入，等它写完。';r=1}
+if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}
+else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}
+else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯齐闪表示正在写入，请等待完成。';r=1}
 $('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;
 $('#offb').innerHTML='<div class=w style="color:inherit">'+b+'</div>'+
 (r?'<div class=hint>每 2 秒自动重试。</div>':'');
@@ -368,7 +378,7 @@ $('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连
 $('#off').setAttribute('data-on','')}
 function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');
 if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';
-$('.pwhat',prog).textContent='设备写完了，网页服务已恢复 —— 可以接着写下一个卷';$('.pct',prog).textContent=''}}}
+$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}
 function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);ping()}
 function askreboot(){$('#atitle').textContent='重启';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+
@@ -376,9 +386,9 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
 function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
-if(f)$('#dumphint').textContent='读到片尾，'+sz(f.size);
+if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);
 if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}
-if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}
+if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，请使用下方的原始区段。首次迁移前闪存仍为原厂内容，建议此时备份</td></tr>';return}
 (INFO.fv||[]).forEach(function(v){fv[v.n]=1});
 (INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;
 h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+v.t+'</td><td class=n>'+sz(n)+'</td><td class=b><button type=button class="pb dlb" onclick="dlvol(\''+esc(v.n)+'\')">下载</button></td></tr>'});
@@ -389,9 +399,9 @@ function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src
 function dlrefused(f){var t='';
 try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}
 t=t.replace(/\s+/g,' ').trim();if(!t)return;
-DLBAD=1;$('#dlh').textContent='设备没有接下这次备份：'+t}
+DLBAD=1;$('#dlh').textContent='设备拒绝了本次备份：'+t}
 function sink(u,what,n){silent();DLBAD=0;
-$('#dlh').textContent='正在读并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';
+$('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';
 get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
 DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}
 /* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */
@@ -400,18 +410,18 @@ get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}ca
 if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;
 dlrow(r);return}
 if(k<120)setTimeout(function(){dlpoll(k+1)},2000);
-else $('#dlh').textContent='没有等到设备回报，这次备份可能没成 —— 看「串口日志」'})}
+else $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「串口日志」'})}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
 /* 传完了才有 crc32：它算的是真正发出去的那些字节 */
 function dlrow(r){var t=$('#dll'),h=r.holes||0;
-t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读不出</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
+t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
 $('#dllh').hidden=false;
-$('#dlh').textContent=h?'传完了 —— 有 '+h+' 个块读不出，那部分填的是 ff，看「串口日志」':'传完了'}
+$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「串口日志」':'传输完成'}
 
 function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
 sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}
 /* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */
-function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='读不到闪存信息';return}
+function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}
 $('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}
 function dumpraw(){var f=INFO&&INFO.flash,o=hex($('#dumpoff').value),lv=$('#dumplen').value.trim(),l=lv?hex(lv):null;
 if(o<0){$('#dlh').textContent='起始偏移不是有效的十六进制数';return}
@@ -432,15 +442,15 @@ function envfill(){var t=$('#envt'),rows=envrows(),h='';
 if(!ENV)return;
 rows.forEach(function(e){h+='<tr><td>'+esc(e.k)+'</td><td class=envv>'+esc(e.v)+'</td></tr>'});
 t.innerHTML=h||'<tr><td>没有匹配的变量</td></tr>';
-$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容看串口':'')}
+$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容见串口':'')}
 function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\n'))}
 function askenvdef(){$('#atitle').textContent='环境变量';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default -a \u0026\u0026 saveenv</span></div>'+
-'<div class=w>自定义的 bootcmd、引导菜单与网络设置会回到这一版 U-Boot 的默认值</div>'+
-'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启才生效</div>';
+'<div class=w>自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值</div>'+
+'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启生效</div>';
 var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on','')}
 function envdef(){$('#envh').textContent='正在恢复…';
-get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 挂不上），断电即失';getenv()}
+get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
 else $('#envh').textContent='恢复失败（'+st+'）'})}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
@@ -454,28 +464,28 @@ if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textConte
 $('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
 (INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
-function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+i.s+'"></span>'+esc(i.n)+'</td><td class="s'+i.s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
+function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+i.s+'"></span>'+esc(i.n)+'</td><td class="s'+i.s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.disabled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
 function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);
-if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push(o?'擦除自 0x'+o.toString(16)+' 起的区域':'擦除整片 flash');a.push('边传边写 —— <b>耗时最长，请勿断电；一旦开始写，中途失败必须重传成功才能重启</b>');a.push('自动重启');return a}
-if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复网页服务':'自动重启');return a}
-if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI —— 擦除 ubi 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}
+if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起逐块擦除并写入镜像，随上传同步完成');a.push('自动重启');return a}
+if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}
+if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI：擦除 ubi 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}
 function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
 if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;
 YES=null;y.textContent='仍要写入';
 $('#atitle').textContent=$('h1',p).textContent;
-if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
-if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动断电重启')}
+if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
+if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动重启')}
 if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
 if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');
 if((p.id=='p1'||(p.id=='p3'&&!$('[name=stay]',p).checked))&&INFO&&INFO.ubi&&!INFO.ubi.fip)E.push('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));
 if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data 将被清空');
 var utot=0;rows.forEach(function(r){utot+=r.f.size});
 /* p4 是流式的，没有上限；别的页要先整个进内存才写 */
-if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的 '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');
-rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' · '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});
+if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次上传 '+sz(utot)+'，超过设备单次可接收的 '+sz(INFO.uploadmax)+'：内存不足，设备将拒绝');
+rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' · '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认文件正确')});
 if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';
 E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div class=w>'+x+'</div>'});
 $('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribute('data-on','');return false}
@@ -486,21 +496,35 @@ function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new XMLHttpReques
 $$('input[type=text]',p).forEach(function(t){if(t.value.trim())fd.append(t.name,t.value.trim())});
 $$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});
 rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});
-SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked)};
-HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent='上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';
+SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked),btxt:btn.textContent};
+HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';
 x.upload.onprogress=function(e){if(!e.lengthComputable)return;var done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}
-bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent='正在上传 '+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' · '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);$('.pct',prog).textContent=sz(done)+' / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'};
-x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent='上传完成，设备正在校验…';$('.pct',prog).textContent=''};
-x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};
-x.onerror=function(){fail('连接中断，请检查网线后重试')};
+bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正在写入 ':'正在上传 ')+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' · '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);$('.pct',prog).textContent=sz(done)+' / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'};
+x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent=p.id=='p4'?'传输完成，设备正在写入最后一块…':'上传完成，设备正在校验…';$('.pct',prog).textContent=''};
+x.onload=function(){if(x.status==200){done(x.responseText);return}
+/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */
+fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};
+x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
 /* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；
    偏移在请求行里，设备收到第一个包就知道该写到哪 */
 if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);
 x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}
 x.open('POST','/');x.send(fd)}
-function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app').removeAttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写'}
-function done(){var p=SENT.p,rows=SENT.rows;HBOFF=0;if(SENT.stay){var prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent='已上传 '+rows.map(function(r){return r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写';clear(p);expect('write');return}
+function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app').removeAttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
+/* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
+if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}
+function done(resp){var p=SENT.p,rows=SENT.rows;HBOFF=0;
+/* 流式那条路拿到 200 时已经写完了，去它自己的完成页 */
+if(p.id=='p4'){stdone(resp);return}if(SENT.stay){var prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent='已上传 '+rows.map(function(r){return r.l}).join('、')+'，设备正在写入；指示灯恢复常态后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;clear(p);expect('write');return}
 $('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidden','');hbstop();show('p7')}
+/* 设备回的是 "ok N bytes crc32 xxxxxxxx skipped M" */
+function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)/.exec(t||''),h='',k;
+if(m){k=+m[3];
+h='<tr><td>写入</td><td>'+sz(+m[1])+'（'+m[1]+' 字节）</td></tr>'+
+'<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+
+'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'}
+else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';
+$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
 function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}
 document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
 bind();info();hbstart();
