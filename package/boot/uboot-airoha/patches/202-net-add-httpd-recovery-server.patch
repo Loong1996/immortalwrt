@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,5048 @@
+@@ -0,0 +1,5259 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -282,6 +282,8 @@ new file mode 100644
 +#define CONN_POSTBUSY		((void *)13)
 +#define CONN_STOCK		((void *)14)
 +#define CONN_SCAN		((void *)15)
++#define CONN_BOOT		((void *)16)
++#define CONN_BOOTONCE		((void *)17)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -341,6 +343,7 @@ new file mode 100644
 +#define FIELD_UBIVOL_NAME	"ubivol"
 +#define FIELD_UBIVOL_FILE	"ubifile"
 +#define FIELD_STAY		"stay"
++#define FIELD_TRYBOOT		"tryboot"
 +
 +#define MAX_PARTS		12
 +#define MAX_FVOLS		8
@@ -621,7 +624,11 @@ new file mode 100644
 +		" 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span><span class=tx><span class=t><span"
 +		" class=fn style=\"color:inherit\">选择固件文件</span></span><span class=\"s"
 +		" mono\">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>\n"
-+	"<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。</p>\n"
++	"<div class=box style=\"margin-top:1rem\">\n"
++	"<div class=\"fr wide\"><span class=fl>只试运行，不写入<small>把固件传到内存里直接启动，闪存一个字节都不动。起不来就断电，什么都没变</small></"
++		"span><span class=\"fc end\"><input type=checkbox class=sw name=tryboot value=1></span></div>\n"
++	"</div>\n"
++	"<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。试运行不写闪存，所以断电后仍然是原来的系统。</p>\n"
 +	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -773,6 +780,16 @@ new file mode 100644
 +	"<p class=note>重启后正常引导，引导失败时回到本页面。设备恢复响应后本页面自动刷新。</p>\n"
 +	"<div class=act><span class=st></span><button type=button class=\"pb red\""
 +		" onclick=askreboot()>立即重启</button></div>\n"
++	"<p class=bh>不断电的其他做法</p>\n"
++	"<div class=box>\n"
++	"<div class=\"fr wide\"><span class=fl>直接启动系统<small>执行 bootcmd"
++		" 里的引导，不经过一次冷启动。起不来会回到本页面</small></span><span class=\"fc end\"><button type=button class=pb"
++		" onclick=askboot()>启动系统</button></span></div>\n"
++	"<div class=\"fr wide\"><span class=fl>下次开机进恢复页<small>只生效一次，进来之后自动恢复原样。相当于开机时按住"
++		" reset，但不用去够那个孔</small></span><span class=\"fc end\"><button type=button class=pb id=bob"
++		" onclick=bootonce()>设置</button></span></div>\n"
++	"</div>\n"
++	"<p class=note id=boh>设置之后正常引导一次即可生效：设备开机会停在这个页面，再下一次开机恢复正常。</p>\n"
 +	"</div>\n"
 +	"<div class=pane id=p6>\n"
 +	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
@@ -947,6 +964,7 @@ new file mode 100644
 +	"function offline(why){var i,t,b,r=0;\n"
 +	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}\n"
 +	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}\n"
++	"else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存没有改动。启动不起来会回到这个页面。'}\n"
 +	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯齐闪表示正在写入，请等待完成。';r=1}\n"
 +	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
 +	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+b+'</div>'+\n"
@@ -964,6 +982,22 @@ new file mode 100644
 +	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
++	"function askboot(){$('#atitle').textContent='启动系统';\n"
++	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+\n"
++	"'<div class=w>闪存内容不受影响；启动不起来会回到本页面</div>';\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='启动系统';YES=doboot;$('#mask').setAttribute('data-on'"
++		",'')}\n"
++	"function doboot(){get('/boot',function(){});expect('boot')}\n"
++	"/* 一次性的，所以「设置」之后按钮不该还写着「设置」 */\n"
++	"function bootonce(){var b=$('#bob');b.disabled=true;\n"
++	"get('/bootonce',function(st,t){b.disabled=false;\n"
++	"t=(t||'').trim();\n"
++	"if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}\n"
++	"b.textContent='已设置';\n"
++	"$('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t\n"
++	":t.indexOf('saving failed')>=0?'已设置，但没能保存到闪存 —— 断电就失效了，'+'请检查「健康检查」里的 ubootenv 卷'\n"
++	":t.indexOf('already')>=0?'之前已经设置过了，下次开机就会停在这里'\n"
++	":'已设置。下次开机会停在这个页面，再下一次恢复正常'})}\n"
 +	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
 +	"if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);\n"
 +	"if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
@@ -1272,6 +1306,9 @@ new file mode 100644
 +		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
 +	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移"
 +		" 0x'+(o<0?'?':o.toString(16))+' 起逐块擦除并写入镜像，随上传同步完成');a.push('自动重启');return a}\n"
++	"if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked)\n"
++	"return ['把固件读进内存并直接启动它',\n"
++	"'<b>闪存一个字节都不写</b>；起不来就断电，系统还是原来那个'];\n"
 +	"if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入"
 +		" '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+'"
 +		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}\n"
@@ -1281,6 +1318,12 @@ new file mode 100644
 +	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
 +	"if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;\n"
 +	"YES=null;y.textContent='仍要写入';\n"
++	"var tb0=$('[name=tryboot]',p);\n"
++	"if(tb0&&tb0.checked){if(!rows.some(function(r){return r.k=='firmware'}))\n"
++	"E.push('试运行需要选择一个固件文件');\n"
++	"else if(rows.length>1)E.push('试运行只收固件本身：它什么都不写，'+'别的文件带不进去');\n"
++	"else W.push('固件只进内存，闪存不写。起不来就断电，系统还是原来那个');\n"
++	"y.textContent='启动它'}\n"
 +	"$('#atitle').textContent=$('h1',p).textContent;\n"
 +	"if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E."
 +		"push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+'"
@@ -1369,6 +1412,11 @@ new file mode 100644
 +		",prog).textContent='已上传 '+rows.map(function(r){return"
 +		" r.l}).join('、')+'，设备正在写入；指示灯恢复常态后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
 +		"Content=SENT.btxt;clear(p);expect('write');return}\n"
++	"var tb=$('[name=tryboot]',p)&&$('[name=tryboot]',p).checked;\n"
++	"$('#p7 h1').textContent=tb?'已交给设备启动':'上传完成';\n"
++	"$('#p7 .sub').textContent=tb?'设备正在从内存启动这个固件，闪存没有改动。启动成功后本页面不再可用。'\n"
++	":'设备正在写入，完成后自动重启。本页面可以关闭。';\n"
++	"$('#p7 .fin b').textContent=tb?'起不来怎么办':'通过设备指示灯判断进度';\n"
 +	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
 +		"en','');hbstop();show('p7')}\n"
 +	"/* 设备回的是 \"ok N bytes crc32 xxxxxxxx skipped M\" */\n"
@@ -1426,6 +1474,12 @@ new file mode 100644
 +static struct tcp_stream *up_owner;	/* owns the staging area */
 +static int	up_bound_len;
 +static int	flash_pending;	/* flash after net_loop() returns */
++/*
++ * Boot the uploaded image straight out of memory instead of writing it.
++ * The whole point is that flash is not touched: an image that does not
++ * come up costs a power cycle, not a recovery.
++ */
++static int	tryboot_pending;
 +
 +/* One uploaded form field whose payload is non-empty. */
 +struct up_part {
@@ -3251,6 +3305,93 @@ new file mode 100644
 +	"\r\nok";
 +
 +static int reboot_pending;
++static int boot_pending;
++
++/*
++ * ---- GET /boot, GET /bootonce --------------------------------------------
++ *
++ * /boot runs the normal boot command now, without a power cycle.  If the
++ * system does not come up the caller re-enters httpd, so this costs
++ * nothing to try.
++ *
++ * /bootonce arranges for the next boot to stop here instead.  It is one
++ * shot and undoes itself: httpd_boot_once is cleared and the old bootcmd
++ * put back the moment the server next starts, so a user who sets it and
++ * then walks away still gets a normal boot the time after.
++ *
++ * The replacement bootcmd keeps the original after it rather than
++ * replacing it outright:
++ *
++ *	httpd ; <original>
++ *
++ * so even if the restore never happens -- flash gone read-only, power cut
++ * at the wrong moment -- the device still boots the system once the httpd
++ * session ends.  A one-shot that can strand the board is not worth having.
++ */
++#define BOOT_CMD	"boot_ubi"
++#define ENV_ONCE	"httpd_boot_once"
++#define ENV_SAVED	"httpd_bootcmd_saved"
++
++static char bootonce_buf[256];
++static int bootonce_len;
++
++static int httpd_bootonce(void)
++{
++	const char *cur = env_get("bootcmd");
++	char next[CONFIG_SYS_CBSIZE];
++	const char *msg;
++
++	if (env_get(ENV_ONCE)) {
++		msg = "already armed";
++		goto out;
++	}
++	if (!cur || !cur[0]) {
++		msg = "no bootcmd to put back afterwards";
++		goto out;
++	}
++	if (strlen(cur) + 8 >= sizeof(next)) {
++		msg = "bootcmd is too long to wrap";
++		goto out;
++	}
++
++	snprintf(next, sizeof(next), "httpd ; %s", cur);
++	if (env_set(ENV_SAVED, cur) || env_set("bootcmd", next) ||
++	    env_set(ENV_ONCE, "1")) {
++		msg = "could not set the environment";
++		goto out;
++	}
++	/* saveenv rather than env_save(): the same path the rest of this
++	 * file already uses for saving. */
++	msg = run_command("saveenv", 0) ? "armed, but saving failed"
++					: "armed and saved";
++
++out:
++	bootonce_len = snprintf(bootonce_buf, sizeof(bootonce_buf),
++				"HTTP/1.0 200 OK\r\n"
++				"Content-Type: text/plain; charset=utf-8\r\n"
++				"Connection: close\r\n"
++				"\r\n%s\n", msg);
++
++	return bootonce_len;
++}
++
++/* Undo /bootonce.  Called once, as early as the server runs. */
++static void bootonce_disarm(void)
++{
++	const char *saved = env_get(ENV_SAVED);
++
++	if (!env_get(ENV_ONCE))
++		return;
++
++	printf("httpd: this boot was the one-shot recovery entry; "
++	       "putting bootcmd back\n");
++	if (saved && saved[0])
++		env_set("bootcmd", saved);
++	env_set(ENV_SAVED, NULL);
++	env_set(ENV_ONCE, NULL);
++	if (run_command("saveenv", 0))
++		printf("httpd: could not save; it will arm again next boot\n");
++}
 +
 +/*
 + * ---- upload --------------------------------------------------------------
@@ -3450,6 +3591,25 @@ new file mode 100644
 +		httpd_reject("rebuilding UBI without a U-Boot FIP would leave "
 +			     "nothing to boot");
 +		return -1;
++	}
++
++	/*
++	 * Try-boot writes nothing, so anything else in the same upload would
++	 * either be silently dropped or turn it into a write after all.
++	 * Neither is what the box said, so refuse instead.
++	 */
++	if (part_find(FIELD_TRYBOOT)) {
++		if (!part_find(FIELD_FIT)) {
++			httpd_reject("try-boot needs a firmware image");
++			return -1;
++		}
++		if (up_nparts > 2) {
++			httpd_reject("try-boot takes the firmware alone; it writes "
++				     "nothing, so nothing else can come with it");
++			return -1;
++		}
++
++		return 0;
 +	}
 +
 +	p = part_find(FIELD_UBIVOL_FILE);
@@ -4496,6 +4656,10 @@ new file mode 100644
 +		return CONN_ENVRESET;
 +	if (plen == 7 && !memcmp(path, "/reboot", 7))
 +		return CONN_REBOOT;
++	if (plen == 5 && !memcmp(path, "/boot", 5))
++		return CONN_BOOT;
++	if (plen == 9 && !memcmp(path, "/bootonce", 9))
++		return CONN_BOOTONCE;
 +	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
 +		return CONN_DUMPINFO;
 +	if (plen == 5 && !memcmp(path, "/dump", 5)) {
@@ -4576,6 +4740,8 @@ new file mode 100644
 +				env_len = httpd_env();
 +			else if (cls == CONN_ENVRESET)
 +				envreset_len = httpd_envreset();
++			else if (cls == CONN_BOOTONCE)
++				bootonce_len = httpd_bootonce();
 +			else if (cls == CONN_DUMPINFO)
 +				dumpinfo_len = httpd_dumpinfo();
 +			else if (cls == CONN_DUMP) {
@@ -4648,6 +4814,11 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_ENVRESET) {
 +		*len = envreset_len;
 +		return envreset_buf;
++	} else if (tcp->priv == CONN_BOOTONCE) {
++		*len = bootonce_len;
++		return bootonce_buf;
++	} else if (tcp->priv == CONN_BOOT) {
++		s = resp_reboot;
 +	} else if (tcp->priv == CONN_REBOOT) {
 +		s = resp_reboot;
 +	} else if (tcp->priv == CONN_DUMPBUSY) {
@@ -4762,11 +4933,21 @@ new file mode 100644
 +		return;
 +	}
 +
++	if (tcp->priv == CONN_BOOT) {
++		boot_pending = 1;
++		net_set_state(NETLOOP_SUCCESS);
++
++		return;
++	}
++
 +	if (tcp->priv != CONN_POST)
 +		return;
 +
 +	if (up_ready) {
-+		flash_pending = 1;
++		if (part_find(FIELD_TRYBOOT))
++			tryboot_pending = 1;
++		else
++			flash_pending = 1;
 +		net_set_state(NETLOOP_SUCCESS);
 +	} else {
 +		/* Let the user retry after a failed upload. */
@@ -4809,6 +4990,9 @@ new file mode 100644
 +	up_bound_len = 0;
 +	flash_pending = 0;
 +	reboot_pending = 0;
++	boot_pending = 0;
++	tryboot_pending = 0;
++	bootonce_disarm();
 +	dump_busy = 0;
 +	dump_len = 0;
 +	dump_wlen = 0;
@@ -5156,6 +5340,33 @@ new file mode 100644
 +		if (reboot_pending) {
 +			printf("httpd: rebooting on request\n");
 +			run_command("reset", 0);
++
++			return CMD_RET_SUCCESS;
++		}
++
++		if (boot_pending) {
++			boot_pending = 0;
++			printf("httpd: booting the system on request\n");
++			run_command("run " BOOT_CMD, 0);
++			/* Only here if it did not boot; the caller re-enters. */
++			printf("httpd: the system did not boot\n");
++
++			return CMD_RET_SUCCESS;
++		}
++
++		if (tryboot_pending) {
++			struct up_part *fit = part_find(FIELD_FIT);
++			char cmd[48];
++
++			tryboot_pending = 0;
++			if (!fit)
++				return CMD_RET_SUCCESS;
++			snprintf(cmd, sizeof(cmd), "bootm 0x%lx", fit->addr);
++			printf("httpd: booting the upload from memory, "
++			       "flash untouched: %s\n", cmd);
++			run_command(cmd, 0);
++			printf("httpd: that image did not boot; "
++			       "the flash was not touched\n");
 +
 +			return CMD_RET_SUCCESS;
 +		}

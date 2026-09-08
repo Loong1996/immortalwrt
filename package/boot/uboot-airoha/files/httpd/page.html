@@ -176,7 +176,10 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=pane id=p1 data-on>
 <h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>
 <label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span><span class=tx><span class=t><span class=fn style="color:inherit">选择固件文件</span></span><span class="s mono">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>
-<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。</p>
+<div class=box style="margin-top:1rem">
+<div class="fr wide"><span class=fl>只试运行，不写入<small>把固件传到内存里直接启动，闪存一个字节都不动。起不来就断电，什么都没变</small></span><span class="fc end"><input type=checkbox class=sw name=tryboot value=1></span></div>
+</div>
+<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。试运行不写闪存，所以断电后仍然是原来的系统。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
@@ -288,6 +291,12 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <h1>重启</h1><p class=sub>执行 reset，不改动闪存。用于连续写入多个卷之后。</p>
 <p class=note>重启后正常引导，引导失败时回到本页面。设备恢复响应后本页面自动刷新。</p>
 <div class=act><span class=st></span><button type=button class="pb red" onclick=askreboot()>立即重启</button></div>
+<p class=bh>不断电的其他做法</p>
+<div class=box>
+<div class="fr wide"><span class=fl>直接启动系统<small>执行 bootcmd 里的引导，不经过一次冷启动。起不来会回到本页面</small></span><span class="fc end"><button type=button class=pb onclick=askboot()>启动系统</button></span></div>
+<div class="fr wide"><span class=fl>下次开机进恢复页<small>只生效一次，进来之后自动恢复原样。相当于开机时按住 reset，但不用去够那个孔</small></span><span class="fc end"><button type=button class=pb id=bob onclick=bootonce()>设置</button></span></div>
+</div>
+<p class=note id=boh>设置之后正常引导一次即可生效：设备开机会停在这个页面，再下一次开机恢复正常。</p>
 </div>
 
 <div class=pane id=p6>
@@ -406,6 +415,7 @@ function silent(){SILENT=1;MISS=0}
 function offline(why){var i,t,b,r=0;
 if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}
 else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}
+else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存没有改动。启动不起来会回到这个页面。'}
 else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯齐闪表示正在写入，请等待完成。';r=1}
 $('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;
 $('#offb').innerHTML='<div class=w style="color:inherit">'+b+'</div>'+
@@ -421,6 +431,21 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span
 '<div class=w>闪存内容不受影响</div>';
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
+function askboot(){$('#atitle').textContent='启动系统';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+
+'<div class=w>闪存内容不受影响；启动不起来会回到本页面</div>';
+var y=$('#yes');y.hidden=false;y.textContent='启动系统';YES=doboot;$('#mask').setAttribute('data-on','')}
+function doboot(){get('/boot',function(){});expect('boot')}
+/* 一次性的，所以「设置」之后按钮不该还写着「设置」 */
+function bootonce(){var b=$('#bob');b.disabled=true;
+get('/bootonce',function(st,t){b.disabled=false;
+t=(t||'').trim();
+if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}
+b.textContent='已设置';
+$('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t
+:t.indexOf('saving failed')>=0?'已设置，但没能保存到闪存 —— 断电就失效了，'+'请检查「健康检查」里的 ubootenv 卷'
+:t.indexOf('already')>=0?'之前已经设置过了，下次开机就会停在这里'
+:'已设置。下次开机会停在这个页面，再下一次恢复正常'})}
 function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
 if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);
 if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}
@@ -682,11 +707,20 @@ a.href=u;a.download=name;document.body.appendChild(a);a.click();
 document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},1000)}catch(e){}}
 function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);
 if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起逐块擦除并写入镜像，随上传同步完成');a.push('自动重启');return a}
+if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked)
+return ['把固件读进内存并直接启动它',
+'<b>闪存一个字节都不写</b>；起不来就断电，系统还是原来那个'];
 if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}
 if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI：擦除 ubi 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}
 function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
 if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;
 YES=null;y.textContent='仍要写入';
+var tb0=$('[name=tryboot]',p);
+if(tb0&&tb0.checked){if(!rows.some(function(r){return r.k=='firmware'}))
+E.push('试运行需要选择一个固件文件');
+else if(rows.length>1)E.push('试运行只收固件本身：它什么都不写，'+'别的文件带不进去');
+else W.push('固件只进内存，闪存不写。起不来就断电，系统还是原来那个');
+y.textContent='启动它'}
 $('#atitle').textContent=$('h1',p).textContent;
 if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动重启')}
@@ -735,6 +769,11 @@ if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已�
 function done(resp){var p=SENT.p,rows=SENT.rows;HBOFF=0;
 /* 流式那条路拿到 200 时已经写完了，去它自己的完成页 */
 if(p.id=='p4'){stdone(resp);return}if(SENT.stay){var prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.className='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent='已上传 '+rows.map(function(r){return r.l}).join('、')+'，设备正在写入；指示灯恢复常态后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;clear(p);expect('write');return}
+var tb=$('[name=tryboot]',p)&&$('[name=tryboot]',p).checked;
+$('#p7 h1').textContent=tb?'已交给设备启动':'上传完成';
+$('#p7 .sub').textContent=tb?'设备正在从内存启动这个固件，闪存没有改动。启动成功后本页面不再可用。'
+:'设备正在写入，完成后自动重启。本页面可以关闭。';
+$('#p7 .fin b').textContent=tb?'起不来怎么办':'通过设备指示灯判断进度';
 $('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidden','');hbstop();show('p7')}
 /* 设备回的是 "ok N bytes crc32 xxxxxxxx skipped M" */
 function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)/.exec(t||''),h='',k;
