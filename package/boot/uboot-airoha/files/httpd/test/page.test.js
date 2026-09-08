@@ -712,7 +712,7 @@ function stayUpload(w) {
     await sleep(600);
     const rows = [...w.document.querySelectorAll('#bmenu tr')];
     ok('两条菜单都列出来了', rows.length === 2, rows.length);
-    ok('序号在最前', rows[0].cells[0].textContent === '0',
+    ok('序号是串口上的按键，从 1 起', rows[0].cells[0].textContent === '1.',
        rows[0].cells[0].textContent);
     ok('标题切在第一个等号', rows[0].cells[1].textContent === '启动 ImmortalWrt.',
        rows[0].cells[1].textContent);
@@ -729,6 +729,19 @@ function stayUpload(w) {
     ok('颜色码没漏进标题', r.cells[1].textContent === 'Write BL2',
        r.cells[1].textContent);
     ok('危险条目标红', r.cells[1].className === 'hot', r.cells[1].className);
+
+    /* U-Boot 的快捷键只有一位：1~9 之后接 a~z，0 留给 Exit */
+    w.ENV = { env: [
+      { k: 'bootmenu_0', v: 'A=run a' },
+      { k: 'bootmenu_8', v: 'I=run i' },
+      { k: 'bootmenu_9', v: 'J=run j' },
+      { k: 'bootmenu_10', v: 'K=run k' }], cut: 0 };
+    w.bmfill();
+    const keys = [...w.document.querySelectorAll('#bmenu tr')]
+      .map((x) => x.cells[0].textContent);
+    ok('第九项还是数字 9', keys[1] === '9.', keys[1]);
+    ok('第十项跟串口一样是 a', keys[2] === 'a.', keys[2]);
+    ok('第十一项接着是 b', keys[3] === 'b.', keys[3]);
 
     w.ENV = { env: [{ k: 'bootcmd', v: 'x' }], cut: 0 };
     w.bmfill();
@@ -829,6 +842,12 @@ function stayUpload(w) {
     ok('说清只生效一次', /再下次开机恢复正常/.test(txt(w, '#boh')),
        txt(w, '#boh'));
 
+    /* 闪存里有东西可启动时，重启就真的只是重启 */
+    w.askreboot();
+    ok('正常设备重启只说闪存不受影响',
+       /闪存内容不受影响/.test(txt(w, '#abody')) &&
+       !/仅存于内存/.test(txt(w, '#abody')), txt(w, '#abody'));
+
     /* 存不进闪存是要说的：断电就白设了 */
     const w2 = await boot();
     setsel(w2, 'dev', 'noubi');
@@ -837,6 +856,24 @@ function stayUpload(w) {
     $(w2, '#bob').click();
     await sleep(600);
     ok('保存失败要说明', /断电后失效/.test(txt(w2, '#boh')), txt(w2, '#boh'));
+    ok('没保存成功就不说已设置', txt(w2, '#bob') === '未保存', txt(w2, '#bob'));
+
+    /*
+     * 没有 UBI 的机器上，当前 U-Boot 只在内存里：重启把它丢掉，回到原有
+     * 系统，得再走一轮串口。确认框不能只说「闪存内容不受影响」。
+     */
+    w2.askreboot();
+    ok('没有 UBI 时重启要警告', /仅存于内存/.test(txt(w2, '#abody')),
+       txt(w2, '#abody'));
+    ok('说清后果是回到原有系统', /回到原有系统/.test(txt(w2, '#abody')),
+       txt(w2, '#abody'));
+
+    const w3 = await boot();
+    setsel(w3, 'dev', 'nofip');
+    await sleep(600);
+    w3.askreboot();
+    ok('没有 fip 卷时重启也要警告',
+       /本页面将无法再打开/.test(txt(w3, '#abody')), txt(w3, '#abody'));
   }
 
   console.log('\n--- 网络状态 ---');

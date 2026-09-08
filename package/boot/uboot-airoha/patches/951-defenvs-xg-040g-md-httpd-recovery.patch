@@ -1,7 +1,7 @@
 From: Loong <1031313955@qq.com>
 Subject: [PATCH] defenvs: nokia_xg-040g-md: make web recovery the automatic path
 
-Three ways in, none of which needs a serial console:
+Four ways in, none of which needs a serial console:
 
   - holding reset at power-on starts the web server instead of a one-shot
     TFTP fetch;
@@ -11,11 +11,30 @@ Three ways in, none of which needs a serial console:
     once a cable is plugged in.  With the DHCP server in httpd the user gets
     an address automatically -- nothing to configure, nothing to install;
 
-  - _firstboot checks the button before it touches the flash.  This is what
-    lets a first-time migration finish in a single xmodem round: without it
-    the RAM-resident U-Boot runs straight into _init_env, fails to create
-    the env volumes on a foreign flash layout, falls back to ubi_format and
-    resets -- discarding the U-Boot that was just transferred.
+  - _firstboot checks the button before it touches the flash;
+
+  - and then it checks the flash.  "ubi part ubi || run _no_ubi" is the one
+    that makes a first-time migration finish in a single xmodem round on its
+    own.  Without it the RAM-resident U-Boot runs straight into _init_env,
+    fails to create the env volumes on a foreign flash layout, falls back to
+    ubi_format -- "mtd erase ubi ... ; reset" -- and reboots into a factory
+    BL2 whose FIP has just been erased out from under it.  The U-Boot that
+    was transferred is gone with the reset, and the board comes back up on
+    "Failed to decompress image" instead of a menu.
+
+    The button check alone did not cover this, because the board that needs
+    covering is the one that has never been initialised, and on that board
+    the menu does not wait: the default environment ships bootdelay=0 and
+    bootmenu_delay=0, and it is _switch_to_menu -- which runs from inside
+    _firstboot, too late -- that raises both to 3.  So the other documented
+    way in, "select the web recovery entry from the menu", is not available
+    on the one boot that needs it.  Holding reset was the only escape, and
+    letting go of it cost the flash.
+
+    So the decision moves off the user and onto the flash.  A layout this
+    U-Boot cannot attach is handed to the recovery page rather than erased,
+    and erasing it becomes what it should have been all along: something the
+    user asks for on the page, with the images to put back already uploaded.
 
 Two helper scripts back the httpd upload form:
 
@@ -34,7 +53,7 @@ manual path stays TFTP.
 
 --- a/defenvs/an7581_nokia_xg-040g-md_env
 +++ b/defenvs/an7581_nokia_xg-040g-md_env
-@@ -26,28 +26,31 @@
+@@ -26,28 +26,32 @@
  boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
  boot_default=run bootcmd ; run boot_tftp_forever
  boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
@@ -66,6 +85,7 @@ manual path stays TFTP.
  ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
  _init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv ; run ubi_create_board_data
 -_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
-+_firstboot=setenv _firstboot ; run check_buttons ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
++_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
++_no_ubi=echo ; echo This flash carries no usable UBI. Leaving it alone. ; echo Web recovery starts in 3s at http://$ipaddr - press a key for the menu ; setenv bootmenu_0 "Start web recovery server at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
  _switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
  _bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"

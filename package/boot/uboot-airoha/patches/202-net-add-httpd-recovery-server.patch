@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,6091 @@
+@@ -0,0 +1,6161 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -705,7 +705,7 @@ new file mode 100644
 +	"</div>\n"
 +	"<p class=note>镜像须来自本机备份，可在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。长度上限为 flash 容量"
 +		" <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于"
-+		"不一致状态，须重传至成功后方可重启</b>。</p>\n"
++		"不一致状态，须重传至成功后方可重启</b>。写入期间指示灯保持<b>流水</b>而非其他页面的齐闪：本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>\n"
 +	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb pri\">刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
@@ -1082,9 +1082,18 @@ new file mode 100644
 +	"/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */\n"
 +	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if"
 +		"(!HB)HB=1;ping()}\n"
-+	"function askreboot(){$('#atitle').textContent='重启';\n"
-+	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+\n"
-+	"'<div class=w>闪存内容不受影响</div>';\n"
++	"/*\n"
++	"* 「闪存内容不受影响」单说这一句会误导：闪存没变正是问题所在 —— 当前这个\n"
++	"* U-Boot 只在内存里（首次迁移经串口传进来，或 fip 卷已丢），reset 之后就没了。\n"
++	"* 顶部红条已经在报同一件事，这里把它的后果直接写进确认框。\n"
++	"*/\n"
++	"function askreboot(){var w='<div class=w>闪存内容不受影响</div>';\n"
++	"if(INFO&&!INFO.ubi)w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入"
++		" U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';\n"
++	"else if(INFO&&INFO.ubi&&!INFO.ubi.fip)w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot"
++		" 仅存于内存。</b>重启后本页面将无法再打开</div>';\n"
++	"$('#atitle').textContent='重启';\n"
++	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;\n"
 +	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
@@ -1169,7 +1178,8 @@ new file mode 100644
 +	"get('/bootonce',function(st,t){b.disabled=false;\n"
 +	"t=(t||'').trim();\n"
 +	"if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}\n"
-+	"b.textContent='已设置';\n"
++	"/* saveenv 失败时只在内存里生效，断电即失效 —— 按钮不能跟着说「已设置」 */\n"
++	"b.textContent=t.indexOf('armed')<0?'未设置':t.indexOf('saving failed')>=0?'未保存':'已设置';\n"
 +	"$('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t\n"
 +	":t.indexOf('saving failed')>=0?'已设置，但未能保存到闪存：断电后失效，'+'请在「诊断」中确认 ubootenv 卷'\n"
 +	":t.indexOf('already')>=0?'此前已设置，下次开机将停在本页面'\n"
@@ -1275,7 +1285,13 @@ new file mode 100644
 +	"* bootmenu_<n>=<标题>=<命令>，标题取到第一个 = 为止（U-Boot 自己就是\n"
 +	"* 这么切的）。标题里可能裹着 ANSI 颜色，串口上红的那几条是危险项，\n"
 +	"* 这里照样标红。\n"
++	"*\n"
++	"* 序号列给的是串口菜单上按的那个键，不是变量名里的 n：U-Boot 的\n"
++	"* bootmenu 只有一位快捷键，1~9 之后接 a~z，0 留给 Exit，所以\n"
++	"* bootmenu_0 在屏幕上是「1.」、bootmenu_9 是「a.」。照变量名从 0\n"
++	"* 标起会跟用户眼前的菜单差一位。\n"
 +	"*/\n"
++	"function bmkey(i){return i<9?String(i+1):i<35?String.fromCharCode(88+i):'?'}\n"
 +	"function bmfill(){var t=$('#bmenu'),m={},h='',d;\n"
 +	"if(!ENV){t.innerHTML='<tr><td>正在读取…</td></tr>';return}\n"
 +	"ENV.env.forEach(function(e){var g=/^bootmenu_(\\d+)$/.exec(e.k);\n"
@@ -1285,10 +1301,10 @@ new file mode 100644
 +	"ti=p<0?v:v.slice(0,p),cm=p<0?'':v.slice(p+1),\n"
 +	"hot=/\\x1b\\[[0-9;]*3[147]m/.test(ti);\n"
 +	"ti=ti.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'');\n"
-+	"h+='<tr><td class=n>'+i+'</td><td'+(hot?' class=hot':'')+'>'+esc(ti)\n"
++	"h+='<tr><td class=n>'+bmkey(i)+'.</td><td'+(hot?' class=hot':'')+'>'+esc(ti)\n"
 +	"+'</td><td class=cmd>'+esc(cm)+'</td></tr>'});\n"
 +	"t.innerHTML=h||'<tr><td class=empty>没有 bootmenu_* 条目</td></tr>';\n"
-+	"$('#bmh').textContent=h?'设备启动时的菜单'+(d?'；'+d+' 秒内无按键则执行 bootcmd':'')+'。红色条目会写入闪存'\n"
++	"$('#bmh').textContent=h?'设备启动时的菜单，序号即串口上按的键'+(d?'；'+d+' 秒内无按键则执行 bootcmd':'')+'。红色条目会写入闪存'\n"
 +	":'环境中没有引导菜单：串口不会停顿，直接执行 bootcmd'}\n"
 +	"function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\\n'))}\n"
 +	"function askenvdef(){$('#atitle').textContent='环境变量';\n"
@@ -1906,6 +1922,17 @@ new file mode 100644
 + */
 +static void httpd_blink_start(void)
 +{
++	/*
++	 * Stopping the chase is part of starting the blink rather than
++	 * something the caller has to remember.  Today's only caller flashes
++	 * after net_loop() has returned, where do_httpd() has already stopped
++	 * it -- but a caller that flashes from inside the loop would leave
++	 * the timeout handler walking the panel underneath the blink, both
++	 * patterns on the same five LEDs at once, which reads as neither.
++	 * That is not a hypothetical: the streaming restore below did exactly
++	 * this until it was reported.
++	 */
++	httpd_led_stop();
 +	led_blink_on = 0;
 +	cyclic_register(&led_cyclic, httpd_blink, LED_BLINK_US, "httpd-flash");
 +}
@@ -2670,17 +2697,52 @@ new file mode 100644
 + * Whether there is room left to write a firmware.  A recovery page that
 + * says "all fine" and then refuses the upload for want of space has not
 + * helped anybody.
++ *
++ * avail_pebs alone is the wrong number to show, and on a working device it
++ * is always the alarming one: OpenWrt's first boot grows rootfs_data over
++ * every block fit did not take, so a perfectly healthy router reports 0 MiB
++ * free and gets warned it may not fit a firmware -- on a chip with 200 MiB
++ * ready for one.
++ *
++ * What an upload has to play with is that plus what the write frees on its
++ * way in.  Both fit writers -- the board's ubi_write_production and the
++ * built-in DEF_WRITE_FIT -- remove fit and rootfs_data before creating the
++ * new fit, so those two volumes are room, not occupancy.  Count them, and
++ * say where the room comes from so the number can be checked against the
++ * volume table right above it.
++ *
++ * The bootloader is deliberately not in that list: a fip write lands in
++ * place inside the volume's own reservation and needs nothing freed.
 + */
 +static void chk_avail(struct jbuf *jb, int *first, struct ubi_device *ubi)
 +{
-+	u64 free = (u64)ubi->avail_pebs * ubi->leb_size;
++	static const char * const reclaim[] = { "fit", "rootfs_data" };
++	u64 idle = (u64)ubi->avail_pebs * ubi->leb_size;
++	int pebs = ubi->avail_pebs;
++	char how[160] = "";
++	unsigned int i;
++	u64 room;
++
++	for (i = 0; i < ARRAY_SIZE(reclaim); i++) {
++		struct ubi_volume *v = ubi_vol_find(ubi, reclaim[i]);
++
++		if (v)
++			pebs += v->reserved_pebs;
++	}
++
++	room = (u64)pebs * ubi->leb_size;
++	if (room != idle)
++		snprintf(how, sizeof(how),
++			 "，其中现在空闲 %llu MiB，另 %llu MiB 是写入固件时会先腾出的 fit 与 rootfs_data",
++			 (unsigned long long)(idle >> 20),
++			 (unsigned long long)((room - idle) >> 20));
 +
 +	chk_item(jb, first, "可写空间",
-+		 free < (16ULL << 20) ? CHK_WARN : CHK_OK,
-+		 "空闲 %llu MiB（%d 个逻辑擦除块）%s",
-+		 (unsigned long long)(free >> 20), ubi->avail_pebs,
-+		 free < (16ULL << 20) ?
-+		 "，不一定装得下一份固件；可先删掉不用的卷" : "");
++		 room < (16ULL << 20) ? CHK_WARN : CHK_OK,
++		 "刷机可用 %llu MiB（%d 个逻辑擦除块）%s%s",
++		 (unsigned long long)(room >> 20), pebs, how,
++		 room < (16ULL << 20) ?
++		 "。不一定装得下一份固件；可先删掉不用的卷" : "");
 +}
 +
 +static void chk_wear(struct jbuf *jb, int *first, struct ubi_device *ubi)
@@ -4877,7 +4939,6 @@ new file mode 100644
 +
 +	st_failed = 1;
 +	if (st_started) {
-+		httpd_blink_stop();
 +		st_reply("500 Internal Server Error",
 +			 "%s。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电",
 +			 msg);
@@ -5055,7 +5116,16 @@ new file mode 100644
 +			n = st_blk;
 +		if (!st_started) {
 +			st_started = 1;
-+			httpd_blink_start();
++			/*
++			 * The chase stays on, and that is the whole answer
++			 * here.  Every other write blinks because by then the
++			 * upload is over and the cable is free; this one
++			 * writes out of a connection that is still arriving,
++			 * so the cable is exactly what must not be touched --
++			 * which is what the chase has always meant.  Blinking
++			 * would say the opposite, and the page is already
++			 * showing a progress bar for "how far along is it".
++			 */
 +			printf("httpd: /stock: writing now, do not power off\n");
 +		}
 +		if (st_put(st_done / st_blk, n))
@@ -5070,7 +5140,8 @@ new file mode 100644
 +	if (st_done < st_body)
 +		return;
 +
-+	httpd_blink_stop();
++	/* Dark, which is what every other write ends on too. */
++	httpd_led_stop();
 +	st_ok = 1;
 +
 +	if (st_nskip) {
@@ -5670,7 +5741,6 @@ new file mode 100644
 +			       "will not boot until a restore is repeated to "
 +			       "the end\n", st_done);
 +
-+		httpd_blink_stop();
 +		st_hdr_end = st_body = st_done = st_crc = 0;
 +		st_nskip = st_started = st_failed = st_ok = 0;
 +		st_resp_len = 0;
