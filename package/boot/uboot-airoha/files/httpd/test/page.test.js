@@ -1231,6 +1231,384 @@ function stayUpload(w) {
     ok('汇总仍然正确', /1 项注意 · 15 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
   }
 
+  console.log('\n--- 卷名当数据看，不当代码看 ---');
+  {
+    const w = await boot();
+    const evil = 'a\'b"c<img src=x onerror="window.__X=1">';
+    const kind = 'dy\'na<b>mic</b>';
+    w.INFO.ubi.vols = w.INFO.ubi.vols.concat(
+      [{ i: 9, n: evil, t: kind, s: 4096, u: 4096 }]);
+    w.fill();
+    $(w, '.nav[data-p=p10]').click();
+    await sleep(300);
+    const rows = [...w.document.querySelectorAll('#dl tr')];
+    const row = rows.find(r => r.cells[0].textContent.indexOf('<img') >= 0);
+    ok('带引号带标签的卷名照样列出来', !!row,
+       rows.map(r => r.cells[0].textContent).join('|'));
+    ok('卷名一个字符都没走样', row.cells[0].textContent === evil,
+       row.cells[0].textContent);
+    ok('标签没被当成标签', !$(w, '#dl img') && !$(w, '#dl b'));
+    ok('卷类型也过了转义', row.cells[1].textContent === kind,
+       row.cells[1].textContent);
+
+    const b = row.querySelector('button');
+    ok('按钮不再往内联 onclick 里塞卷名', !b.hasAttribute('onclick'),
+       b.outerHTML.slice(0, 80));
+    ok('卷名挂在 data 属性上', b.getAttribute('data-v') === evil,
+       b.getAttribute('data-v'));
+    let url = null;
+    w.sink = u => { url = u };
+    b.click();
+    ok('点下去拿到的还是那个卷名',
+       url === '/dump?vol=' + encodeURIComponent(evil), url);
+    ok('没有脚本被执行', w.__X === undefined);
+
+    /* 设备详情那张卷表是同一件事 */
+    const urow = [...w.document.querySelectorAll('#ubi tr')]
+      .find(r => r.cells[1] && r.cells[1].textContent === evil);
+    ok('UBI 卷表里也是纯文本', !!urow && !$(w, '#ubi img') && !$(w, '#ubi b'));
+    ok('UBI 卷表的类型也转义了', urow && urow.cells[2].textContent === kind,
+       urow && urow.cells[2].textContent);
+    ok('esc 把单引号也一起转掉', w.esc("it's") === 'it&#39;s', w.esc("it's"));
+  }
+
+  console.log('\n--- 跟随关了又开，不会跑成两条链 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p8]').click();
+    $(w, '#logtab').click();
+    await sleep(600);
+
+    const hits = [];
+    const Real = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () {
+      const x = new Real(), open = x.open;
+      x.open = function (m, u) {
+        if (String(u).indexOf('/log?from=') === 0) hits.push(u);
+        return open.call(x, m, u);
+      };
+      return x;
+    };
+
+    $(w, '#logf').checked = true; w.logfollow();
+    await sleep(500);
+    ok('跟随跑起来了', w.LOGN > 0, w.LOGN);
+    /* 每 150 毫秒关一次再开一次，每一次都落在上一条请求还没回来的窗口里 */
+    for (let i = 0; i < 10; i++) {
+      await sleep(150);
+      $(w, '#logf').checked = false; w.logfollow();
+      $(w, '#logf').checked = true; w.logfollow();
+    }
+    hits.length = 0;
+    await sleep(600);
+    const n = w.LOGN;
+    ok('重新开的那条自己在跑', n > 0, n);
+    await sleep(6500);
+    ok('只剩一条链在取', hits.length <= 5, hits.length);
+    ok('偏移只增不减', w.LOGN >= n, w.LOGN + ' vs ' + n);
+    ok('日志没有被贴两遍',
+       txt(w, '#log').split('probing by address aliasing').length === 2,
+       txt(w, '#log').split('probing by address aliasing').length);
+    $(w, '#logf').checked = false; w.logfollow();
+  }
+
+  console.log('\n--- 跟随开着时再点日志段 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p8]').click();
+    $(w, '#logtab').click();
+    await sleep(600);
+    $(w, '#logf').checked = true; w.logfollow();
+    await sleep(800);
+    ok('跟随时按钮是禁着的', $(w, '#logb').disabled);
+
+    const before = txt(w, '#log');
+    $(w, '#logtab').click();               // 再点一次已经选中的那一段
+    await sleep(800);
+    ok('跟随开着就不整篇重读', txt(w, '#log').indexOf(before) === 0 &&
+       txt(w, '#log').split('probing by address aliasing').length === 2,
+       txt(w, '#log').split('probing by address aliasing').length);
+    ok('按钮没被解禁', $(w, '#logb').disabled);
+
+    w.getlog();
+    await sleep(700);
+    ok('手点读取读完也按跟随的状态来', $(w, '#logb').disabled);
+    $(w, '#logf').checked = false; w.logfollow();
+    w.getlog();
+    await sleep(700);
+    ok('不跟随时读完就放开', !$(w, '#logb').disabled);
+  }
+
+  console.log('\n--- 停了立刻重扫，坏块不翻倍 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(2000);
+    $(w, '#scanb').click();
+    await sleep(1200);
+    ok('先扫了一段', w.SCAN && w.SCAN.off > 0, w.SCAN && w.SCAN.off);
+
+    /* 上一段的响应还在路上就停掉，马上重来 */
+    $(w, '#scanb').click();
+    $(w, '#scanb').click();
+    ok('重扫是从头开始的', w.SCAN && w.SCAN.off === 0, w.SCAN && w.SCAN.off);
+
+    const s = w.SCAN;
+    let i = 0;
+    while (w.SCAN === s && s.off < 0x2c00000 && i++ < 300) await sleep(100);
+    ok('扫过了第一个坏块所在的那一段', s.off >= 0x2c00000, s.off);
+    ok('坏块只记了一次', s.bad === 1, s.bad);
+    ok('坏块表里也只有一个', s.badl.length === 1 && s.badl[0] === 0x2a00000,
+       s.badl.join(','));
+    ok('这一段之前没有 ECC，也没被加两遍', s.ecc === 0, s.ecc);
+    $(w, '#scanb').click();
+  }
+
+  console.log('\n--- 改完地址，残留的心跳盖不掉指引 ---');
+  {
+    const w = await boot();
+    /* 让一次 ping 停在空中：hbstop 拦不住已经发出去的那一次 */
+    let held = null;
+    const Real = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () {
+      const x = new Real(), open = x.open, send = x.send;
+      x.open = function (m, u) { x.__u = u; return open.call(x, m, u) };
+      x.send = function (d) {
+        if (x.__u === '/ping' && !held) { held = x; return }
+        return send.call(x, d);
+      };
+      return x;
+    };
+    for (let i = 0; i < 60 && !held; i++) await sleep(100);
+    ok('抓到一次还在飞的心跳', !!held);
+
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    w.asknetset();
+    $(w, '#yes').click();
+    await sleep(600);
+    ok('先说清设备去哪了', /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')),
+       txt(w, '#offt'));
+    ok('心跳停了', w.HB === 0);
+
+    /* 那次 ping 现在才失败：它是上一代的，早该丢掉 */
+    w.MISS = 1;
+    held.onerror();
+    await sleep(300);
+    ok('指引还在，没被通用断开框盖掉',
+       /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
+    ok('也没冒出重新连接按钮', $(w, '#offr').hidden);
+    ok('心跳没被这一下续上', w.HB === 0);
+
+    w.offline('');
+    ok('设备已搬走时 offline 直接让路',
+       /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
+  }
+
+  console.log('\n--- 自动获取地址之后同样盖不掉 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    w.askdhcp();
+    $(w, '#yes').click();
+    await sleep(300);
+    ok('先说在要地址', /正在获取地址/.test(txt(w, '#offt')), txt(w, '#offt'));
+    w.MISS = 1; w.seen(0, -1);
+    ok('心跳失败也盖不掉这条', /正在获取地址/.test(txt(w, '#offt')),
+       txt(w, '#offt'));
+  }
+
+  console.log('\n--- 心跳停过之后「重新连接」还管用 ---');
+  {
+    const w = await boot();
+    setsel(w, 'conn', 'down');
+    await sleep(9000);
+    ok('先弹出断开框', on(w, '#off') && !$(w, '#offr').hidden);
+    w.hbstop();                          // 写入、改地址都会把心跳停掉
+    $(w, '#offr').click();
+    ok('按钮进了重试态', $(w, '#offr').disabled);
+    setsel(w, 'conn', 'up');
+    await sleep(5000);
+    ok('心跳自己接了回去', w.HB === 1, w.HB);
+    ok('设备回来框就散了', !on(w, '#off'));
+  }
+
+  console.log('\n--- DHCP 开关在飞时 /info 插队 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('一开始是开着的', $(w, '#dhcpd').checked);
+
+    $(w, '#dhcpd').checked = false;
+    w.setdhcpd();
+    w.netfill();                         // /info 正好这时候回来
+    ok('在飞期间不把开关拨回去', !$(w, '#dhcpd').checked);
+    await sleep(700);
+    ok('结束后开关就是关的', !$(w, '#dhcpd').checked);
+    ok('文案跟开关对得上', txt(w, '#dhs') === '已关闭', txt(w, '#dhs'));
+    ok('设备侧也记下了', w.INFO.net.dhcpd === 0, w.INFO.net.dhcpd);
+
+    /* 设备不认的时候，回到动手之前那个样子 */
+    const real = w.get;
+    w.get = function (u, cb) {
+      if (String(u).indexOf('/netdhcpd') === 0)
+        return setTimeout(function () { cb(200, 'bad on') }, 10);
+      return real(u, cb);
+    };
+    $(w, '#dhcpd').checked = true;
+    w.setdhcpd();
+    w.netfill();
+    await sleep(300);
+    ok('设备不认就还原成原样', !$(w, '#dhcpd').checked, $(w, '#dhcpd').checked);
+    ok('并且说清没被接受', /没有接受/.test(txt(w, '#dhs')), txt(w, '#dhs'));
+    w.get = real;
+
+    /* 桩照设备的口径答：on 不是 0/1 就是 bad on */
+    let r = null;
+    w.get('/netdhcpd?on=2', (st, t) => { r = t });
+    await sleep(500);
+    ok('on 只认 0 和 1', r === 'bad on', r);
+  }
+
+  console.log('\n--- 掩码交给设备判 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    $(w, '#nmask').value = '255.255.0.0';
+    w.asknetset();
+    ok('页面这关先过', on(w, '#mask') && /255\.255\.0\.0/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    $(w, '#yes').click();
+    await sleep(600);
+    ok('设备收下了 255.255.0.0',
+       /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
+
+    let r = null;
+    w.get('/netset?ip=192.168.1.5&mask=255.255.255.0&save=1', (st, t) => { r = t });
+    await sleep(500);
+    ok('保存到闪存的回话不一样', r === 'ok 192.168.1.5 255.255.255.0 saved', r);
+    w.get('/netset?ip=192.168.1.5&mask=255.255.255.0&save=0', (st, t) => { r = t });
+    await sleep(500);
+    ok('不保存就是 ram', r === 'ok 192.168.1.5 255.255.255.0 ram', r);
+    w.get('/netset?ip=1.2.3&mask=255.255.255.0&save=0', (st, t) => { r = t });
+    await sleep(500);
+    ok('地址不合法直接回 bad ip', r === 'bad ip', r);
+  }
+
+  console.log('\n--- 不连续的掩码设备不收 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    $(w, '#nmask').value = '10.0.0.1';
+    w.asknetset();
+    ok('形状对的掩码页面拦不住', on(w, '#mask'));
+    $(w, '#yes').click();
+    await sleep(600);
+    ok('设备把它挡回来', /没有接受.*bad mask/.test(txt(w, '#nh')), txt(w, '#nh'));
+    ok('没有假装设备搬了家', !on(w, '#off'));
+    ok('心跳也没白停', w.HB === 1, w.HB);
+  }
+
+  console.log('\n--- 在 IP 框里按回车 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    ok('回车不再弹那个空的写入确认框', w.ask() === false &&
+       !/未选择任何文件/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('回车就是「应用」', on(w, '#mask') &&
+       /192\.168\.9\.1/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('标题是改地址不是设备详情', txt(w, '#atitle') === '改地址',
+       txt(w, '#atitle'));
+    w.hide();
+
+    $(w, '#amode').value = 'dhcp'; w.amodesw();
+    w.ask();
+    ok('自动获取时回车走要地址那条', /本页面无法预知/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+  }
+
+  console.log('\n--- 客户端 MAC 不转两遍 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    w.INFO.net.client = "a&b'c";
+    w.netfill();
+    ok('textContent 里不再套 esc', txt(w, '#dhsum').indexOf("a&b'c") >= 0,
+       txt(w, '#dhsum'));
+    ok('没有冒出 &amp; 这种东西', !/&amp;|&#39;/.test(txt(w, '#dhsum')),
+       txt(w, '#dhsum'));
+  }
+
+  console.log('\n--- 该是数字的先当数字看 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    w.INFO.ports = [{ p: '2', link: 1, speed: '1000', fd: 1 },
+                    { p: '3"><img src=x>', link: 1, speed: '100"><b>x</b>', fd: 1 }];
+    w.netfill();
+    ok('数字字符串照样当数字用', /端口 2/.test(txt(w, '#net')) &&
+       /1 Gb\/s/.test(txt(w, '#net')), txt(w, '#net'));
+    ok('端口号里塞标签只会变成 0', !$(w, '#net img') && /端口 0/.test(txt(w, '#net')),
+       txt(w, '#net'));
+    ok('速率里塞标签也一样', !$(w, '#net b'), txt(w, '#net'));
+
+    /* /check 的 s 直接进 class，设备给什么都得先夹成 0..2 */
+    const real = w.get;
+    w.get = function (u, cb) {
+      if (String(u).indexOf('/check') === 0)
+        return cb(200, JSON.stringify({ items: [
+          { n: 'a', s: '2" onmouseover="window.__Y=1', v: 'v', g: 'g' },
+          { n: 'b', s: 7, v: 'v', g: 'g' }] }));
+      return real(u, cb);
+    };
+    w.check();
+    await sleep(100);
+    w.get = real;
+    const crows = [...w.document.querySelectorAll('#chk tr')]
+      .filter(r => r.cells[0].querySelector('.dot'));
+    ok('两行都渲染出来了', crows.length === 2, crows.length);
+    ok('不是数字的状态落回 0',
+       crows[0].cells[0].querySelector('.dot').className === 'dot s0',
+       crows[0].cells[0].querySelector('.dot').className);
+    ok('状态没把属性带进标签', !/onmouseover/.test($(w, '#chk').innerHTML));
+    ok('超出范围的夹到 2', crows[1].cells[1].className === 's2',
+       crows[1].cells[1].className);
+
+    /* 坏块数也是设备给的 */
+    w.dlrow({ name: 'x.bin', len: 1024, crc: 'abc', holes: '3"><img src=x>' });
+    ok('读取失败块数不是数字就当 0', !$(w, '#dll img') && !$(w, '#dll .tag'),
+       $(w, '#dll').innerHTML.slice(0, 120));
+  }
+
+  console.log('\n--- 试运行起不来，页面不锁死 ---');
+  {
+    const w = await boot();
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files',
+      { value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    $(w, '#p1 input[name=tryboot]').checked = true;
+    w.send();
+    await sleep(3500);
+    ok('走到完成页', on(w, '#p7'));
+    ok('心跳留着，等设备回来', w.HB === 1, w.HB);
+    ok('侧栏没被锁死', !$(w, '#app').hasAttribute('data-busy'));
+    ok('说的是正在启动系统', on(w, '#off') &&
+       /设备正在启动系统/.test(txt(w, '#offt')), txt(w, '#offt'));
+    ok('说清起不来会回到本页面', /回到本页面/.test(txt(w, '#offb')),
+       txt(w, '#offb'));
+  }
+
   console.log('\n--- 老功能没被碰坏 ---');
   {
     const w = await boot();

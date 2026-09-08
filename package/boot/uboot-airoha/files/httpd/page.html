@@ -397,11 +397,12 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 <script>
 var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;
-var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;
+var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
 var RT=0,RN=0,RATE=0;
 var DLSEQ=0,DLBAD=0,STUCK='';
 var DLT=0,DLN=0,DLRATE=0;
-var LOGN=0,LOGT=null;
+var LOGN=0,LOGT=null,LOGGEN=0;
+var DHCPD_BUSY=0;
 /* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */
 var WRSPD=1400000;
 function $(s,r){return (r||document).querySelector(s)}
@@ -414,7 +415,7 @@ function dur(s){s=Math.round(s);
 if(s<60)return s+' 秒';
 var m=Math.floor(s/60);if(m<60)return m+' 分 '+(s%60)+' 秒';
 return Math.floor(m/60)+' 小时 '+(m%60)+' 分'}
-function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;')}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function pane(){return $('.pane[data-on]')}
 function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')})}
 /* 同一屏里并列的几组：一次只显示一组，其余留在 DOM 里不动 */
@@ -424,7 +425,8 @@ $$('button',w).forEach(function(x){
 x.setAttribute('aria-selected',x==b?'true':'false')});
 $$('.sp[data-g='+g+']').forEach(function(p){
 if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});
-if(g=='g8'){if(id=='s83')getlog();else logstop()}}
+/* 跟随开着的时候整篇重读会和增量追加叠出重复，而且会把按钮解禁 */
+if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}}
 function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}
 function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}
 function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
@@ -450,10 +452,11 @@ var ICON_RB='<path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/>';
 function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;
 d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}
 function hbstart(){HB=1;ping()}
-function hbstop(){HB=0;clearTimeout(HBT);HBT=null}
+/* 代数：停一次就换一代，飞行中的那次 ping 回来时对不上，直接丢掉 */
+function hbstop(){HB=0;HBGEN++;clearTimeout(HBT);HBT=null}
 function hbnext(){if(!HB)return;clearTimeout(HBT);HBT=setTimeout(ping,LIVE?3000:2000)}
 function ping(){if(!HB)return;if(HBOFF){hbnext();return}
-var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()};
+var g=HBGEN,x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;if(g!=HBGEN)return;seen(o,u);hbnext()};
 x.timeout=2500;
 x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}
 if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}
@@ -474,7 +477,8 @@ live(LIVE?1:2)}
 function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}
 /* 已知会静默，但用户自己发起的：只变点，不弹框 */
 function silent(){SILENT=1;MISS=0}
-function offline(why){var i,t,b,r=0;
+/* 设备已经移走了，通用的「断开」框只会盖掉那条指引 */
+function offline(why){if(GONE)return;var i,t,b,r=0;
 if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}
 else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}
 else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动；引导失败将回到本页面。'}
@@ -487,7 +491,8 @@ $('#off').setAttribute('data-on','')}
 function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');
 if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';
 $('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}
-function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);ping()}
+/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */
+function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if(!HB)HB=1;ping()}
 function askreboot(){$('#atitle').textContent='重启';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+
 '<div class=w>闪存内容不受影响</div>';
@@ -502,12 +507,13 @@ $('#nh').textContent=d?'地址由上级路由分配，本页面无法预知，'
 +'地址由本方指定，应用后即可直接访问。'}
 function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}
 /* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */
-function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0;
-c.disabled=true;$('#dhs').textContent='…';
-get('/netdhcpd?on='+v,function(st,t){c.disabled=false;
+/* 请求在飞的时候 /info 会回来把开关写回旧值：记下前后两个状态，自己收尾 */
+function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0,prev=v?false:true;
+c.disabled=true;DHCPD_BUSY=1;$('#dhs').textContent='…';
+get('/netdhcpd?on='+v,function(st,t){c.disabled=false;DHCPD_BUSY=0;
 if(st!=200||!/^ok/.test((t||'').trim())){
-c.checked=!v;$('#dhs').textContent='设备没有接受';return}
-$('#dhs').textContent=v?'已开启':'已关闭';
+c.checked=prev;$('#dhs').textContent='设备没有接受';return}
+c.checked=!!v;$('#dhs').textContent=v?'已开启':'已关闭';
 if(INFO&&INFO.net)INFO.net.dhcpd=v})}
 var IP4=/^(\d{1,3}\.){3}\d{1,3}$/;
 function asknetset(){var ip=$('#nip').value.trim(),
@@ -553,7 +559,7 @@ gone('正在获取地址',
 '获取成功后设备位于新地址，请在上级路由的客户端列表中按 <b>'
 +esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约或断电后均恢复原地址。','')}
 /* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */
-function gone(title,body,url){
+function gone(title,body,url){GONE=1;
 $('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';
 $('#offt').textContent=title;
 $('#offb').innerHTML='<div class=w style="color:inherit">'+body+'</div>'
@@ -581,8 +587,13 @@ if(!INFO){t.innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td
 if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}
 (INFO.fv||[]).forEach(function(v){fv[v.n]=1});
 (INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;
-h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+v.t+'</td><td class=n>'+sz(n)+'</td><td class=b><button type=button class="pb dlb" onclick="dlvol(\''+esc(v.n)+'\')">下载</button></td></tr>'});
-t.innerHTML=h}
+h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(n)+'</td><td class=b><button type=button class="pb dlb" data-v="'+esc(v.n)+'">下载</button></td></tr>'});
+t.innerHTML=h;dlbind(t)}
+/* 卷名是设备给的字符串：只进 data 属性，绝不进 JS 代码里 */
+function dlbind(t){if(t.__b)return;t.__b=1;
+t.addEventListener('click',function(e){var b=e.target;
+while(b&&b!=t){if(b.getAttribute&&/(^| )dlb( |$)/.test(b.className||'')){
+dlvol(b.getAttribute('data-v'));return}b=b.parentNode}})}
 /* 单独一层，好让预览把真正的下载换掉而不动上面的逻辑 */
 function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src=u}
 /* 真下载会被浏览器接走，iframe 不触发 load；只有错误页会 —— 那就是信号 */
@@ -624,7 +635,7 @@ $('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';
 $('.pct',pg).textContent=''}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
 /* 传完了才有 crc32：它算的是真正发出去的那些字节 */
-function dlrow(r){var t=$('#dll'),h=r.holes||0;
+function dlrow(r){var t=$('#dll'),h=r.holes|0;
 t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
 $('#dllh').hidden=false;
 dlstop(h?'':'ok');
@@ -697,20 +708,21 @@ h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)
 if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';
 h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
 $('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
-+(n.client?'，最近一次分配给 '+esc(n.client):'')
++(n.client?'，最近一次分配给 '+n.client:'')
 +'。当前打开本页面的主机用的就是设备发的地址。'
 :n.offer?'已发出 '+n.offer+' 次地址，均未被接受；'
 +'当前主机用的是手动配置的 IP。'
 :'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';
-(INFO.ports||[]).forEach(function(p){
-h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+p.p+'</td>'
+/* 端口那几个数是设备给的，先当数字看待再拼进 HTML */
+(INFO.ports||[]).forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;
+h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+pn+'</td>'
 +'<td'+(p.link?'':' class=s1')+'>'+(p.link?
-(p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')
-+(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
+(sp?sp>=1000?(sp/1000)+' Gb/s':sp+' Mb/s':'已连接')
++(sp?fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
 t.innerHTML=h;
 $('#portn').hidden=!(INFO.ports&&INFO.ports.length);
-$('#dhcpd').checked=!!n.dhcpd;
-$('#dhs').textContent='';
+/* 开关正在等设备回话时别插队，等它自己收尾 */
+if(!DHCPD_BUSY){$('#dhcpd').checked=!!n.dhcpd;$('#dhs').textContent=''}
 if(!$('#nip').value)$('#nip').value=n.ip||'';
 if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
@@ -724,18 +736,20 @@ FV=INFO.fv||[];fvrows();
 if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}
 $('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
-(INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
-function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+i.s+'"></span>'+esc(i.n)+'</td><td class="s'+i.s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
+(INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
+function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */
+CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+s+'"></span>'+esc(i.n)+'</td><td class="s'+s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
 /*
  * 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码
  * 后的字符串、数不出字节数，所以偏移得由设备说。
  */
-function logfollow(){clearTimeout(LOGT);LOGT=null;
+/* 关一次就换一代：2 秒窗里关了又开，旧链的响应回来时对不上代数，就此断掉 */
+function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;
 var on=$('#logf').checked;$('#logb').disabled=on;
 if(!on)return;
 LOGN=0;$('#log').textContent='';logtick()}
-function logtick(){if(!$('#logf').checked)return;
-get('/log?from='+LOGN,function(st,t){if(!$('#logf').checked)return;
+function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;
+get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;
 var i=st==200&&t?t.indexOf('\n'):-1;
 if(i>0){var o=parseInt(t.slice(0,i),10);
 if(o>=LOGN){LOGN=o;
@@ -759,7 +773,8 @@ $('.pwhat',pg).textContent='正在扫描';$('.pct',pg).textContent='';
 $('#scanh').textContent='';scanstep()}
 function scanstep(){var s=SCAN;if(!s||s.stop)return;silent();
 get('/scan?off=0x'+s.off.toString(16),function(st,t){
-if(!SCAN||SCAN.stop)return;
+/* 认自己这一轮：停掉后立刻重扫，旧响应不能往新的那份里加 */
+if(SCAN!==s||s.stop)return;
 var r=null;try{r=JSON.parse(t)}catch(e){}
 if(st!=200||!r||r.err!==undefined){
 SCAN=null;$('#scanb').textContent='重新扫描';
@@ -800,7 +815,7 @@ $('#scan').innerHTML=h;
 $('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'
 :s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;
-if(l.textContent=='未读取')l.textContent='正在读取…';get('/log',function(st,txt){b.disabled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
+if(l.textContent=='未读取')l.textContent='正在读取…';get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
 /* 复制那份是给聊天窗口用的；这份是给附件用的，把日志和 env 也带上 */
@@ -849,6 +864,8 @@ return ['将固件载入内存并直接引导',
 if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入 '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+' 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}
 if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI：擦除 ubi 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}
 function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
+/* 设备详情里唯一能敲回车的是 IP 与掩码：回车就是「应用」，不是弹写入确认 */
+if(p.id=='p5'){applyaddr();return false}
 if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;
 YES=null;y.textContent='仍要写入';
 var tb0=$('[name=tryboot]',p);
@@ -910,7 +927,11 @@ $('#p7 h1').textContent=tb?'已交给设备启动':'上传完成';
 $('#p7 .sub').textContent=tb?'设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。'
 :'设备正在写入，完成后自动重启。本页面可以关闭。';
 $('#p7 .fin b').textContent=tb?'起不来怎么办':'通过设备指示灯判断进度';
-$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidden','');hbstop();show('p7')}
+$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidden','');
+/* 试运行不写闪存：起不来就退回本页面，所以心跳留着 —— 和「直接启动系统」同一条路，
+   设备一回来自己刷新；写入那条路才是真的没有下文了 */
+if(tb){$('#app').removeAttribute('data-busy');expect('boot')}else hbstop();
+show('p7')}
 /* 设备回的是 "ok N bytes crc32 xxxxxxxx skipped M" */
 function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)/.exec(t||''),h='',k;
 if(m){k=+m[3];
