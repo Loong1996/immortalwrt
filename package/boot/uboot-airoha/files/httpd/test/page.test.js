@@ -757,6 +757,94 @@ function stayUpload(w) {
     ok('顺手把环境变量也读回来了', !!w.ENV);
   }
 
+  console.log('\n--- 网络状态 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    const t = txt(w, '#net');
+    ok('报了地址', /192\.168\.1\.1/.test(t), t);
+    ok('0.0.0.0 的掩码不往外摆', !/0\.0\.0\.0/.test(t), t);
+    ok('报了网卡', /airoha-gdm1/.test(t), t);
+    ok('说清地址是设备发的', /你现在用的地址是设备发的/.test(t), t);
+    ok('带上了客户端 MAC', /a4:5e:60:11:22:33/.test(t), t);
+
+    const rows = [...w.document.querySelectorAll('#net tr')]
+      .filter(r => /端口/.test(r.cells[0].textContent));
+    ok('四个口都列出来', rows.length === 4, rows.length);
+    ok('亮着的口报速率', /1 Gb\/s 全双工/.test(rows[1].cells[1].textContent),
+       rows[1].cells[1].textContent);
+    ok('百兆口也对', /100 Mb\/s 全双工/.test(rows[3].cells[1].textContent),
+       rows[3].cells[1].textContent);
+    ok('没插线的说未连接', rows[0].cells[1].textContent === '未连接',
+       rows[0].cells[1].textContent);
+    ok('亮的点是绿的', rows[1].cells[0].querySelector('.dot').className
+       === 'dot s0');
+    ok('没插的点是黄的', rows[0].cells[0].querySelector('.dot').className
+       === 'dot s1');
+    ok('说清端口号的口径', !$(w, '#portn').hidden &&
+       /不一定等于机壳上的丝印/.test(txt(w, '#portn')));
+
+    /* 没发过地址 = 用户自己配的 IP，后续建议不一样 */
+    w.INFO.net.ack = 0; w.INFO.net.offer = 0;
+    w.netfill();
+    ok('没发过地址就直说', /自己配置的 IP/.test(txt(w, '#net')), txt(w, '#net'));
+    w.INFO.net.offer = 3;
+    w.netfill();
+    ok('发了没被接受也分得清',
+       /发出过 3 次地址但没有被接受/.test(txt(w, '#net')), txt(w, '#net'));
+
+    /* 读不到端口的板子不该留一张空表 */
+    w.INFO.ports = [];
+    w.netfill();
+    ok('没有端口就不摆那条说明', $(w, '#portn').hidden);
+  }
+
+  console.log('\n--- 全片扫描 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(2000);
+    ok('还没扫时进度条不占地方', $(w, '#scanprog').hidden);
+    ok('表里说未扫描', /未扫描/.test(txt(w, '#scan')));
+
+    $(w, '#scanb').click();
+    await sleep(1200);
+    ok('按钮变成停止', txt(w, '#scanb') === '停止', txt(w, '#scanb'));
+    ok('进度条露出来', !$(w, '#scanprog').hidden);
+    ok('一段一段来，不是一口气', w.SCAN && w.SCAN.off > 0 &&
+       w.SCAN.off < w.SCAN.size, w.SCAN && w.SCAN.off);
+
+    /* 停得下来 —— 整片要几分钟，停不下来就是耍赖 */
+    $(w, '#scanb').click();
+    ok('点停就停', w.SCAN === null);
+    ok('说清结果只覆盖扫过的部分', /只覆盖已扫过的部分/.test(txt(w, '#scanh')),
+       txt(w, '#scanh'));
+    const off = txt(w, '#scan');
+    await sleep(2500);
+    ok('停了就真的不动了', txt(w, '#scan') === off);
+
+    $(w, '#scanb').click();
+    ok('能重新开始', w.SCAN !== null && w.SCAN.off === 0);
+    await sleep(40000);
+    ok('扫完了', w.SCAN === null, w.SCAN && w.SCAN.off);
+    ok('按钮回到重新扫描', txt(w, '#scanb') === '重新扫描', txt(w, '#scanb'));
+    ok('进度条转绿', $(w, '#scanprog').className === 'prog ok',
+       $(w, '#scanprog').className);
+
+    const t = txt(w, '#scan');
+    ok('报了扫过多少', /256\.0 MiB \/ 256\.0 MiB/.test(t), t.slice(0, 60));
+    ok('两个坏块都列出来了', /0x2a00000/.test(t) && /0x9c00000/.test(t), t);
+    ok('ECC 纠错报了页数', /页读出来时被纠正过/.test(t), t);
+    ok('说清 ECC 意味着什么', /颗粒在退化/.test(t));
+    ok('没有读失败就写无', /读失败/.test(t) && !/数据已经丢了/.test(t));
+    ok('汇总说整片读得回来或见上表',
+       /扫描完成/.test(txt(w, '#scanh')), txt(w, '#scanh'));
+
+    /* 扫描期间不该弹断开框 —— 那是自己发起的读取 */
+    ok('全程没弹断开框', !on(w, '#off'));
+  }
+
   console.log('\n--- 健康检查分组 ---');
   {
     const w = await boot();

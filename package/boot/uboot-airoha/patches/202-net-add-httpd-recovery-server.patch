@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,4678 @@
+@@ -0,0 +1,5048 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -207,6 +207,7 @@ new file mode 100644
 +#include <env.h>
 +#include <env_internal.h>
 +#include <led.h>
++#include <miiphy.h>
 +#include <mtd.h>
 +#include <net.h>
 +#include <net/tcp.h>
@@ -280,6 +281,7 @@ new file mode 100644
 +#define CONN_DUMPINFO		((void *)12)
 +#define CONN_POSTBUSY		((void *)13)
 +#define CONN_STOCK		((void *)14)
++#define CONN_SCAN		((void *)15)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -718,6 +720,9 @@ new file mode 100644
 +	"<div class=pane id=p5>\n"
 +	"<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>\n"
 +	"<div class=box><table class=kv id=dev><tr><td colspan=2 class=c2>正在读取…</td></tr></table></div>\n"
++	"<p class=bh>网络<small>连不上设备时先看这里</small></p>\n"
++	"<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>\n"
++	"<p class=note id=portn hidden>端口号按交换机内部顺序排，不一定等于机壳上的丝印。没有回应的端口不列出。</p>\n"
 +	"<p class=bh>UBI 卷<small id=ubih></small></p>\n"
 +	"<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>\n"
 +	"</div>\n"
@@ -728,6 +733,13 @@ new file mode 100644
 +		" onclick=check()>开始检查</button><button type=button class=pb"
 +		" onclick=diag(this)>复制诊断信息</button><button type=button class=pb"
 +		" onclick=diagfile(this)>下载诊断包</button></div>\n"
++	"<p class=bh>全片扫描<small>把每一页读一遍。上面那些检查只看关键位置，颗粒在退化只有整片读一遍才看得出来</small></p>\n"
++	"<div class=box><table class=kv id=scan><tr><td>未扫描</td></tr></table></div>\n"
++	"<p class=note>只读，不改动闪存。分段进行，每段之间页面还是活的；整片需要几分钟，其间设备响应会变慢。</p>\n"
++	"<div class=prog id=scanprog hidden><div class=pw><div class=pbar></div></div><div"
++		" class=ps><span class=pwhat></span><span class=pct></span></div></div>\n"
++	"<div class=row><span class=st id=scanh></span><button type=button class=pb id=scanb"
++		" onclick=scanrun()>开始扫描</button></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p11>\n"
 +	"<h1>环境变量</h1><p class=sub>U-Boot 当前环境变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。</p>\n"
@@ -1074,8 +1086,32 @@ new file mode 100644
 +	"get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并"
 +		"保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
 +	"else $('#envh').textContent='恢复失败（'+st+'）'})}\n"
-+	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td"
-+		" colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
++	"/*\n"
++	"* 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是\n"
++	"* 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口\n"
++	"* 那几行是直接读 PHY 寄存器来的；读不到的口不列。\n"
++	"*/\n"
++	"function netfill(){var t=$('#net'),n=INFO&&INFO.net,h='';\n"
++	"if(!n){t.innerHTML='<tr><td>读不到网络信息</td></tr>';return}\n"
++	"h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)\n"
++	"+(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';\n"
++	"if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';\n"
++	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
++	"h+='<tr><td>DHCP</td><td>'+(n.ack?'已发出 '+n.ack+' 个地址'\n"
++	"+(n.client?'，最近一次给了 '+esc(n.client):'')+'。你现在用的地址是设备发的'\n"
++	":n.offer?'发出过 '+n.offer+' 次地址但没有被接受；'\n"
++	"+'你现在用的是自己配置的 IP'\n"
++	":'没有发出过地址。你现在用的是自己配置的 IP，'\n"
++	"+'换台电脑时记得也要手动配')+'</td></tr>';\n"
++	"(INFO.ports||[]).forEach(function(p){\n"
++	"h+='<tr><td><span class=\"dot s'+(p.link?0:1)+'\"></span>端口 '+p.p+'</td>'\n"
++	"+'<td'+(p.link?'':' class=s1')+'>'+(p.link?\n"
++	"(p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')\n"
++	"+(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
++	"t.innerHTML=h;\n"
++	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length)}\n"
++	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<"
++		"tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
 +	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
 +		"FO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页"
 +		" '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+'"
@@ -1121,6 +1157,63 @@ new file mode 100644
 +	"var add=t.slice(i+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,'');\n"
 +	"if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}\n"
 +	"LOGT=setTimeout(logtick,2000)})}\n"
++	"/*\n"
++	"* 全片扫描：设备一段一段读，一次答一段。中间页面是活的，所以进度条能走、\n"
++	"* 心跳还在，随时可以停。累计的数在这边加，设备那边不留状态。\n"
++	"*/\n"
++	"var SCAN=null;\n"
++	"function scanrun(){var b=$('#scanb'),pg=$('#scanprog');\n"
++	"if(SCAN){SCAN.stop=1;SCAN=null;b.textContent='重新扫描';\n"
++	"pg.className='prog bad';$('.pwhat',pg).textContent='已停止';\n"
++	"$('#scanh').textContent='已停止，结果只覆盖已扫过的部分';return}\n"
++	"SCAN={off:0,size:0,blk:0,bad:0,ecc:0,fail:0,badl:[],faill:[],\n"
++	"t0:Date.now(),rt:Date.now(),rn:0,rate:0,stop:0};\n"
++	"b.textContent='停止';pg.hidden=false;pg.className='prog';\n"
++	"$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='0';\n"
++	"$('.pwhat',pg).textContent='正在扫描';$('.pct',pg).textContent='';\n"
++	"$('#scanh').textContent='';scanstep()}\n"
++	"function scanstep(){var s=SCAN;if(!s||s.stop)return;silent();\n"
++	"get('/scan?off=0x'+s.off.toString(16),function(st,t){\n"
++	"if(!SCAN||SCAN.stop)return;\n"
++	"var r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"if(st!=200||!r||r.err!==undefined){\n"
++	"SCAN=null;$('#scanb').textContent='重新扫描';\n"
++	"var pg=$('#scanprog');pg.className='prog bad';\n"
++	"$('.pwhat',pg).textContent=(r&&r.err)||('扫描没能进行（'+st+'）');\n"
++	"return}\n"
++	"s.size=r.size;s.blk=r.blk;s.off=r.off;\n"
++	"s.bad+=r.bad;s.ecc+=r.ecc;s.fail+=r.fail;\n"
++	"(r.badlist||[]).forEach(function(x){if(s.badl.length<32)s.badl.push(x)});\n"
++	"(r.faillist||[]).forEach(function(x){if(s.faill.length<32)s.faill.push(x)});\n"
++	"scanshow(s,r.done);\n"
++	"if(r.done){SCAN=null;$('#scanb').textContent='重新扫描';return}\n"
++	"scanstep()})}\n"
++	"function hx(n){return '0x'+n.toString(16)}\n"
++	"function scanshow(s,done){var pg=$('#scanprog'),p=s.size?s.off/s.size:0,\n"
++	"now=Date.now(),dt=(now-s.rt)/1000,h='';\n"
++	"if(dt>=1.5){s.rate=(s.off-s.rn)/dt;s.rt=now;s.rn=s.off}\n"
++	"$('.pbar',pg).style.width=(p*100)+'%';\n"
++	"$('.pct',pg).textContent=sz(s.off)+' / '+sz(s.size)+' · '\n"
++	"+(p*100).toFixed(0)+'%'\n"
++	"+(!done&&s.rate>0?' · '+spd(s.rate)+' · 剩余 '+dur((s.size-s.off)/s.rate):'');\n"
++	"if(done){pg.className='prog'+(s.fail?' bad':' ok');\n"
++	"$('.pwhat',pg).textContent=s.fail?'扫描完成，有读不出来的页':'扫描完成'}\n"
++	"h+='<tr><td>已扫描</td><td>'+sz(s.off)+(s.size?' / '+sz(s.size):'')\n"
++	"+'（擦除块 '+sz(s.blk||0)+'）</td></tr>';\n"
++	"h+='<tr><td><span class=\"dot s'+(s.bad?1:0)+'\"></span>坏块</td>'\n"
++	"+'<td class=s'+(s.bad?1:0)+'>'+(s.bad?s.bad+' 个：'+s.badl.map(hx).join('、')\n"
++	"+(s.bad>s.badl.length?' …':''):'无')+'</td></tr>';\n"
++	"h+='<tr><td><span class=\"dot s'+(s.ecc?1:0)+'\"></span>ECC 纠错</td>'\n"
++	"+'<td class=s'+(s.ecc?1:0)+'>'+(s.ecc?s.ecc+' 页读出来时被纠正过。'\n"
++	"+'偶尔几页正常；成片出现说明颗粒在退化，尽早把数据备出来'\n"
++	":'无')+'</td></tr>';\n"
++	"h+='<tr><td><span class=\"dot s'+(s.fail?2:0)+'\"></span>读失败</td>'\n"
++	"+'<td class=s'+(s.fail?2:0)+'>'+(s.fail?s.fail+' 页：'+s.faill.map(hx).join('、')\n"
++	"+(s.fail>s.faill.length?' …':'')+'。ECC 纠不回来，这些位置的数据已经丢了'\n"
++	":'无')+'</td></tr>';\n"
++	"$('#scan').innerHTML=h;\n"
++	"$('#scanh').textContent=done?(s.fail?'扫描完成，有 '+s.fail+' 页读不出来'\n"
++	":s.bad||s.ecc?'扫描完成，见上表':'扫描完成，整片都读得回来'):''}\n"
 +	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.dis"
 +		"abled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'')"
 +		".replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
@@ -1144,12 +1237,16 @@ new file mode 100644
 +	"if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used"
 +		" '+v.u)});else s.push('UBI: none')}\n"
 +	"else s.push('(/info 读取失败)');\n"
++	"s.push('');s.push('== 网络 ==');\n"
++	"s.push($('#net').textContent.replace(/\\s+/g,' ').trim()||'(未读取)');\n"
 +	"s.push('');s.push('== 健康检查 ==');\n"
 +	"if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});\n"
 +	"else s.push('(未运行)');\n"
 +	"s.push('');s.push('== 环境变量 ==');\n"
 +	"if(ENV)ENV.env.forEach(function(e){s.push(e.k+'='+e.v)});\n"
 +	"else s.push('(未读取)');\n"
++	"s.push('');s.push('== 全片扫描 ==');\n"
++	"s.push($('#scan').textContent.replace(/\\s+/g,' ').trim()||'(未扫描)');\n"
 +	"s.push('');s.push('== 串口日志 ==');\n"
 +	"s.push($('#log').textContent);\n"
 +	"return s.join('\\n')}\n"
@@ -1307,7 +1404,15 @@ new file mode 100644
 +static char resp_reject[512];
 +
 +/* GET /info: JSON built per request, at most this long. */
-+static char info_buf[3072];
++static char info_buf[4096];
++
++/*
++ * Who is holding the device.  These two live up here rather than each
++ * with its own section because every long operation has to look at the
++ * other: a scan while a download streams would stall it for seconds, and
++ * a download during a write would read half-written flash.
++ */
++static int	dump_busy;	/* a download is streaming */
 +
 +/* State of the single in-flight upload. */
 +static int	up_active;	/* a POST connection has been accepted */
@@ -1531,7 +1636,12 @@ new file mode 100644
 +#endif
 +
 +/*
-+ * Minimal DHCP server.
++ * Minimal DHCP server.  It keeps three numbers -- how many offers, how
++ * many acks, and who asked last -- because "did the address you are using
++ * come from me" is a question the recovery page cannot answer otherwise,
++ * and the answer changes the advice: a client on its own static address
++ * needs a different next step than one that took a lease.
++ *
 + *
 + * Without it the user has to configure a static address before the recovery
 + * page is reachable, which is exactly the kind of step that makes a rescue
@@ -1547,6 +1657,10 @@ new file mode 100644
 +#define DHCP_ACK		5
 +#define DHCP_MIN_LEN		240
 +#define DHCP_LEASE_SECS		3600
++
++static u32	dhcp_offers;
++static u32	dhcp_acks;
++static u8	dhcp_last_mac[6];
 +
 +struct dhcp_msg {
 +	u8	op, htype, hlen, hops;
@@ -1668,6 +1782,12 @@ new file mode 100644
 +	net_send_udp_packet((uchar *)bcast_mac, bcast, DHCP_CLIENT_PORT,
 +			    DHCP_SERVER_PORT, n);
 +
++	if (reply == DHCP_OFFER)
++		dhcp_offers++;
++	else
++		dhcp_acks++;
++	memcpy(dhcp_last_mac, req->chaddr, sizeof(dhcp_last_mac));
++
 +	printf("httpd: DHCP %s -> %pI4\n",
 +	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr);
 +}
@@ -1697,6 +1817,34 @@ new file mode 100644
 +			return mtd;
 +
 +	return NULL;
++}
++
++/* One value out of "a=1&b=2"; 0 when the key is not there. */
++static int qs_get(const char *qs, const char *key, char *out, int max)
++{
++	int n = strlen(key);
++	const char *p = qs;
++
++	while (*p) {
++		const char *amp = strchr(p, '&');
++		int len = amp ? amp - p : (int)strlen(p);
++
++		if (len > n + 1 && !strncmp(p, key, n) && p[n] == '=') {
++			int v = len - n - 1;
++
++			if (v > max - 1)
++				v = max - 1;
++			memcpy(out, p + n + 1, v);
++			out[v] = '\0';
++
++			return 1;
++		}
++		if (!amp)
++			break;
++		p = amp + 1;
++	}
++
++	return 0;
 +}
 +
 +/*
@@ -1781,6 +1929,68 @@ new file mode 100644
 +}
 +
 +/*
++ * Link and negotiated speed for the switch ports, read straight out of
++ * each PHY over MDIO.
++ *
++ * Everything else about the link is out of reach here and stays that way:
++ * U-Boot's eth uclass has no notion of link at all, and gdm1 hangs off the
++ * built-in switch rather than a PHY, so there is no phy_device to ask.  The
++ * MDIO bus, on the other hand, is registered and probed by the time this
++ * runs, so the PHYs answer directly.
++ *
++ * Raw register reads on purpose: phy_startup() would block for up to
++ * CONFIG_PHY_ANEG_TIMEOUT (ten seconds here) waiting for autonegotiation,
++ * which is not something an HTTP handler may do.  BMSR is latching, so it
++ * is read twice for the current state rather than the sticky one.
++ *
++ * Addresses are the switch's own GPHYs.  Nothing here names a board: a port
++ * that does not answer is simply left out, which is also what happens on a
++ * board that brings out fewer of them.
++ */
++#define PHY_FIRST	0x9
++#define PHY_LAST	0xc
++
++static void info_ports(struct jbuf *jb)
++{
++	struct udevice *mdio;
++	int a, first = 1;
++
++	if (uclass_first_device_err(UCLASS_MDIO, &mdio))
++		return;
++
++	jb_printf(jb, ",\"ports\":[");
++	for (a = PHY_FIRST; a <= PHY_LAST; a++) {
++		int bmsr, lpa, s1k, link, spd = 0, fd = 0;
++
++		bmsr = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);
++		if (bmsr < 0 || bmsr == 0xffff)
++			continue;		/* nothing at this address */
++		bmsr = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);
++		if (bmsr < 0)
++			continue;
++		link = !!(bmsr & BMSR_LSTATUS);
++		if (link) {
++			s1k = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_STAT1000);
++			lpa = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_LPA);
++			if (s1k > 0 && (s1k & (LPA_1000FULL | LPA_1000HALF))) {
++				spd = 1000;
++				fd = !!(s1k & LPA_1000FULL);
++			} else if (lpa > 0 && (lpa & LPA_100)) {
++				spd = 100;
++				fd = !!(lpa & LPA_100FULL);
++			} else if (lpa > 0) {
++				spd = 10;
++				fd = !!(lpa & LPA_10FULL);
++			}
++		}
++		jb_printf(jb, "%s{\"p\":%d,\"link\":%d,\"speed\":%d,\"fd\":%d}",
++			  first ? "" : ",", a - PHY_FIRST + 1, link, spd, fd);
++		first = 0;
++	}
++	jb_printf(jb, "]");
++}
++
++/*
 + * ---- GET /info -----------------------------------------------------------
 + *
 + * Everything the page shows about the board, read when asked rather than
@@ -1826,6 +2036,14 @@ new file mode 100644
 +	P(",\"ram\":%llu", (unsigned long long)gd->ram_size);
 +
 +	P(",\"mac\":\"%pM\"", net_ethaddr);
++	P(",\"net\":{\"ip\":\"%pI4\",\"mask\":\"%pI4\",\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
++	  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
++	S(eth_get_name());
++	P(",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
++	if (dhcp_offers || dhcp_acks)
++		P(",\"client\":\"%pM\"", dhcp_last_mac);
++	P("}");
++	info_ports(&jb);
 +	P(",\"uboot\":");
 +	S(version_string);
 +
@@ -1835,9 +2053,9 @@ new file mode 100644
 +
 +		P(",\"flash\":{\"name\":");
 +		S(master->name);
-+		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
++		P(",\"size\":%llu,\"erase\":%u,\"page\":%u,\"oob\":%u},\"parts\":[",
 +		  (unsigned long long)master->size, master->erasesize,
-+		  master->writesize);
++		  master->writesize, master->oobsize);
 +		first = 1;
 +		list_for_each_entry(part, &master->partitions, node) {
 +			P("%s{\"n\":", first ? "" : ",");
@@ -2105,6 +2323,23 @@ new file mode 100644
 + * How worn the chip is.  UBI counts erases per block, which is the closest
 + * thing to a lifetime figure available without vendor-specific commands.
 + */
++/*
++ * Whether there is room left to write a firmware.  A recovery page that
++ * says "all fine" and then refuses the upload for want of space has not
++ * helped anybody.
++ */
++static void chk_avail(struct jbuf *jb, int *first, struct ubi_device *ubi)
++{
++	u64 free = (u64)ubi->avail_pebs * ubi->leb_size;
++
++	chk_item(jb, first, "可写空间",
++		 free < (16ULL << 20) ? CHK_WARN : CHK_OK,
++		 "空闲 %llu MiB（%d 个逻辑擦除块）%s",
++		 (unsigned long long)(free >> 20), ubi->avail_pebs,
++		 free < (16ULL << 20) ?
++		 "，不一定装得下一份固件；可先删掉不用的卷" : "");
++}
++
 +static void chk_wear(struct jbuf *jb, int *first, struct ubi_device *ubi)
 +{
 +	int worn = ubi->max_ec > 20000;
@@ -2115,6 +2350,50 @@ new file mode 100644
 +}
 +
 +/* Every block of the chip; the one holding the BL2 is the one that matters. */
++/*
++ * Whether the partitions actually tile the chip.  Deliberately order
++ * independent: compare the sum of the sizes against the span they cover,
++ * so a list that is not sorted by offset still gives the right answer.
++ */
++static void chk_parts(struct jbuf *jb, int *first, struct mtd_info *m)
++{
++	struct mtd_info *p;
++	u64 lo = ~0ULL, hi = 0, sum = 0, span;
++	int n = 0;
++
++	list_for_each_entry(p, &m->partitions, node) {
++		if (p->offset < lo)
++			lo = p->offset;
++		if (p->offset + p->size > hi)
++			hi = p->offset + p->size;
++		sum += p->size;
++		n++;
++	}
++	if (!n) {
++		chk_item(jb, first, "分区表", CHK_WARN,
++			 "没有分区，只能按 flash 偏移读写");
++		return;
++	}
++
++	span = hi - lo;
++	if (sum > span)
++		chk_item(jb, first, "分区表", CHK_FAIL,
++			 "%d 个分区，声明的大小合计 %llu 字节，超过它们覆盖的 %llu：有重叠",
++			 n, (unsigned long long)sum, (unsigned long long)span);
++	else if (sum < span)
++		chk_item(jb, first, "分区表", CHK_WARN,
++			 "%d 个分区，0x%llx–0x%llx 之间有 %llu 字节没有划进任何分区",
++			 n, (unsigned long long)lo, (unsigned long long)hi,
++			 (unsigned long long)(span - sum));
++	else if (lo || hi != m->size)
++		chk_item(jb, first, "分区表", CHK_OK,
++			 "%d 个分区，连续覆盖 0x%llx–0x%llx；片上其余 %llu MiB 未划分",
++			 n, (unsigned long long)lo, (unsigned long long)hi,
++			 (unsigned long long)(m->size - span) >> 20);
++	else
++		chk_item(jb, first, "分区表", CHK_OK, "%d 个分区，连续覆盖整片", n);
++}
++
 +static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
 +{
 +	struct mtd_info *bl2 = get_mtd_device_nm(BL2_PART);
@@ -2521,9 +2800,10 @@ new file mode 100644
 +		goto out;
 +	}
 +	chk_item(&jb, &first, "闪存", CHK_OK,
-+		 "%s，%llu MiB，擦除块 %u KiB，页 %u B",
++		 "%s，%llu MiB，擦除块 %u KiB，页 %u B，OOB %u B",
 +		 master->name, (unsigned long long)master->size >> 20,
-+		 master->erasesize >> 10, master->writesize);
++		 master->erasesize >> 10, master->writesize, master->oobsize);
++	chk_parts(&jb, &first, master);
 +
 +	chk_badblocks(&jb, &first, master);
 +
@@ -2546,6 +2826,7 @@ new file mode 100644
 +			 "%d 个卷，坏块 %d 个，空闲 %d 个逻辑擦除块",
 +			 ubi->vol_count, ubi->bad_peb_count, ubi->avail_pebs);
 +
++		chk_avail(&jb, &first, ubi);
 +		chk_wear(&jb, &first, ubi);
 +		chk_fip(&jb, &first, ubi, buf, max);
 +		chk_fit(&jb, &first, ubi, buf);
@@ -2574,6 +2855,109 @@ new file mode 100644
 +	jb_printf(&jb, "]}");
 +
 +	return jb_done(&jb, "/check");
++}
++
++/*
++ * ---- GET /scan?off= ------------------------------------------------------
++ *
++ * A read-only pass over the chip.  /check answers "will this thing boot";
++ * this answers "is the flash still healthy", and only reading every page
++ * can tell you that.  The BBT lists the blocks the factory or a failed
++ * erase marked, but the pages the ECC is quietly correcting on every read
++ * are the ones that say the part is on its way out, and nothing but a read
++ * surfaces those.
++ *
++ * Served in slices, because nothing can be answered while mtd_read() runs.
++ * One request covers SCAN_SLICE and reports where to resume; between
++ * slices the heartbeat gets its turn and the page moves a progress bar.
++ *
++ * No state is kept here.  The page adds the numbers up, so an abandoned
++ * scan leaves nothing behind that a later one would have to reset -- the
++ * mistake /dump made once and had to grow a timeout to undo.
++ */
++#define SCAN_SLICE	(4 << 20)
++#define SCAN_LIST	8
++
++/* Query strings for the endpoints that take one. */
++static char	scan_qs[32];
++static char	log_qs[32];
++static char	scan_buf[1024];
++static u8	scan_page[4096];
++static int	scan_len;
++
++static int httpd_scan(void)
++{
++	struct mtd_info *m = flash_master();
++	u64 badl[SCAN_LIST], faill[SCAN_LIST];
++	struct jbuf jb;
++	char o[24];
++	u64 off = 0, blk, p;
++	u32 step, done = 0;
++	int nb = 0, nf = 0, ecc = 0, i;
++
++	jb_init(&jb, scan_buf, sizeof(scan_buf));
++
++	if (!m) {
++		jb_printf(&jb, JSON_HDR("500 Internal Server Error")
++			  "{\"err\":\"没有找到闪存设备\"}");
++		return jb_done(&jb, "/scan");
++	}
++	if (up_active || dump_busy) {
++		jb_printf(&jb, JSON_HDR("503 Service Unavailable")
++			  "{\"err\":\"设备正忙，等这次传输完成后再扫描\"}");
++		return jb_done(&jb, "/scan");
++	}
++
++	if (qs_get(scan_qs, "off", o, sizeof(o)))
++		off = hextoul(o, NULL);
++	off &= ~((u64)m->erasesize - 1);
++	if (off > m->size)
++		off = m->size;
++
++	/* One page per read, so an ECC correction is counted where it happened. */
++	step = (m->writesize && m->writesize <= sizeof(scan_page)) ?
++		m->writesize : sizeof(scan_page);
++
++	while (off < m->size && done < SCAN_SLICE) {
++		blk = off;
++		if (mtd_block_isbad(m, blk)) {
++			if (nb < SCAN_LIST)
++				badl[nb] = blk;
++			nb++;
++		} else {
++			for (p = blk; p < blk + m->erasesize; p += step) {
++				size_t rl = 0;
++				int ret = mtd_read(m, p, step, &rl, scan_page);
++
++				if (ret == -EUCLEAN) {
++					ecc++;
++				} else if (ret) {
++					if (nf < SCAN_LIST)
++						faill[nf] = p;
++					nf++;
++					break;
++				}
++			}
++		}
++		off = blk + m->erasesize;
++		done += m->erasesize;
++	}
++
++	jb_printf(&jb, JSON_HDR("200 OK")
++		  "{\"off\":%llu,\"size\":%llu,\"blk\":%u,\"done\":%d"
++		  ",\"bad\":%d,\"ecc\":%d,\"fail\":%d,\"badlist\":[",
++		  (unsigned long long)off, (unsigned long long)m->size,
++		  m->erasesize, off >= m->size ? 1 : 0, nb, ecc, nf);
++	for (i = 0; i < nb && i < SCAN_LIST; i++)
++		jb_printf(&jb, "%s%llu", i ? "," : "",
++			  (unsigned long long)badl[i]);
++	jb_printf(&jb, "],\"faillist\":[");
++	for (i = 0; i < nf && i < SCAN_LIST; i++)
++		jb_printf(&jb, "%s%llu", i ? "," : "",
++			  (unsigned long long)faill[i]);
++	jb_printf(&jb, "]}");
++
++	return jb_done(&jb, "/scan");
 +}
 +
 +/*
@@ -3268,13 +3652,11 @@ new file mode 100644
 +static u32	dump_win;	/* window capacity */
 +static u32	dump_wpos;	/* output offset the window starts at */
 +static u32	dump_wlen;	/* valid bytes in it, 0 when empty */
-+static int	dump_busy;
 +static int	dump_raw;
 +static u64	dump_off;	/* flash offset output offset 0 maps to */
 +static char	dump_vol[UBIVOL_NAME_MAX];
 +static struct mtd_info	*dump_mtd;
 +static char	dump_qs[160];
-+static char	log_qs[32];
 +
 +/*
 + * When bytes last actually went out.  A download that the browser abandons
@@ -3337,34 +3719,6 @@ new file mode 100644
 +	"Content-Type: text/plain; charset=utf-8\r\n"
 +	"Connection: close\r\n"
 +	"\r\n另一个备份正在传输，请等待传输完成后重试\n";
-+
-+/* One value out of "a=1&b=2"; 0 when the key is not there. */
-+static int qs_get(const char *qs, const char *key, char *out, int max)
-+{
-+	int n = strlen(key);
-+	const char *p = qs;
-+
-+	while (*p) {
-+		const char *amp = strchr(p, '&');
-+		int len = amp ? amp - p : (int)strlen(p);
-+
-+		if (len > n + 1 && !strncmp(p, key, n) && p[n] == '=') {
-+			int v = len - n - 1;
-+
-+			if (v > max - 1)
-+				v = max - 1;
-+			memcpy(out, p + n + 1, v);
-+			out[v] = '\0';
-+
-+			return 1;
-+		}
-+		if (!amp)
-+			break;
-+		p = amp + 1;
-+	}
-+
-+	return 0;
-+}
 +
 +/* A download nothing is pulling on any more; see DUMP_IDLE_MS. */
 +static int dump_stale(void)
@@ -4112,6 +4466,17 @@ new file mode 100644
 +		return CONN_INFO;
 +	if (plen == 6 && !memcmp(path, "/check", 6))
 +		return CONN_CHECK;
++	if (plen == 5 && !memcmp(path, "/scan", 5)) {
++		int k = qlen;
++
++		if (k > (int)sizeof(scan_qs) - 1)
++			k = sizeof(scan_qs) - 1;
++		if (k > 0)
++			memcpy(scan_qs, q + 1, k);
++		scan_qs[k > 0 ? k : 0] = '\0';
++
++		return CONN_SCAN;
++	}
 +	if (plen == 4 && !memcmp(path, "/log", 4)) {
 +		int k = qlen;
 +
@@ -4201,6 +4566,8 @@ new file mode 100644
 +				info_len = httpd_info();
 +			else if (cls == CONN_CHECK)
 +				check_len = httpd_check();
++			else if (cls == CONN_SCAN)
++				scan_len = httpd_scan();
 +			else if (cls == CONN_LOG)
 +				log_len = httpd_log();
 +			else if (cls == CONN_PING)
@@ -4293,6 +4660,9 @@ new file mode 100644
 +		*len = st_resp_len;
 +		return st_resp_len ? st_resp : NULL;
 +#endif
++	} else if (tcp->priv == CONN_SCAN) {
++		*len = scan_len;
++		return scan_buf;
 +	} else if (tcp->priv == CONN_DUMPINFO) {
 +		*len = dumpinfo_len;
 +		return dumpinfo_buf;

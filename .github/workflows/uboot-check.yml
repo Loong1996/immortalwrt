@@ -58,14 +58,16 @@ jobs:
         run: |
           set -eu
           python3 - <<'PY'
-          import difflib, os, pathlib, re, subprocess, sys, tempfile
+          # io.open 而不是 Path.read_text(newline=)：后者要 Python 3.13，
+          # runner 上是 3.12
+          import difflib, io, os, pathlib, re, subprocess, sys, tempfile
 
           pkg   = pathlib.Path(os.environ["PKG"])
           patch = pkg / "patches/202-net-add-httpd-recovery-server.patch"
           html  = pkg / "files/httpd/page.html"
           gen   = pkg / "files/httpd/gen.py"
 
-          raw = patch.read_text(encoding="utf-8", newline="")
+          raw = io.open(patch, encoding="utf-8", newline="").read()
           if "\r\n" in raw:
               sys.exit("::error::202 补丁是 CRLF 换行，本检查按 LF 处理")
           lines = raw.split("\n")
@@ -87,10 +89,10 @@ jobs:
 
           src = "".join(l[1:] + "\n" for l in body)
           tmp = pathlib.Path(tempfile.mkdtemp()) / "httpd.c"
-          tmp.write_text(src, encoding="utf-8", newline="")
+          io.open(tmp, "w", encoding="utf-8", newline="").write(src)
 
           subprocess.run([sys.executable, str(gen), str(html), str(tmp)], check=True)
-          new = tmp.read_text(encoding="utf-8", newline="")
+          new = io.open(tmp, encoding="utf-8", newline="").read()
 
           nl = new.split("\n")
           if nl[-1] != "":
@@ -118,7 +120,7 @@ jobs:
         run: |
           set -eu
           python3 - <<'PY'
-          import os, pathlib, re, sys
+          import io, os, pathlib, re, sys
 
           pdir  = pathlib.Path(os.environ["PKG"]) / "patches"
           # 从上游原样搬进来的补丁，换行和格式不归我们管
@@ -128,8 +130,8 @@ jobs:
           for p in files:
               if p.name[:3] in skip:
                   continue
-              lines = p.read_text(encoding="utf-8", errors="surrogateescape",
-                                  newline="").split("\n")
+              lines = io.open(p, encoding="utf-8", errors="surrogateescape",
+                              newline="").read().split("\n")
               i = 0
               while i < len(lines):
                   m = re.match(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", lines[i])

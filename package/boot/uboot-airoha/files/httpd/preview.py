@@ -50,6 +50,14 @@ INFO = {
     "soc": "airoha,an7581",
     "ram": 536870912,
     "mac": "90:03:2e:12:34:56",
+    "net": {"ip": "192.168.1.1", "mask": "0.0.0.0",
+            "gw": "0.0.0.0", "server": "192.168.1.254",
+            "dev": "airoha-gdm1", "offer": 1, "ack": 1,
+            "client": "a4:5e:60:11:22:33"},
+    "ports": [{"p": 1, "link": 0, "speed": 0, "fd": 0},
+              {"p": 2, "link": 1, "speed": 1000, "fd": 1},
+              {"p": 3, "link": 0, "speed": 0, "fd": 0},
+              {"p": 4, "link": 1, "speed": 100, "fd": 1}],
     "uboot": "U-Boot 2026.07-ImmortalWrt (Sep 06 2026 - 10:21:03 +0800)",
     "flash": {"name": "spi-nand0", "size": 268435456, "erase": 131072,
               "page": 2048},
@@ -176,6 +184,16 @@ function body(u){
    name:DINFO.name,busy:DBUSY,sent:DSENT,total:DBUSY?DTOTAL:0});
  if(u=='/info')return S.dev=='noinfo'?null:JSON.stringify(info());
  if(u=='/check')return JSON.stringify({items:check()});
+ /* 一段 4 MiB，和设备的 SCAN_SLICE 一样；坏块与 ECC 是编的，但位置固定 */
+ if(u.indexOf('/scan')==0){
+  var sz=D.info.flash.size,blk=D.info.flash.erase,sl=4<<20,
+      m=/off=0x([0-9a-f]+)/.exec(u),a=m?parseInt(m[1],16):0,
+      b=Math.min(sz,a+sl),bad=[],fail=[],ecc=0,x;
+  for(x=a;x<b;x+=blk){
+   if(x==0x2a00000||x==0x9c00000)bad.push(x);
+   else if(x>=0xe000000&&((x/blk)%37)==0)ecc++}
+  return JSON.stringify({off:b,size:sz,blk:blk,done:b>=sz?1:0,
+   bad:bad.length,ecc:ecc,fail:fail.length,badlist:bad,faillist:fail})}
  if(u=='/log')return S.dev=='nolog'?null:D.log+LOGX;
  /* ?from= 只回新的那一段，第一行是新偏移 —— 和设备一样 */
  if(u.indexOf('/log?from=')==0){if(S.dev=='nolog')return null;
