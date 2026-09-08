@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,5575 @@
+@@ -0,0 +1,5680 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -286,6 +286,7 @@ new file mode 100644
 +#define CONN_BOOTONCE		((void *)17)
 +#define CONN_NETSET		((void *)18)
 +#define CONN_NETDHCP		((void *)19)
++#define CONN_DHCPD		((void *)20)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -430,7 +431,10 @@ new file mode 100644
 +	".fc.end{justify-content:flex-end}\n"
 +	"input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radi"
 +		"us:5px;font:inherit;padding:.22rem .5rem;width:100%;max-width:220px;outline:0}\n"
-+	"input[type=text]:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}\n"
++	"input[type=text]:focus,.fc select:focus{box-shadow:0 0 0 3px"
++		" rgba(10,102,214,.25);border-color:var(--blue)}\n"
++	".fc select{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radius:5px"
++		";font:inherit;padding:.22rem .5rem;outline:0;max-width:220px}\n"
 +	"input::placeholder{color:var(--c3)}\n"
 +	".note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}\n"
 +	".note b{color:var(--org);font-weight:500}\n"
@@ -772,18 +776,29 @@ new file mode 100644
 +	"<div class=sp data-g=g5 id=s52>\n"
 +	"<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>\n"
 +	"<p class=note id=portn hidden>端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。</p>\n"
-+	"<p class=bh>改地址<small>应用后需以新地址重新打开本页面</small></p>\n"
++	"<p class=bh>地址<small>应用后需以新地址重新打开本页面</small></p>\n"
 +	"<div class=box>\n"
-+	"<div class=fr><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input type=text"
-+		" id=nip class=mono style=\"width:160px\"><span class=fn>主机需在同一网段</span></span></div>\n"
-+	"<div class=fr><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono"
-+		" value=255.255.255.0 style=\"width:160px\"></span></div>\n"
-+	"<div class=\"fr wide\"><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span><span"
-+		" class=\"fc end\"><input type=checkbox class=sw id=nsave value=1></span></div>\n"
++	"<div class=fr><span class=fl>获取方式</span><span class=fc><select id=amode"
++		" onchange=amodesw()><option value=static>静态地址</option><option"
++		" value=dhcp>自动获取（DHCP）</option></select></span></div>\n"
++	"<div class=fr id=arow1><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input"
++		" type=text id=nip class=mono style=\"width:160px\"><span class=fn>主机需在同一网段</span></span></div>\n"
++	"<div class=fr id=arow2><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask"
++		" class=mono value=255.255.255.0 style=\"width:160px\"></span></div>\n"
++	"<div class=\"fr wide\" id=arow3><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span"
++		"><span class=\"fc end\"><input type=checkbox class=sw id=nsave value=1></span></div>\n"
 +	"</div>\n"
 +	"<p class=note id=nh>接入已有网络时，建议在此指定该网段内的空闲地址：地址由本方指定，应用后即可直接访问。</p>\n"
-+	"<div class=row><button type=button class=pb onclick=askdhcp()>DHCP 获取地址</button><button"
-+		" type=button class=\"pb pri\" onclick=asknetset()>应用</button></div>\n"
++	"<div class=row><button type=button class=\"pb pri\" onclick=applyaddr()>应用</button></div>\n"
++	"<p class=bh>DHCP 服务<small>本机给电脑发地址，与上面的「自动获取」方向相反</small></p>\n"
++	"<div class=box>\n"
++	"<div class=\"fr wide\"><span class=fl>给电脑分配地址<small>电脑直接插到本设备上时，插上就能拿到地址，不必手动配"
++		" IP</small></span><span class=\"fc end\"><span class=fs id=dhs></span><input type=checkbox"
++		" class=sw id=dhcpd onchange=setdhcpd()></span></div>\n"
++	"</div>\n"
++	"<p class=note id=dhsum></p>\n"
++	"<p class=note>它对任何请求都应答，发出的地址固定为本网段 .100，网关指向本设备且不带"
++		" DNS。<b>接入已有网络前必须关闭</b>，否则会和该网络的路由器抢着发地址，被抢到的机器会断网。改地址与自动获取会自动关闭它。</p>\n"
 +	"</div>\n"
 +	"<div class=sp data-g=g5 id=s53>\n"
 +	"<p class=note id=ubih></p>\n"
@@ -1068,6 +1083,22 @@ new file mode 100644
 +	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
++	"/* 静态与自动获取是同一件事的两种做法，所以共用一个「应用」 */\n"
++	"function amodesw(){var d=$('#amode').value=='dhcp';\n"
++	"$('#arow1').hidden=d;$('#arow2').hidden=d;$('#arow3').hidden=d;\n"
++	"$('#nh').textContent=d?'地址由上级路由分配，本页面无法预知，'\n"
++	"+'需在上级路由的客户端列表中按 MAC 查找。不保存：断电后仍是当前的静态地址。'\n"
++	":'接入已有网络时，建议在此指定该网段内的空闲地址：'\n"
++	"+'地址由本方指定，应用后即可直接访问。'}\n"
++	"function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}\n"
++	"/* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */\n"
++	"function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0;\n"
++	"c.disabled=true;$('#dhs').textContent='…';\n"
++	"get('/netdhcpd?on='+v,function(st,t){c.disabled=false;\n"
++	"if(st!=200||!/^ok/.test((t||'').trim())){\n"
++	"c.checked=!v;$('#dhs').textContent='设备没有接受';return}\n"
++	"$('#dhs').textContent=v?'已开启':'已关闭';\n"
++	"if(INFO&&INFO.net)INFO.net.dhcpd=v})}\n"
 +	"var IP4=/^(\\d{1,3}\\.){3}\\d{1,3}$/;\n"
 +	"function asknetset(){var ip=$('#nip').value.trim(),\n"
 +	"mk=$('#nmask').value.trim()||'255.255.255.0',\n"
@@ -1080,7 +1111,13 @@ new file mode 100644
 +	"'<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>'+\n"
 +	"'<div class=w>主机需在同一网段，否则无法访问</div>'+\n"
 +	"(sv?'<div class=w><b>保存到闪存</b>：地址填错时断电也无法恢复</div>'\n"
-+	":'<div class=w>不保存，断电后恢复原地址</div>');\n"
++	":'<div class=w>不保存，断电后恢复原地址</div>')+\n"
++	"($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'\n"
++	"+'避免和这个网络里的路由器抢着发地址</div>':'')+\n"
++	"(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'\n"
++	"+'：改完之后拿不到新地址，需手动把本机配成 '\n"
++	"+esc(ip.replace(/\\.\\d+$/,'.x'))+' 的一个地址；'\n"
++	"+'若是把设备接进已有网络，改用该网络里的机器访问即可</div>':'');\n"
 +	"var y=$('#yes');y.hidden=false;y.textContent='改地址';\n"
 +	"YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}\n"
 +	"function donetset(ip,mk,sv){\n"
@@ -1096,7 +1133,11 @@ new file mode 100644
 +	"'<div class=w><b>地址由上级路由分配，本页面无法预知。</b>请在上级路由的客户端列表中按 MAC"
 +		" 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'+\n"
 +	"'<div class=w>未取得租约时退回当前地址</div>'+\n"
-+	"'<div class=w>不保存，断电后恢复原地址</div>';\n"
++	"'<div class=w>不保存，断电后恢复原地址</div>'+\n"
++	"($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'\n"
++	"+'这个网络里已经有路由器在发地址了</div>':'')+\n"
++	"(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'\n"
++	"+'：之后从本机访问不到设备，请改用上级路由那个网络里的机器</div>':'');\n"
 +	"var y=$('#yes');y.hidden=false;y.textContent='获取';YES=dodhcp;\n"
 +	"$('#mask').setAttribute('data-on','')}\n"
 +	"function dodhcp(){get('/netdhcp',function(){});hbstop();\n"
@@ -1262,12 +1303,12 @@ new file mode 100644
 +	"+(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';\n"
 +	"if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';\n"
 +	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
-+	"h+='<tr><td>DHCP</td><td>'+(n.ack?'已发出 '+n.ack+' 个地址'\n"
-+	"+(n.client?'，最近一次分配给 '+esc(n.client):'')+'。当前地址由设备分配'\n"
++	"$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'\n"
++	"+(n.client?'，最近一次分配给 '+esc(n.client):'')\n"
++	"+'。当前打开本页面的主机用的就是设备发的地址。'\n"
 +	":n.offer?'已发出 '+n.offer+' 次地址，均未被接受；'\n"
-+	"+'当前为手动配置的 IP'\n"
-+	":'未发出过地址；当前为手动配置的 IP，'\n"
-+	"+'更换主机后需重新配置')+'</td></tr>';\n"
++	"+'当前主机用的是手动配置的 IP。'\n"
++	":'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';\n"
 +	"(INFO.ports||[]).forEach(function(p){\n"
 +	"h+='<tr><td><span class=\"dot s'+(p.link?0:1)+'\"></span>端口 '+p.p+'</td>'\n"
 +	"+'<td'+(p.link?'':' class=s1')+'>'+(p.link?\n"
@@ -1275,6 +1316,8 @@ new file mode 100644
 +	"+(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
 +	"t.innerHTML=h;\n"
 +	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length);\n"
++	"$('#dhcpd').checked=!!n.dhcpd;\n"
++	"$('#dhs').textContent='';\n"
 +	"if(!$('#nip').value)$('#nip').value=n.ip||'';\n"
 +	"if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}\n"
 +	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<"
@@ -1847,7 +1890,20 @@ new file mode 100644
 +#define DHCP_ACK		5
 +#define DHCP_MIN_LEN		240
 +#define DHCP_LEASE_SECS		3600
++#define ENV_DHCPD		"httpd_dhcpd"
 +
++/*
++ * The switch exists because this server is only ever right on one kind of
++ * wire: a cable straight from a PC to this board.  On any network that
++ * already has a router it answers requests that were not addressed to it,
++ * hands out one fixed address with itself as the gateway and no DNS, and
++ * whoever takes that lease loses its connectivity.  So it goes off the
++ * moment the device is moved onto such a network -- see netchange_apply()
++ * -- and the environment carries that decision across a reboot, since a
++ * saved LAN address without it would put the rogue server back on the
++ * network at every power-up.
++ */
++static int	dhcpd_on = 1;
 +static u32	dhcp_offers;
 +static u32	dhcp_acks;
 +static u8	dhcp_last_mac[6];
@@ -1923,6 +1979,8 @@ new file mode 100644
 +	u8 *o;
 +	int n;
 +
++	if (!dhcpd_on)
++		return;
 +	if (dport != DHCP_SERVER_PORT || len < DHCP_MIN_LEN)
 +		return;
 +	if (req->op != 1 || req->cookie != htonl(DHCP_MAGIC))
@@ -2229,6 +2287,7 @@ new file mode 100644
 +	P(",\"net\":{\"ip\":\"%pI4\",\"mask\":\"%pI4\",\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
 +	  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
 +	S(eth_get_name());
++	P(",\"dhcpd\":%d", dhcpd_on);
 +	P(",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
 +	if (dhcp_offers || dhcp_acks)
 +		P(",\"client\":\"%pM\"", dhcp_last_mac);
@@ -3612,6 +3671,22 @@ new file mode 100644
 +			    netset_save ? "saved" : "ram");
 +}
 +
++/* GET /netdhcpd?on=0|1 -- immediate, nothing to defer. */
++static int httpd_dhcpd_set(void)
++{
++	char v[8];
++
++	if (!qs_get(netset_qs, "on", v, sizeof(v)) ||
++	    (v[0] != '0' && v[0] != '1') || v[1])
++		return netset_reply("bad on");
++
++	dhcpd_on = v[0] == '1';
++	env_set(ENV_DHCPD, dhcpd_on ? "1" : "0");
++	printf("httpd: DHCP server %s\n", dhcpd_on ? "on" : "off");
++
++	return netset_reply("ok %d", dhcpd_on);
++}
++
 +/* Apply what /netset or /netdhcp asked for, once the answer is out. */
 +static void netchange_apply(void)
 +{
@@ -3622,6 +3697,15 @@ new file mode 100644
 +	netchange_pending = 0;
 +	if (!mode)
 +		return;
++
++	/*
++	 * Either way the device is being pointed at a network somebody else
++	 * runs, and our server would only fight that network's router over
++	 * the same addresses.  Written to the environment too, so a saved
++	 * address does not bring it back at the next power-up.
++	 */
++	dhcpd_on = 0;
++	env_set(ENV_DHCPD, "0");
 +
 +	if (mode == 1) {
 +		printf("httpd: moving to %s/%s%s\n", netset_ip, netset_mask,
@@ -4938,7 +5022,8 @@ new file mode 100644
 +		return CONN_BOOTONCE;
 +	if (plen == 8 && !memcmp(path, "/netdhcp", 8))
 +		return CONN_NETDHCP;
-+	if (plen == 7 && !memcmp(path, "/netset", 7)) {
++	if ((plen == 9 && !memcmp(path, "/netdhcpd", 9)) ||
++	    (plen == 7 && !memcmp(path, "/netset", 7))) {
 +		int k = qlen;
 +
 +		if (k > (int)sizeof(netset_qs) - 1)
@@ -4947,7 +5032,7 @@ new file mode 100644
 +			memcpy(netset_qs, q + 1, k);
 +		netset_qs[k > 0 ? k : 0] = '\0';
 +
-+		return CONN_NETSET;
++		return plen == 7 ? CONN_NETSET : CONN_DHCPD;
 +	}
 +	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
 +		return CONN_DUMPINFO;
@@ -5035,6 +5120,8 @@ new file mode 100644
 +				netset_len = httpd_netset();
 +			else if (cls == CONN_NETDHCP)
 +				netset_len = netset_reply("ok dhcp");
++			else if (cls == CONN_DHCPD)
++				netset_len = httpd_dhcpd_set();
 +			else if (cls == CONN_DUMPINFO)
 +				dumpinfo_len = httpd_dumpinfo();
 +			else if (cls == CONN_DUMP) {
@@ -5110,7 +5197,8 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_BOOTONCE) {
 +		*len = bootonce_len;
 +		return bootonce_buf;
-+	} else if (tcp->priv == CONN_NETSET || tcp->priv == CONN_NETDHCP) {
++	} else if (tcp->priv == CONN_NETSET || tcp->priv == CONN_NETDHCP ||
++		   tcp->priv == CONN_DHCPD) {
 +		*len = netset_len;
 +		return netset_buf;
 +	} else if (tcp->priv == CONN_BOOT) {
@@ -5303,6 +5391,7 @@ new file mode 100644
 +	boot_pending = 0;
 +	tryboot_pending = 0;
 +	bootonce_disarm();
++	dhcpd_on = env_get_ulong(ENV_DHCPD, 10, 1) ? 1 : 0;
 +	dump_busy = 0;
 +	dump_len = 0;
 +	dump_wlen = 0;
@@ -5325,7 +5414,10 @@ new file mode 100644
 +	 */
 +	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
 +	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
-+	printf("Handing out DHCP leases from %pI4\n", &net_ip);
++	if (dhcpd_on)
++		printf("Handing out DHCP leases from %pI4\n", &net_ip);
++	else
++		printf("DHCP server off\n");
 +	printf("Press Ctrl-C to abort\n");
 +}
 +
@@ -5654,10 +5746,20 @@ new file mode 100644
 +			return CMD_RET_SUCCESS;
 +		}
 +
++		/*
++		 * Not a return: what follows a returning httpd depends on how
++		 * recovery was entered.  boot_httpd_forever loops and would
++		 * come back, but check_buttons falls through to the boot
++		 * command, bootonce runs the saved bootcmd, and the bootmenu
++		 * entry lands on an askenv prompt that nobody without a serial
++		 * cable can answer.  Changing an address must not depend on any
++		 * of that; net_loop() re-reads ipaddr on the way back in.
++		 */
 +		if (netchange_pending) {
 +			netchange_apply();
++			httpd_led_start();
 +
-+			return CMD_RET_SUCCESS;
++			continue;
 +		}
 +
 +		if (boot_pending) {
@@ -5709,6 +5811,9 @@ new file mode 100644
 +			break;
 +
 +		printf("httpd: done, staying up -- reload the page for more\n");
++		/* Stopped above, and net_loop() does not bring it back; the
++		 * page tells the user to wait for the panel to go normal. */
++		httpd_led_start();
 +	}
 +
 +	printf("httpd: flashing done, rebooting\n");

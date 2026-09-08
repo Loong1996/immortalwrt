@@ -52,7 +52,7 @@ INFO = {
     "mac": "90:03:2e:12:34:56",
     "net": {"ip": "192.168.1.1", "mask": "0.0.0.0",
             "gw": "0.0.0.0", "server": "192.168.1.254",
-            "dev": "airoha-gdm1", "offer": 1, "ack": 1,
+            "dev": "airoha-gdm1", "offer": 1, "ack": 1, "dhcpd": 1,
             "client": "a4:5e:60:11:22:33"},
     "ports": [{"p": 1, "link": 0, "speed": 0, "fd": 0},
               {"p": 2, "link": 1, "speed": 1000, "fd": 1},
@@ -202,6 +202,8 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
+ if(u.indexOf('/netdhcpd')==0){var d=/on=([01])/.exec(u);
+  if(d)D.info.net.dhcpd=+d[1];return 'ok '+(d?d[1]:'?')}
  if(u.indexOf('/netset')==0){var g=/ip=([0-9.]+)/.exec(u);
   return g?'ok '+g[1]+' 255.255.255.0 ram':'bad ip'}
  if(u=='/netdhcp')return 'ok dhcp';
