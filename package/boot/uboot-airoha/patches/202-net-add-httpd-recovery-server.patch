@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,2602 @@
+@@ -0,0 +1,4018 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -180,6 +180,16 @@ new file mode 100644
 + *                    needs, factory volumes, U-Boot MAC)
 + *   serial log       GET /log, the console output recorded since power-on
 + *                    (CONFIG_CONSOLE_RECORD)
++ *   backup           GET /dump?vol=<name> or ?off=&len=, read out to the
++ *                    browser as a file -- the only way to keep the
++ *                    per-unit factory volumes when the system is gone
++ *   environment      GET /env read-only, GET /envreset for the defaults
++ *   reboot           GET /reboot
++ *
++ * The page also polls GET /ping.  That answer is the only thing telling
++ * it whether the board is still there: writes, whole-chip reads and the
++ * reboot all take the server away for a while, and a page that still
++ * looks operable is worse than one that says it is not.
 + *
 + * The page lives in files/httpd/page.html next to this package; gen.py
 + * splices it in between the PAGE_BEGIN / PAGE_END markers below.  Edit the
@@ -195,11 +205,14 @@ new file mode 100644
 +#include <cyclic.h>
 +#include <dm.h>
 +#include <env.h>
++#include <env_internal.h>
 +#include <led.h>
 +#include <mtd.h>
 +#include <net.h>
 +#include <net/tcp.h>
++#include <search.h>
 +#include <stdarg.h>
++#include <time.h>
 +#include <ubi_uboot.h>
 +#include <linux/kernel.h>
 +#include <linux/err.h>
@@ -210,6 +223,26 @@ new file mode 100644
 +#include <asm/global_data.h>
 +#include <asm/unaligned.h>
 +#include <version_string.h>
++#include <linux/sizes.h>
++/*
++ * <ubi_uboot.h> above pulls in <linux/crc32.h>, which #defines crc32() to
++ * crc32_le().  A function-like macro cannot tell a declaration from a call,
++ * so it also eats the crc32() prototype in the header below -- that is the
++ * compile error, and it is the harmless half.
++ *
++ * The quiet half is that crc32_le() (UBI carries its own in
++ * drivers/mtd/ubi/crc32.c) is the raw Linux LFSR, inverted at neither end.
++ * It would answer a plausible-looking number that never matches what
++ * "crc32 file.bin" prints on the user's machine -- and being compared
++ * against exactly that is the only reason /dumpinfo reports one.  UBI gets
++ * away with it because it only ever compares against its own stored values.
++ *
++ * So drop the macro: the declaration and every call here then mean
++ * lib/crc32.c's crc32(), which inverts at both ends and, as its own comment
++ * promises, chains from a previous result -- what /dump needs per window.
++ */
++#undef crc32
++#include <u-boot/crc.h>
 +#include <vsprintf.h>
 +#include "../drivers/mtd/ubi/ubi.h"
 +
@@ -220,6 +253,9 @@ new file mode 100644
 +/* Version of the recovery page itself, shown in the sidebar and on the console. */
 +#define WEB_VERSION		"0.3.0"
 +
++#define AUTHOR			"Loong"
++#define AUTHOR_HOST		"github.com/Loong1996"
++#define AUTHOR_URL		"https://" AUTHOR_HOST
 +#define PROJECT_HOST		"github.com/Loong1996/ImmortalWrt-Airoha"
 +#define PROJECT_URL		"https://" PROJECT_HOST
 +#define PORTAL_HOST		"loong1996.github.io/ImmortalWrt-Airoha"
@@ -235,6 +271,14 @@ new file mode 100644
 +#define CONN_INFO		((void *)3)
 +#define CONN_CHECK		((void *)4)
 +#define CONN_LOG		((void *)5)
++#define CONN_PING		((void *)6)
++#define CONN_ENV		((void *)7)
++#define CONN_ENVRESET		((void *)8)
++#define CONN_REBOOT		((void *)9)
++#define CONN_DUMP		((void *)10)
++#define CONN_DUMPBUSY		((void *)11)
++#define CONN_DUMPINFO		((void *)12)
++#define CONN_POSTBUSY		((void *)13)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -389,6 +433,15 @@ new file mode 100644
 +	".id{padding:.5rem .6rem 1rem}\n"
 +	".id b{display:block;font-size:.98rem}\n"
 +	".id small{color:var(--c2)}\n"
++	".id small a,.about span a{color:inherit}\n"
++	".id small a:hover,.about span a:hover{color:var(--blue)}\n"
++	".foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:.5rem;pa"
++		"dding:.6rem .5rem 0}\n"
++	".foot .tb{margin-top:0;align-self:auto}\n"
++	".live{display:flex;align-items:center;color:var(--c2);font-size:.92em;white-space:nowrap}\n"
++	".alert .mi.bad{background:var(--red)}\n"
++	".alert .mi.info{background:var(--blue)}\n"
++	".alert .hint{color:var(--c2);font-size:.9em;margin-top:.7rem}\n"
 +	".nav{border:0;background:transparent;color:var(--fg);font:inherit;width:100%;text-align:left;dis"
 +		"play:flex;align-items:center;gap:.55rem;padding:.35rem .5rem;border-radius:6px;cursor:pointer}\n"
 +	".nav .ic{width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify"
@@ -397,7 +450,8 @@ new file mode 100644
 +	".nav[aria-current]{background:var(--blue);color:#fff}\n"
 +	".n1 .ic{background:#0a84ff}.n2 .ic{background:#5e5ce6}.n3 .ic{background:#8e8e93}.n4"
 +		" .ic{background:#ff9f0a}.n5 .ic{background:#64748b}.n6 .ic{background:#af52de}.n7"
-+		" .ic{background:#30d158}.n8 .ic{background:#64d2ff}\n"
++		" .ic{background:#30d158}.n8 .ic{background:#64d2ff}.n9 .ic{background:#00b4a0}.n10"
++		" .ic{background:#a2845e}.n11 .ic{background:#ff453a}\n"
 +	".nav[aria-current] .ic{background:rgba(255,255,255,.28)}\n"
 +	"[data-busy] .nav{opacity:.45;pointer-events:none}\n"
 +	".nsep{height:1px;background:var(--sep);margin:.45rem .5rem}\n"
@@ -482,6 +536,17 @@ new file mode 100644
 +		":flex;gap:.6rem;align-items:flex-start}\n"
 +	".ban svg{flex:none;margin-top:.2em;stroke-width:2.2}\n"
 +	".ban b{font-weight:600}\n"
++	".tag{display:inline-block;margin-left:.45rem;padding:0"
++		" .35rem;border-radius:4px;background:var(--fill);color:var(--c2);font-size:.85em;font-weight:400"
++		";vertical-align:.05em}\n"
++	".dlb{padding:.1rem .6rem;font-size:.92em}\n"
++	".kv td.b{text-align:right;padding:.3rem .9rem;width:1%}\n"
++	".kv th.g{padding-top:.7rem;font-weight:600;color:var(--fg);border-top:1px solid var(--sep)}\n"
++	".kv tr:first-child th.g{padding-top:.45rem;border-top:0}\n"
++	".bar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:0 0 .6rem}\n"
++	".bar label{display:flex;gap:.4rem;align-items:center;color:var(--c2)}\n"
++	".envv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;white-space:pre-wrap;wor"
++		"d-break:break-all}\n"
 +	".dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.5rem;background:v"
 +		"ar(--c3)}\n"
 +	".dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}\n"
@@ -500,7 +565,13 @@ new file mode 100644
 +	"<div class=side>\n"
 +	"<div class=id><b>Airoha Web U-Boot</b><small>"
 +		WEB_VERSION
-+		" · Loong</small></div>\n"
++		" · <a href=\""
++		AUTHOR_URL
++		"\" target=_blank rel=noopener title=\""
++		AUTHOR_HOST
++		"\">"
++		AUTHOR
++		"</a></small></div>\n"
 +	"<button class=\"nav n1\" data-p=p1 aria-current=true onclick=nav(this)><span class=ic><svg"
 +		" viewBox=\"0 0 24 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span>日常刷机</button>\n"
 +	"<button class=\"nav n2\" data-p=p2 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
@@ -512,17 +583,25 @@ new file mode 100644
 +	"<button class=\"nav n3\" data-p=p3 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><path d=\"M4 7h16v10H4zM8 7v10M16 7v10\"/></svg></span>创建 UBI 卷</button>\n"
 +	"<div class=nsep></div>\n"
++	"<button class=\"nav n9\" data-p=p10 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M12 4v12M6 10l6 6 6-6M4 20h16\"/></svg></span>备份下载</button>\n"
 +	"<button class=\"nav n5\" data-p=p5 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><rect x=\"4\" y=\"5\" width=\"16\" height=\"12\" rx=\"2\"/><path d=\"M8 21h8M12"
 +		" 17v4\"/></svg></span>设备详情</button>\n"
 +	"<button class=\"nav n7\" data-p=p8 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><path d=\"M22 12h-4l-3 7-6-14-3 7H2\"/></svg></span>健康检查</button>\n"
++	"<button class=\"nav n10\" data-p=p11 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M4 6h6M4 12h9M4 18h5M16 5l4 4-4 4\"/></svg></span>环境变量</button>\n"
 +	"<button class=\"nav n8\" data-p=p9 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><rect x=\"3\" y=\"4\" width=\"18\" height=\"16\" rx=\"2\"/><path d=\"M7 9l3 3-3 3M13"
 +		" 15h4\"/></svg></span>串口日志</button>\n"
++	"<div class=nsep></div>\n"
++	"<button class=\"nav n11\" data-p=p12 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
++		" 24\"><path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/></svg></span>重启</button>\n"
 +	"<button class=\"nav n6\" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox=\"0 0 24"
 +		" 24\"><circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v5M12 8h.01\"/></svg></span>关于</button>\n"
-+	"<button type=button class=tb onclick=tg() title=\"切换深浅色\">&#9680;</button>\n"
++	"<div class=foot><button type=button class=tb onclick=tg() title=\"切换深浅色\">&#9680;</button><span"
++		" class=live><span class=\"dot s1\" id=lived></span><span id=lives>连接中…</span></span></div>\n"
 +	"</div>\n"
 +	"<form method=post enctype=multipart/form-data onsubmit=\"return ask()\">\n"
 +	"<div class=ban id=ban hidden><svg viewBox=\"0 0 24 24\"><path d=\"M12 9v4M12 17h.01M10.3 3.9L2.4"
@@ -534,6 +613,7 @@ new file mode 100644
 +		" 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4 20h16\"/></svg></span><span class=tx><span class=t><span"
 +		" class=fn style=\"color:inherit\">选择固件文件</span></span><span class=\"s"
 +		" mono\">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>\n"
++	"<p class=note>设备现在停在恢复模式，不会自己去启动系统。<b>不想刷了直接断电重启就退出了</b>，只要没有开始写入，闪存一个字节都没动过。</p>\n"
 +	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -557,6 +637,8 @@ new file mode 100644
 +		" 环境与用户配置将丢失</small></span><span class=\"fc end\"><input type=checkbox class=sw name=format"
 +		" value=1></span></div>\n"
 +	"</div>\n"
++	"<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一，擦掉就再也拿不回来 —— 先到「<a href=\"#\""
++		" onclick=\"return jump('p10')\">备份下载</a>」里存一份。</p>\n"
 +	"<p class=note>仅升级 U-Boot 时无需重建 UBI，只选择 U-Boot 文件即可，rootfs_data 保留。</p>\n"
 +	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
@@ -575,8 +657,9 @@ new file mode 100644
 +		" type=text name=stockoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0"
 +		" 为整片；也可只写某个分区</span></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>镜像须来自本机备份。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误后仅能通过串口恢复。偏移加镜像长度不得超过 flash"
-+		" 容量；整片写入耗时显著长于固件写入。</p>\n"
++	"<p class=note>镜像须来自本机备份 —— 还没有的话，「<a href=\"#\" onclick=\"return"
++		" jump('p10')\">备份下载</a>」里可以现在就存一份。设备一次最多收 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写入错误"
++		"后仅能通过串口恢复。偏移加镜像长度不得超过 flash 容量；整片写入耗时显著长于固件写入。</p>\n"
 +	"<div class=act><span class=st>还没有选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -604,6 +687,27 @@ new file mode 100644
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
 +	"</div>\n"
++	"<div class=pane id=p10>\n"
++	"<h1>备份下载</h1><p class=sub>把闪存内容读出来存到电脑。边读边传，多大都是一个文件；传输期间页面偶尔不响应是正常的。</p>\n"
++	"<p class=bh>UBI 卷<small>逐机唯一、丢了就拿不回来的出厂数据在 ri 与 bosa 里</small></p>\n"
++	"<div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>\n"
++	"<p class=bh>原始区段<small>绕过 UBI 按 flash 偏移读，与「刷回原厂」的写入一一对应</small></p>\n"
++	"<div class=box>\n"
++	"<div class=fr><span class=fl>起始偏移<small>十六进制</small></span><span class=fc><input type=text"
++		" id=dumpoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0 为片首</span></span></div>\n"
++	"<div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text"
++		" id=dumplen class=mono placeholder=\"留空到片尾\" style=\"width:130px\"><span class=fn"
++		" id=dumphint>留空就读到片尾</span></span></div>\n"
++	"</div>\n"
++	"<p class=note>整片读的是闪存本身、不看分区表，所以原厂布局下的 romfile、config 也都在里面。<b>读取和写入走同一条 mtd"
++		" 路径</b>，坏块两边都跳过，所以文件比标称容量小一些 —— 少的正是坏块，写回去时它们同样被跳过，位置对得上。</p>\n"
++	"<p class=note>整片多大都是一个文件 —— 设备边读边传，不必等它整段读进内存，所以也不用管它自己怎么分块。传输期间面板不动是正常的。</p>\n"
++	"<div id=dllh hidden><p class=bh>已完成<small>crc32 算的是实际传出去的字节，文件存好后本地核对</small></p><div"
++		" class=box><table class=kv id=dll></table></div></div>\n"
++	"<div class=act><span class=st id=dlh>选一个卷，或填偏移与长度</span><button type=button class=pb"
++		" onclick=dumpall()>整片下载</button><button type=button class=\"pb pri\""
++		" onclick=dumpraw()>下载区段</button></div>\n"
++	"</div>\n"
 +	"<div class=pane id=p5>\n"
 +	"<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>\n"
 +	"<div class=box><table class=kv id=dev><tr><td colspan=2 class=c2>正在读取…</td></tr></table></div>\n"
@@ -617,20 +721,55 @@ new file mode 100644
 +		" onclick=check()>开始检查</button><button type=button class=pb"
 +		" onclick=diag(this)>复制诊断信息</button></div>\n"
 +	"</div>\n"
++	"<div class=pane id=p11>\n"
++	"<h1>环境变量</h1><p class=sub>U-Boot 当前的 env。只读 —— bootcmd 或引导菜单被改坏是机器起不来的常见原因，这里能看出来。</p>\n"
++	"<div class=bar><input type=text id=envq placeholder=\"过滤名称或值\" oninput=envfill()"
++		" style=\"max-width:200px\"><label><input type=checkbox class=sw id=envkey"
++		" onchange=envfill()>只看关键项</label><span class=fs id=envh></span></div>\n"
++	"<div class=box><table class=kv id=envt><tr><td>正在读取…</td></tr></table></div>\n"
++	"<div class=row><button type=button class=pb id=envb onclick=getenv()>重新读取</button><button"
++		" type=button class=pb onclick=envcopy(this)>复制全部</button></div>\n"
++	"<p class=bh>恢复默认环境</p>\n"
++	"<div class=box>\n"
++	"<div class=\"fr wide\"><span class=fl>恢复成这一版 U-Boot 自带的默认值<small>清掉自定义的"
++		" bootcmd、引导菜单与网络设置并保存</small></span><span class=\"fc end\"><button type=button class=\"pb red\""
++		" onclick=askenvdef()>恢复默认</button></span></div>\n"
++	"</div>\n"
++	"<p class=note>出厂 MAC 存在 ri 卷里，<b>不受影响</b>；固件与用户配置也不受影响。恢复后需重启才生效。若 UBI 挂不上，保存会失败 ——"
++		" 改动只在内存里，断电即失。</p>\n"
++	"</div>\n"
 +	"<div class=pane id=p9>\n"
 +	"<h1>串口日志</h1><p class=sub>U-Boot 自本次上电以来的控制台输出。没有 USB-TTL 时，求助请把这段和健康检查一起贴出。</p>\n"
 +	"<div class=box><pre class=log id=log>还没有读取</pre></div>\n"
 +	"<div class=row><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button"
 +		" type=button class=pb onclick=\"copy(this,$('#log').textContent)\">复制日志</button></div>\n"
 +	"</div>\n"
++	"<div class=pane id=p12>\n"
++	"<h1>重启</h1><p class=sub>等同于断电再上电，不改动闪存。连着写完几个卷之后用它，省得去够电源。</p>\n"
++	"<p class=note>重启后正常引导系统，起不来才会回到这个页面。设备回来之后本页面自动刷新。</p>\n"
++	"<div class=act><span class=st></span><button type=button class=\"pb red\""
++		" onclick=askreboot()>立即重启</button></div>\n"
++	"</div>\n"
 +	"<div class=pane id=p6>\n"
 +	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
 +	"<div class=about><span class=logo><svg viewBox=\"0 0 24 24\"><path d=\"M12 16V4M6 10l6-6 6 6M4"
 +		" 20h16\"/></svg></span><div><b>Airoha Web U-Boot</b><span>"
 +		WEB_VERSION
-+		" · Loong</span></div></div>\n"
++		" · <a href=\""
++		AUTHOR_URL
++		"\" target=_blank rel=noopener title=\""
++		AUTHOR_HOST
++		"\">"
++		AUTHOR
++		"</a></span></div></div>\n"
 +	"<div class=box style=\"margin-top:1rem\"><table class=kv>\n"
-+	"<tr><td>作者</td><td>Loong</td></tr>\n"
++	"<tr><td>作者</td><td><a href=\""
++		AUTHOR_URL
++		"\" target=_blank rel=noopener title=\""
++		AUTHOR_HOST
++		"\">"
++		AUTHOR
++		"</a></td></tr>\n"
 +	"<tr><td>项目主页</td><td><a href=\""
 +		PROJECT_URL
 +		"\" target=_blank rel=noopener>"
@@ -657,6 +796,13 @@ new file mode 100644
 +	"<div class=box style=\"padding:.7rem 1rem\"><ol class=steps id=steps></ol></div>\n"
 +	"</div>\n"
 +	"</form>\n"
++	"<iframe id=dlsink hidden title=download></iframe>\n"
++	"<div class=mask id=off><div class=alert>\n"
++	"<div class=hd><span class=\"mi bad\" id=offm><svg viewBox=\"0 0 24 24\" id=offi></svg></span><h2"
++		" id=offt></h2></div>\n"
++	"<div id=offb></div>\n"
++	"<div class=btns><button type=button class=pb id=offr onclick=reconnect()>重新连接</button></div>\n"
++	"</div></div>\n"
 +	"<div class=mask id=mask onclick=\"if(event.target===this)hide()\"><div class=alert>\n"
 +	"<div class=hd><span class=mi><svg viewBox=\"0 0 24 24\"><path d=\"M12 9v4M12 17h.01M10.3 3.9L2.4"
 +		" 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4"
@@ -667,7 +813,9 @@ new file mode 100644
 +	"</div></div>\n"
 +	"</div>\n"
 +	"<script>\n"
-+	"var INFO=null,FV=[],SENT=null,CHK=null;\n"
++	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
++	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
++	"var DLSEQ=0,DLBAD=0;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
@@ -681,7 +829,9 @@ new file mode 100644
 +		" p.removeAttribute('data-on')})}\n"
 +	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
 +		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
-+		"FO)info();if(id=='p8'&&!CHK)check();if(id=='p9')getlog()}\n"
++		"FO)info();if(id=='p8'&&!CHK)check();if(id=='p9')getlog();if(id=='p10')dlfill();if(id=='p11'&&!EN"
++		"V)getenv()}\n"
++	"function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}\n"
 +	"function files(p){return $$('input[type=file]',p).filter(function(i){return"
 +		" i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files["
 +		"0]}})}\n"
@@ -710,6 +860,140 @@ new file mode 100644
 +		" BL2、U-Boot 与固件，并打开「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存里没有 U-Boot（fip 卷）。</b>现在运行的 U-Boot"
 +		" 只在内存里，断电即失：请到「引导升级」里上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidde"
 +		"n');else $('#ban').setAttribute('hidden','')}\n"
++	"var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1"
++		" 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20\"/>';\n"
++	"var ICON_WR='<path d=\"M12 6v6l4 2\"/><circle cx=\"12\" cy=\"12\" r=\"9\"/>';\n"
++	"var ICON_RB='<path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/>';\n"
++	"function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;\n"
++	"d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}\n"
++	"function hbstart(){HB=1;ping()}\n"
++	"function hbstop(){HB=0;clearTimeout(HBT);HBT=null}\n"
++	"function hbnext(){if(!HB)return;clearTimeout(HBT);HBT=setTimeout(ping,LIVE?3000:2000)}\n"
++	"function ping(){if(!HB)return;if(HBOFF){hbnext();return}\n"
++	"var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()}"
++		";\n"
++	"x.timeout=2500;\n"
++	"x.onload=function(){var u=-1;try{u=JSON.parse(x.responseText).up}catch(e){}fin(x.status==200,u)}"
++		";\n"
++	"x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};\n"
++	"x.open('GET','/ping');x.send()}\n"
++	"function seen(o,u){\n"
++	"if(o){SILENT=0;if(!LIVE){if(OFFWHY=='reboot'||(UP>=0&&u>=0&&u<UP)){location.reload();return}LIVE"
++		"=1;online()}\n"
++	"MISS=0;if(u>=0)UP=u;live(0);return}\n"
++	"MISS++;\n"
++	"/*\n"
++	"* 自己发起的读取（体检、备份）会让设备静默几十秒。那一页上已经写着在读什么，\n"
++	"* 再盖一个框纯是噪音 —— 只把左下角的点变掉。真的很久不回来才退回通用提示。\n"
++	"*/\n"
++	"if(LIVE&&MISS>=2&&(!SILENT||MISS>=40)){LIVE=0;SILENT=0;offline(OFFWHY)}\n"
++	"live(LIVE?1:2)}\n"
++	"/* 已知会断，而且要立刻说明：写入、重启 */\n"
++	"function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}\n"
++	"/* 已知会静默，但用户自己发起的：只变点，不弹框 */\n"
++	"function silent(){SILENT=1;MISS=0}\n"
++	"function offline(why){var i,t,b,r=0;\n"
++	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='面板齐闪，<b>不要断电</b>。写完自动恢复。'}\n"
++	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，回来后自动刷新。'}\n"
++	"else{i=ICON_OFF;t='已断开与路由器连接';b='设备没有回应。检查网线与电源。面板齐闪说明在写入，等它写完。';r=1}\n"
++	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
++	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+b+'</div>'+\n"
++	"(r?'<div class=hint>每 2 秒自动重试。</div>':'');\n"
++	"$('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连接';\n"
++	"$('#off').setAttribute('data-on','')}\n"
++	"function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');\n"
++	"if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';\n"
++	"$('.pwhat',prog).textContent='设备写完了，网页服务已恢复 —— 可以接着写下一个卷';$('.pct',prog).textContent=''}}}\n"
++	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);pi"
++		"ng()}\n"
++	"function askreboot(){$('#atitle').textContent='重启';\n"
++	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+\n"
++	"'<div class=w>闪存内容不受影响</div>';\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
++		"n','')}\n"
++	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
++	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
++	"if(f)$('#dumphint').textContent='读到片尾，'+sz(f.good)+'（坏块已扣掉）';\n"
++	"if(!INFO){t.innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
++	"if(!INFO.ubi){t.innerHTML='<tr><td>UBI 未挂载，只能用下面的原始区段。首次迁移前闪存里还是原厂内容，正是备份的时候</td></tr>';return}\n"
++	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
++	"(INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return"
++		" x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;\n"
++	"h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+v.t+'</td><td"
++		" class=n>'+sz(n)+'</td><td class=b><button type=button class=\"pb dlb\""
++		" onclick=\"dlvol(\\''+esc(v.n)+'\\')\">下载</button></td></tr>'});\n"
++	"t.innerHTML=h}\n"
++	"/* 单独一层，好让预览把真正的下载换掉而不动上面的逻辑 */\n"
++	"function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src=u}\n"
++	"/* 真下载会被浏览器接走，iframe 不触发 load；只有错误页会 —— 那就是信号 */\n"
++	"function dlrefused(f){var t='';\n"
++	"try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}\n"
++	"t=t.replace(/\\s+/g,' ').trim();if(!t)return;\n"
++	"DLBAD=1;$('#dlh').textContent='设备没有接下这次备份：'+t}\n"
++	"function sink(u,what,n){silent();DLBAD=0;\n"
++	"$('#dlh').textContent='正在读并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';\n"
++	"get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}\n"
++	"/* 设备读完就把 crc32 记下了，问它一次即可 —— 不用再读一遍闪存 */\n"
++	"function dlpoll(k){if(DLBAD)return;\n"
++	"get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;\n"
++	"dlrow(r);return}\n"
++	"if(k<120)setTimeout(function(){dlpoll(k+1)},2000);\n"
++	"else $('#dlh').textContent='没有等到设备回报，这次备份可能没成 —— 看「串口日志」'})}\n"
++	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
++	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
++	"function dlrow(r){var t=$('#dll');\n"
++	"t.innerHTML+='<tr><td>'+esc(r.name)+'</td><td class=n>'+sz(r.len)+'</td><td class=\"n"
++		" mono\">'+esc(r.crc)+'</td></tr>';\n"
++	"$('#dllh').hidden=false;\n"
++	"$('#dlh').textContent='传完了'}\n"
++	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
++		"=x});\n"
++	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
++	"/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */\n"
++	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='读不到闪存信息';return}\n"
++	"$('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}\n"
++	"function dumpraw(){var f=INFO&&INFO.flash,o=hex($('#dumpoff').value),lv=$('#dumplen').value.trim"
++		"(),l=lv?hex(lv):null;\n"
++	"if(o<0){$('#dlh').textContent='起始偏移不是有效的十六进制数';return}\n"
++	"if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}\n"
++	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
++	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
++	"/* 两条都是必要条件，不会误拦；从 o 起究竟还剩多少，设备算完会说 */\n"
++	"if(f&&l!==null&&(l>f.good||o+l>f.size)){$('#dlh').textContent='最多只读得出 '+sz(f.good)+'（坏块已扣掉），要不了"
++		" '+sz(l);return}\n"
++	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
++		" 起的区段',l)}\n"
++	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|"
++		"check_buttons|httpd_|ubi_)/;\n"
++	"function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;va"
++		"r r=null;try{r=JSON.parse(t)}catch(e){}\n"
++	"if(st==503){$('#envt').innerHTML='<tr><td>设备正在写入，稍后再试</td></tr>';return}\n"
++	"if(!r||!r.env){$('#envt').innerHTML='<tr><td>读取失败，刷新页面重试</td></tr>';return}\n"
++	"ENV=r;envfill()})}\n"
++	"function envrows(){if(!ENV)return[];var q=$('#envq').value.trim().toLowerCase(),k=$('#envkey').c"
++		"hecked;\n"
++	"return ENV.env.filter(function(e){if(k&&!ENVKEY.test(e.k))return false;\n"
++	"if(!q)return true;return e.k.toLowerCase().indexOf(q)>=0||String(e.v).toLowerCase().indexOf(q)>="
++		"0})}\n"
++	"function envfill(){var t=$('#envt'),rows=envrows(),h='';\n"
++	"if(!ENV)return;\n"
++	"rows.forEach(function(e){h+='<tr><td>'+esc(e.k)+'</td><td class=envv>'+esc(e.v)+'</td></tr>'});\n"
++	"t.innerHTML=h||'<tr><td>没有匹配的变量</td></tr>';\n"
++	"$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容看串口':'')}\n"
++	"function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\\n'))}\n"
++	"function askenvdef(){$('#atitle').textContent='环境变量';\n"
++	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default -a \\u0026\\u0026"
++		" saveenv</span></div>'+\n"
++	"'<div class=w>自定义的 bootcmd、引导菜单与网络设置会回到这一版 U-Boot 的默认值</div>'+\n"
++	"'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启才生效</div>';\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on'"
++		",'')}\n"
++	"function envdef(){$('#envh').textContent='正在恢复…';\n"
++	"get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并"
++		"保存，重启后生效':'已恢复，但保存失败（UBI 挂不上），断电即失';getenv()}\n"
++	"else $('#envh').textContent='恢复失败（'+st+'）'})}\n"
 +	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td"
 +		" colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
 +	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
@@ -721,6 +1005,8 @@ new file mode 100644
 +		" class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;\n"
 +	"if(INFO.uboot)$('#based').textContent=INFO.uboot;\n"
 +	"$('.nav[data-p=p9]').hidden=!INFO.log;\n"
++	"if(INFO.uploadmax)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.uploadmax)});\n"
++	"dlfill();\n"
 +	"FV=INFO.fv||[];fvrows();\n"
 +	"if(!INFO.ubi){u.innerHTML='<tr><td>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}\n"
 +	"$('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;\n"
@@ -729,12 +1015,13 @@ new file mode 100644
 +		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
 +		" class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
 +		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
-+	"function check(){var b=$('#chkb'),t=$('#chk');b.disabled=true;b.textContent='检查中…';t.innerHTML='"
-+		"<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabled=false;"
-+		"b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td"
-+		" colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td"
++	"function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.in"
++		"nerHTML='<tr><td colspan=2>正在检查，设备读取闪存期间不响应网络…</td></tr>';get('/check',function(st,txt){b.disabl"
++		"ed=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML"
++		"='<tr><td colspan=2>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td"
 +		" colspan=2>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var"
-+		" h='',c=[0,0,0];r.items.forEach(function(i){c[i.s]++;h+='<tr><td><span class=\"dot"
++		" h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th"
++		" class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
 +		" s'+i.s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+i.s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;"
 +		"$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 ·"
 +		" '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}\n"
@@ -763,6 +1050,8 @@ new file mode 100644
 +		" 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip"
 +		" 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}\n"
 +	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
++	"if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;\n"
++	"YES=null;y.textContent='仍要写入';\n"
 +	"$('#atitle').textContent=$('h1',p).textContent;\n"
 +	"if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E."
 +		"push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+'"
@@ -784,6 +1073,9 @@ new file mode 100644
 +		"('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));\n"
 +	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 +		" 将被清空');\n"
++	"var utot=0;rows.forEach(function(r){utot+=r.f.size});\n"
++	"if(INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次要传 '+sz(utot)+'，超过设备一次能收下的"
++		" '+sz(INFO.uploadmax)+'：内存放不下，设备会拒绝');\n"
 +	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
 +		" class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' ·"
 +		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认选对了文件')});\n"
@@ -795,8 +1087,8 @@ new file mode 100644
 +	"function nameok(k,n){n=n.toLowerCase();return k=='firmware'?n.indexOf('.itb')>0:k=='bl2'?(n.inde"
 +		"xOf('preloader')>=0||n.slice(-4)=='.bin'):k=='fip'?n.slice(-4)=='.fip':k=='stock'?n.slice(-4)=='"
 +		".bin':true}\n"
-+	"function hide(){$('#mask').removeAttribute('data-on')}\n"
-+	"function go(){hide();send()}\n"
++	"function hide(){$('#mask').removeAttribute('data-on');YES=null}\n"
++	"function go(){var f=YES;hide();if(f){f();return}send()}\n"
 +	"function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new"
 +		" XMLHttpRequest(),prog=$('.prog',p),bar=$('.pbar',prog),btn=$('button[type=submit]',p),tot=0,i;\n"
 +	"$$('input[type=text]',p).forEach(function(t){if(t.value.trim())fd.append(t.name,t.value.trim())}"
@@ -804,8 +1096,8 @@ new file mode 100644
 +	"$$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});\n"
 +	"rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});\n"
 +	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked)};\n"
-+	"$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent='上传中…';prog.hidden=fals"
-+		"e;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
++	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent='上传中…';prog.hid"
++		"den=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
 +	"x.upload.onprogress=function(e){if(!e.lengthComputable)return;var"
 +		" done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;"
 +		"if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}\n"
@@ -818,25 +1110,25 @@ new file mode 100644
 +	"x.onload=function(){if(x.status==200)done();else fail('设备拒绝了上传（'+x.status+'）：'+x.responseText)};\n"
 +	"x.onerror=function(){fail('连接中断，请检查网线后重试')};\n"
 +	"x.open('POST','/');x.send(fd)}\n"
-+	"function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeA"
-+		"ttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog)"
-+		".style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=fa"
-+		"lse;btn.textContent='上传并刷写'}\n"
-+	"function done(){var p=SENT.p,rows=SENT.rows;if(SENT.stay){var"
++	"function fail(m){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#app')"
++		".removeAttribute('data-busy');prog.className='prog"
++		" bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textC"
++		"ontent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent='上传并刷写'}\n"
++	"function done(){var p=SENT.p,rows=SENT.rows;HBOFF=0;if(SENT.stay){var"
 +		" prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.cl"
 +		"assName='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat'"
 +		",prog).textContent='已上传 '+rows.map(function(r){return"
 +		" r.l}).join('、')+'，设备正在写入；指示灯恢复流水后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
-+		"Content='上传并刷写';clear(p);return}\n"
++		"Content='上传并刷写';clear(p);expect('write');return}\n"
 +	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
-+		"en','');show('p7')}\n"
++		"en','');hbstop();show('p7')}\n"
 +	"function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var"
 +		" lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classLis"
 +		"t.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode"
 +		".removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''"
 +		"});refresh()}\n"
 +	"document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});\n"
-+	"bind();info();\n"
++	"bind();info();hbstart();\n"
 +	"</script>\n"
 +	"</body></html>\n"
 +/* @@PAGE_END@@ */
@@ -922,6 +1214,27 @@ new file mode 100644
 +
 +	return top - up_base - UPLOAD_MARGIN;
 +}
++
++/*
++ * A download is staged at the top of the same region, growing down, rather
++ * than at $loadaddr: httpd_rx() copies every new request to $loadaddr, so a
++ * second browser tab would otherwise scribble over the first bytes of a
++ * transfer in flight.  The gap below $loadaddr covers that plus the largest
++ * read /check does there (a whole static fip volume, about a megabyte); an
++ * upload would run through any gap at all, so it is refused outright while a
++ * download is in flight rather than budgeted for.
++ *
++ * Only one window of a download lives there at a time, so the space left
++ * over is not what limits a backup any more -- see the /dump section.
++ */
++#define DUMP_GAP	(2 << 20)
++
++/* Reported by /dumpinfo once a read has finished; see httpd_dumpinfo(). */
++static u32	dump_last_seq;
++static u32	dump_last_len;
++static u32	dump_last_crc;
++static char	dump_last_name[128];
++
 +
 +static void fvols_parse(void)
 +{
@@ -1225,6 +1538,39 @@ new file mode 100644
 +}
 +
 +/*
++ * How many bytes a raw read starting at off can actually deliver.
++ *
++ * Reads skip bad blocks, the way the mtd command does, so that a backup and
++ * a restore of the same range line up with each other.  That makes the chip
++ * yield less than its nominal size: asking for mtd->size bytes walks off the
++ * end long before it has that many, which is a download that dies at the
++ * very end of a quarter-gigabyte transfer.  So this is the figure /info
++ * reports and the figure /dump is sized against.
++ */
++static u64 flash_good_bytes(struct mtd_info *m, u64 off)
++{
++	u64 first = off & ~((u64)m->erasesize - 1);
++	u64 good = 0;
++	u64 blk;
++
++	if (off >= m->size)
++		return 0;
++
++	for (blk = first; blk < m->size; blk += m->erasesize)
++		if (!mtd_block_isbad(m, blk))
++			good += m->erasesize;
++
++	/*
++	 * off may sit inside the first block.  A bad one is skipped whole, so
++	 * only a good one loses its head.
++	 */
++	if (good && !mtd_block_isbad(m, first))
++		good -= off - first;
++
++	return good;
++}
++
++/*
 + * ---- JSON ----------------------------------------------------------------
 + *
 + * The three GET endpoints build their reply in a static buffer each; this
@@ -1360,9 +1706,16 @@ new file mode 100644
 +
 +		P(",\"flash\":{\"name\":");
 +		S(master->name);
-+		P(",\"size\":%llu,\"erase\":%u,\"page\":%u},\"parts\":[",
-+		  (unsigned long long)master->size, master->erasesize,
-+		  master->writesize);
++		/*
++		 * "good" is what a raw backup can actually contain; the page
++		 * sizes "whole chip" from it rather than from size, which
++		 * would ask for bytes the bad blocks took away.
++		 */
++		P(",\"size\":%llu,\"good\":%llu,\"erase\":%u,\"page\":%u},"
++		  "\"parts\":[",
++		  (unsigned long long)master->size,
++		  (unsigned long long)flash_good_bytes(master, 0),
++		  master->erasesize, master->writesize);
 +		first = 1;
 +		list_for_each_entry(part, &master->partitions, node) {
 +			P("%s{\"n\":", first ? "" : ",");
@@ -1375,6 +1728,12 @@ new file mode 100644
 +		P("]");
 +	}
 +
++	/*
++	 * The ceiling httpd_parse() rejects against.  Reporting it lets the
++	 * page say no while the file is still on the user's disk, instead of
++	 * after a couple of hundred megabytes have gone over the wire.
++	 */
++	P(",\"uploadmax\":%llu", (unsigned long long)upload_max());
 +	P(",\"stock\":%d", IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE) ? 1 : 0);
 +	P(",\"log\":%d", IS_ENABLED(CONFIG_CONSOLE_RECORD) ? 1 : 0);
 +
@@ -1454,13 +1813,24 @@ new file mode 100644
 +#define BL2_PART	"bl2"
 +#define BL2_IMAGE_OFF	0x800
 +
-+static char check_buf[6144];
++static char check_buf[8192];
 +static int check_len;
++
++/*
++ * Sixteen rows is too many to read as one list, so each carries the
++ * section it belongs to and the page puts a heading in when it changes.
++ */
++static const char *chk_g = "";
++
++static void chk_group(const char *g)
++{
++	chk_g = g;
++}
 +
 +static void chk_item(struct jbuf *jb, int *first, const char *name, int status,
 +		     const char *fmt, ...)
 +{
-+	char v[192];
++	char v[320];
 +	va_list ap;
 +
 +	va_start(ap, fmt);
@@ -1469,12 +1839,14 @@ new file mode 100644
 +
 +	jb_printf(jb, "%s{\"n\":", *first ? "" : ",");
 +	jb_str(jb, name);
-+	jb_printf(jb, ",\"s\":%d,\"v\":", status);
++	jb_printf(jb, ",\"s\":%d,\"g\":", status);
++	jb_str(jb, chk_g);
++	jb_printf(jb, ",\"v\":");
 +	jb_str(jb, v);
 +	jb_printf(jb, "}");
 +	*first = 0;
 +
-+	printf("httpd: check %s: %s%s\n", name,
++	printf("httpd: check %s/%s: %s%s\n", chk_g, name,
 +	       status == CHK_OK ? "" : status == CHK_WARN ? "[warn] " : "[FAIL] ",
 +	       v);
 +}
@@ -1487,6 +1859,14 @@ new file mode 100644
 +
 +	return 1;
 +}
++
++/*
++ * The MAC found in the factory volume this run, so the last item can say
++ * whether the address U-Boot is actually using came from there.  After a
++ * UBI rebuild it will not have, and that is the thing worth knowing.
++ */
++static u8 chk_fmac[6];
++static int chk_fmac_ok;
 +
 +/* ASCII only: mixing %pM with UTF-8 in one format string garbles the MAC. */
 +static void fmt_mac(char *dst, int dstsz, const u8 *m)
@@ -1519,6 +1899,97 @@ new file mode 100644
 +#else
 +	return 0;
 +#endif
++}
++
++/*
++ * A value out of the environment compiled into this image.  env_get_default()
++ * would be the obvious call, but it answers through a 32-byte static buffer,
++ * so bootcmd and the menu entries come back truncated -- useless for telling
++ * "changed" from "unchanged".  The default environment is a flat list of
++ * "name=value" strings ending in an empty one, so read it directly.
++ */
++static const char *defenv_get(const char *name)
++{
++	const char *p = (const char *)default_environment;
++	int n = strlen(name);
++
++	while (*p) {
++		if (!strncmp(p, name, n) && p[n] == '=')
++			return p + n + 1;
++		p += strlen(p) + 1;
++	}
++
++	return NULL;
++}
++
++/*
++ * envver, bootcmd and the menu.  A saved environment older than the running
++ * U-Boot, or one somebody edited by hand, is a common reason a board stops
++ * booting -- and with no serial console there is otherwise no way to see it.
++ * Everything is compared against what this build ships, never a hardcoded
++ * expectation, so the check keeps telling the truth as the defenv changes.
++ */
++static void chk_env_defaults(struct jbuf *jb, int *first)
++{
++	const char *cur = env_get("envver");
++	const char *def = defenv_get("envver");
++	char name[24];
++	int n = 0, dn = 0, i;
++
++	if (!def)
++		;			/* this build does not version its env */
++	else if (!cur)
++		chk_item(jb, first, "envver", CHK_WARN,
++			 "环境里没有 envver，这一版 U-Boot 是 %s：菜单是旧的，下次正常启动会自动刷新",
++			 def);
++	else if (!strcmp(cur, def))
++		chk_item(jb, first, "envver", CHK_OK, "%s，与这一版 U-Boot 一致",
++			 cur);
++	else
++		chk_item(jb, first, "envver", CHK_WARN,
++			 "闪存里是 %s，这一版 U-Boot 是 %s：下次正常启动会自动刷新菜单",
++			 cur, def);
++
++	cur = env_get("bootcmd");
++	def = defenv_get("bootcmd");
++	if (!cur)
++		chk_item(jb, first, "bootcmd", CHK_FAIL,
++			 "没有设置：设备不会自动启动，可在「环境变量」页恢复默认");
++	else if (def && !strcmp(cur, def))
++		chk_item(jb, first, "bootcmd", CHK_OK, "与这一版的默认一致");
++	else if (def)
++		chk_item(jb, first, "bootcmd", CHK_WARN,
++			 "与这一版的默认不同，被改过：%s", cur);
++	else
++		chk_item(jb, first, "bootcmd", CHK_OK, "%s", cur);
++
++	for (i = 0; i < 16; i++) {
++		snprintf(name, sizeof(name), "bootmenu_%d", i);
++		if (env_get(name))
++			n++;
++		if (defenv_get(name))
++			dn++;
++	}
++	if (!n)
++		chk_item(jb, first, "引导菜单", CHK_WARN, "没有条目");
++	else if (dn && n != dn)
++		chk_item(jb, first, "引导菜单", CHK_WARN,
++			 "%d 项，这一版的默认是 %d 项", n, dn);
++	else
++		chk_item(jb, first, "引导菜单", CHK_OK, "%d 项", n);
++}
++
++/*
++ * How worn the chip is.  UBI counts erases per block, which is the closest
++ * thing to a lifetime figure available without vendor-specific commands.
++ */
++static void chk_wear(struct jbuf *jb, int *first, struct ubi_device *ubi)
++{
++	int worn = ubi->max_ec > 20000;
++
++	chk_item(jb, first, "磨损", worn ? CHK_WARN : CHK_OK,
++		 "擦写次数最大 %d、平均 %d%s", ubi->max_ec, ubi->mean_ec,
++		 worn ? "，已接近 SLC 颗粒的常见寿命，留意坏块增长" : "");
 +}
 +
 +/* Every block of the chip; the one holding the BL2 is the one that matters. */
@@ -1665,17 +2136,170 @@ new file mode 100644
 +		chk_item(jb, first, "fit 卷", CHK_OK, "FIT 镜像，%u 字节", tot);
 +}
 +
-+static void chk_envvol(struct jbuf *jb, int *first, struct ubi_device *ubi,
-+		       const char *name)
++/* Unix time to "YYYY-MM-DD HH:MM"; no RTC and no libc to lean on. */
++static void fmt_date(char *dst, int max, u32 t)
 +{
-+	char what[UBIVOL_NAME_MAX + 8];
++	static const u8 dim[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
++	u32 days = t / 86400, secs = t % 86400;
++	int y = 1970, m, leap;
++
++	for (;;) {
++		leap = !(y % 4) && (y % 100 || !(y % 400));
++		if (days < (u32)(leap ? 366 : 365))
++			break;
++		days -= leap ? 366 : 365;
++		y++;
++	}
++	for (m = 0; m < 11; m++) {
++		u32 dm = dim[m] + (m == 1 && leap);
++
++		if (days < dm)
++			break;
++		days -= dm;
++	}
++
++	snprintf(dst, max, "%04d-%02d-%02d %02d:%02d", y, m + 1, (int)days + 1,
++		 (int)(secs / 3600), (int)(secs % 3600 / 60));
++}
++
++/*
++ * Make the head of the FIT readable by libfdt without reading all of it.
++ *
++ * A sysupgrade FIT is megabytes because the image data sits inside the
++ * struct block, which puts the strings block right at the end -- and libfdt
++ * needs both ends to resolve a property name.  So read the head and the
++ * strings block separately, drop them next to each other, and rewrite the
++ * header to describe where they actually landed.  Root properties are the
++ * first thing in the struct block, so the head is always enough for them.
++ *
++ * Anything unexpected returns -1 and the caller just reports the size it
++ * already knows; this is a nicety, not a verdict on the image.
++ */
++#define FIT_HEAD_MAX	(128 << 10)
++#define FIT_STRS_MAX	(64 << 10)
++
++static int fit_stitch(struct ubi_volume *v, u8 *buf, ulong max)
++{
++	u32 tot, stroff, strsz, structoff, head;
++
++	if (ubi_volume_read(v->name, (char *)buf, 0, 64))
++		return -1;
++	if (get_unaligned_be32(buf) != FIT_MAGIC)
++		return -1;
++
++	tot	  = fdt_totalsize(buf);
++	stroff	  = fdt_off_dt_strings(buf);
++	strsz	  = fdt_size_dt_strings(buf);
++	structoff = fdt_off_dt_struct(buf);
++
++	if (!strsz || strsz > FIT_STRS_MAX || structoff >= stroff ||
++	    (u64)stroff + strsz > tot || (u64)tot > (u64)v->used_bytes)
++		return -1;
++
++	head = stroff < FIT_HEAD_MAX ? stroff : FIT_HEAD_MAX;
++	if ((u64)head + strsz > max)
++		return -1;
++
++	if (ubi_volume_read(v->name, (char *)buf, 0, head))
++		return -1;
++	if (ubi_volume_read(v->name, (char *)buf + head, stroff, strsz))
++		return -1;
++
++	fdt_set_off_dt_strings(buf, head);
++	fdt_set_size_dt_strings(buf, strsz);
++	fdt_set_size_dt_struct(buf, head - structoff);
++	fdt_set_totalsize(buf, head + strsz);
++
++	return fdt_check_header(buf) ? -1 : 0;
++}
++
++/*
++ * Which build is actually on the flash.  "the fit volume holds a FIT" is
++ * what chk_fit() answers; this answers "which one", which is the line
++ * somebody asking for help in a forum thread actually needs to paste.
++ */
++static void chk_firmware(struct jbuf *jb, int *first, struct ubi_device *ubi,
++			 u8 *buf, ulong max)
++{
++	struct ubi_volume *v = ubi_vol_find(ubi, "fit");
++	const char *desc, *compat = NULL;
++	const fdt32_t *ts;
++	char when[24];
++	int node, len;
++
++	if (!v)
++		return;			/* chk_fit already said so */
++
++	if (fit_stitch(v, buf, max)) {
++		chk_item(jb, first, "固件", CHK_WARN,
++			 "读不出镜像里的描述，只能确认它是一个 FIT");
++		return;
++	}
++
++	desc = fdt_getprop(buf, 0, "description", NULL);
++	ts = fdt_getprop(buf, 0, "timestamp", &len);
++	when[0] = '\0';
++	if (ts && len == 4)
++		fmt_date(when, sizeof(when), fdt32_to_cpu(*ts));
++
++	/* The default configuration names the board the image was built for. */
++	node = fdt_subnode_offset(buf, 0, "configurations");
++	if (node >= 0) {
++		const char *dflt = fdt_getprop(buf, node, "default", NULL);
++		int cfg = dflt ? fdt_subnode_offset(buf, node, dflt) : -1;
++
++		if (cfg >= 0)
++			compat = fdt_getprop(buf, cfg, "compatible", NULL);
++	}
++
++	if (!desc && !when[0] && !compat) {
++		chk_item(jb, first, "固件", CHK_WARN, "镜像里没有描述信息");
++		return;
++	}
++
++	chk_item(jb, first, "固件", CHK_OK, "%s%s%s%s%s",
++		 desc ? desc : "",
++		 desc && when[0] ? "，" : "", when,
++		 (desc || when[0]) && compat ? "，" : "", compat ? compat : "");
++}
++
++/*
++ * The environment volumes.  Both start with U-Boot's own CRC of the
++ * environment they hold, so four bytes out of each is enough to say whether
++ * the two copies are the same environment -- no need to read 124 KiB twice.
++ * Returns 1 and *crc when the volume could be read.
++ */
++static int chk_envvol(struct jbuf *jb, int *first, struct ubi_device *ubi,
++		      const char *name, u32 *crc, const char *other,
++		      u32 othercrc)
++{
++	char vol[UBIVOL_NAME_MAX], what[UBIVOL_NAME_MAX + 8];
++	u8 b[4];
 +
 +	snprintf(what, sizeof(what), "%s 卷", name);
-+	if (ubi_vol_find(ubi, name))
-+		chk_item(jb, first, what, CHK_OK, "存在");
-+	else
++	if (!ubi_vol_find(ubi, name)) {
 +		chk_item(jb, first, what, CHK_WARN,
 +			 "不存在：U-Boot 环境无处保存，首次正常启动时会自动创建");
++		return 0;
++	}
++
++	strlcpy(vol, name, sizeof(vol));
++	if (ubi_volume_read(vol, (char *)b, 0, sizeof(b))) {
++		chk_item(jb, first, what, CHK_WARN, "存在，但读不出内容");
++		return 0;
++	}
++	*crc = get_unaligned_le32(b);
++
++	if (!other)
++		chk_item(jb, first, what, CHK_OK, "存在，CRC 0x%08x", *crc);
++	else if (*crc == othercrc)
++		chk_item(jb, first, what, CHK_OK, "存在，与 %s 一致", other);
++	else
++		chk_item(jb, first, what, CHK_WARN,
++			 "存在，CRC 0x%08x，与 %s 的 0x%08x 不同：两份环境不一样，启动时用较新的一份",
++			 *crc, other, othercrc);
++
++	return 1;
 +}
 +
 +static void chk_fvol(struct jbuf *jb, int *first, struct ubi_device *ubi,
@@ -1703,6 +2327,8 @@ new file mode 100644
 +		const u8 *m = buf + macoff;
 +
 +		if (is_valid_ethaddr(m) && !is_broadcast_ethaddr(m)) {
++			memcpy(chk_fmac, m, sizeof(chk_fmac));
++			chk_fmac_ok = 1;
 +			fmt_mac(mac, sizeof(mac), m);
 +			chk_item(jb, first, what, CHK_OK, "读到了，MAC %s", mac);
 +		} else {
@@ -1726,6 +2352,17 @@ new file mode 100644
 +	} else if (!eth_env_get_enetaddr("ethaddr", addr)) {
 +		chk_item(jb, first, "U-Boot MAC", CHK_FAIL,
 +			 "ethaddr 不是有效地址");
++	} else if (chk_fmac_ok && !memcmp(addr, chk_fmac, sizeof(chk_fmac))) {
++		fmt_mac(mac, sizeof(mac), addr);
++		chk_item(jb, first, "U-Boot MAC", CHK_OK, "%s，与出厂数据一致", mac);
++	} else if (chk_fmac_ok) {
++		char fac[18];
++
++		fmt_mac(mac, sizeof(mac), addr);
++		fmt_mac(fac, sizeof(fac), chk_fmac);
++		chk_item(jb, first, "U-Boot MAC", CHK_WARN,
++			 "%s，与出厂数据里的 %s 不同：重建 UBI 之后常见，把备份的出厂卷写回即可",
++			 mac, fac);
 +	} else {
 +		fmt_mac(mac, sizeof(mac), addr);
 +		chk_item(jb, first, "U-Boot MAC", CHK_OK, "%s", mac);
@@ -1739,6 +2376,8 @@ new file mode 100644
 +	struct jbuf jb;
 +	u8 *buf = (u8 *)up_base;
 +	ulong max = upload_max();
++	u32 __maybe_unused e1 = 0, __maybe_unused e2 = 0;
++	int __maybe_unused e1ok = 0;
 +	int first = 1, i;
 +
 +	jb_init(&jb, check_buf, sizeof(check_buf));
@@ -1749,21 +2388,28 @@ new file mode 100644
 +		return jb_done(&jb, "/check");
 +	}
 +
++	chk_fmac_ok = 0;
 +	printf("httpd: running the health check\n");
 +	jb_printf(&jb, JSON_HDR("200 OK") "{\"items\":[");
 +
++	chk_group("闪存");
 +	master = flash_master();
 +	if (!master) {
 +		chk_item(&jb, &first, "闪存", CHK_FAIL, "没有找到闪存设备");
 +		goto out;
 +	}
-+	chk_item(&jb, &first, "闪存", CHK_OK, "%s，%llu MiB，擦除块 %u KiB",
++	chk_item(&jb, &first, "闪存", CHK_OK,
++		 "%s，%llu MiB，擦除块 %u KiB，页 %u B",
 +		 master->name, (unsigned long long)master->size >> 20,
-+		 master->erasesize >> 10);
++		 master->erasesize >> 10, master->writesize);
 +
 +	chk_badblocks(&jb, &first, master);
-+	chk_bl2(&jb, &first, buf);
 +
++	chk_group("引导");
++	chk_bl2(&jb, &first, buf);
++	chk_env_defaults(&jb, &first);
++
++	chk_group("UBI");
 +	if (ubi_part(part_name, NULL)) {
 +		chk_item(&jb, &first, "UBI", CHK_FAIL,
 +			 "无法挂载：闪存上没有可用的 UBI。首次迁移请在「引导升级」里打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
@@ -1778,20 +2424,29 @@ new file mode 100644
 +			 "%d 个卷，坏块 %d 个，空闲 %d 个逻辑擦除块",
 +			 ubi->vol_count, ubi->bad_peb_count, ubi->avail_pebs);
 +
++		chk_wear(&jb, &first, ubi);
 +		chk_fip(&jb, &first, ubi, buf, max);
 +		chk_fit(&jb, &first, ubi, buf);
++		chk_firmware(&jb, &first, ubi, buf, max);
++
++		chk_group("环境");
 +#ifdef CONFIG_ENV_UBI_VOLUME
-+		chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME);
++		e1ok = chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME,
++				  &e1, NULL, 0);
 +#endif
 +#ifdef CONFIG_ENV_UBI_VOLUME_REDUND
-+		chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME_REDUND);
++		chk_envvol(&jb, &first, ubi, CONFIG_ENV_UBI_VOLUME_REDUND, &e2,
++			   e1ok ? CONFIG_ENV_UBI_VOLUME : NULL, e1);
 +#endif
++
++		chk_group("出厂数据");
 +		for (i = 0; i < nfvols; i++)
 +			chk_fvol(&jb, &first, ubi, &fvols[i], buf, max);
 +
 +		ubi_put_device(ubi);
 +	}
 +
++	chk_group("出厂数据");
 +	chk_mac(&jb, &first);
 +out:
 +	jb_printf(&jb, "]}");
@@ -1855,6 +2510,173 @@ new file mode 100644
 +	return strlen(log_buf);
 +}
 +#endif
++
++/*
++ * ---- GET /ping -----------------------------------------------------------
++ *
++ * Two numbers of work, polled every few seconds: is the server answering,
++ * and how long has this U-Boot been up.  Uptime rather than a token because
++ * it answers a second question for free -- when it goes backwards the board
++ * rebooted underneath the page, and the page reloads itself instead of
++ * showing volume tables from before the reboot.
++ */
++static char ping_buf[96];
++static int ping_len;
++
++static int httpd_ping(void)
++{
++	return snprintf(ping_buf, sizeof(ping_buf),
++			JSON_HDR("200 OK") "{\"up\":%lu}", get_timer(0));
++}
++
++/*
++ * ---- GET /env ------------------------------------------------------------
++ *
++ * The environment, read-only.  A board that will not boot usually has a
++ * bootcmd or a bootmenu entry somebody edited by hand, and without a serial
++ * console there is no way to see that today.  Sorted by name: the hash
++ * table's own order means nothing to a reader.
++ *
++ * Editing is deliberately not offered.  One wrong bootcmd from a page whose
++ * whole purpose is rescuing a board that will not boot is a bad trade; the
++ * one write offered is the wholesale restore below, which cannot leave the
++ * environment in a state this build has never seen.
++ */
++#define MAX_ENVS	256
++
++static char env_buf[16384];
++static int env_len;
++
++/*
++ * hwalk_r() hands every live entry to a callback and takes no context
++ * pointer, so the list it fills is a static.  That is fine here: the whole
++ * server is single threaded and the list is consumed before returning.
++ *
++ * The table itself cannot be walked from outside: struct env_entry_node is
++ * only defined in lib/hashtable.c.
++ */
++static struct env_entry *env_list[MAX_ENVS];
++static int env_n;
++
++static int env_collect(struct env_entry *e)
++{
++	if (env_n < MAX_ENVS)
++		env_list[env_n++] = e;
++
++	return 0;			/* non-zero would stop the walk */
++}
++
++static int httpd_env(void)
++{
++	struct env_entry **list = env_list;
++	struct jbuf jb;
++	int n, cut = 0, i, j;
++
++	env_n = 0;
++	hwalk_r(&env_htab, env_collect);
++	n = env_n;
++
++	/* Selection sort: a hundred names at most, and only when asked. */
++	for (i = 0; i < n - 1; i++) {
++		int m = i;
++
++		for (j = i + 1; j < n; j++)
++			if (strcmp(list[j]->key, list[m]->key) < 0)
++				m = j;
++		if (m != i) {
++			struct env_entry *t = list[i];
++
++			list[i] = list[m];
++			list[m] = t;
++		}
++	}
++
++	jb_init(&jb, env_buf, sizeof(env_buf));
++	jb_printf(&jb, JSON_HDR("200 OK") "{\"env\":[");
++	for (i = 0; i < n; i++) {
++		const char *k = list[i]->key;
++		const char *v = list[i]->data ? list[i]->data : "";
++
++		/*
++		 * Stop on a whole entry rather than let jb_str cut one in
++		 * half: a truncated string would make the whole reply
++		 * unparseable, and then the page shows nothing at all.
++		 */
++		if (jb.n + (int)strlen(k) + 2 * (int)strlen(v) + 32 > jb.max) {
++			cut = 1;
++			break;
++		}
++		jb_printf(&jb, "%s{\"k\":", i ? "," : "");
++		jb_str(&jb, k);
++		jb_printf(&jb, ",\"v\":");
++		jb_str(&jb, v);
++		jb_printf(&jb, "}");
++	}
++	jb_printf(&jb, "],\"cut\":%d}", cut);
++
++	if (cut)
++		printf("httpd: /env listed %d of %d variables\n", i, n);
++
++	return jb_done(&jb, "/env");
++}
++
++/*
++ * ---- GET /envreset -------------------------------------------------------
++ *
++ * "env default -a && saveenv".  The recovery case is a saved environment
++ * older than this build, or one somebody edited into a state that will not
++ * boot -- both of which the built-in fallbacks in this file work around for
++ * flashing, but neither of which they fix for the next normal boot.
++ *
++ * ethaddr is put back by hand.  "env default -a" drops it with everything
++ * else; the factory MAC lives in the ri volume and the boot script restores
++ * it, but not until the next boot, and the page promises the MAC is not
++ * touched.  Keeping the running value is what makes that true.
++ */
++static char envreset_buf[256];
++static int envreset_len;
++
++static int httpd_envreset(void)
++{
++	char mac[20];
++	const char *cur;
++	int saved;
++
++	cur = env_get("ethaddr");
++	strlcpy(mac, cur ? cur : "", sizeof(mac));
++
++	printf("httpd: restoring the default environment\n");
++	run_command("env default -a", 0);
++	if (mac[0] && !env_get("ethaddr"))
++		env_set("ethaddr", mac);
++
++	saved = !run_command("saveenv", 0);
++	printf("httpd: default environment %s\n",
++	       saved ? "restored and saved" :
++		       "restored in RAM only -- saveenv failed");
++
++	return snprintf(envreset_buf, sizeof(envreset_buf),
++			"HTTP/1.0 200 OK\r\n"
++			"Content-Type: text/plain; charset=utf-8\r\n"
++			"Connection: close\r\n"
++			"\r\n%s", saved ? "ok saved" : "ok");
++}
++
++/*
++ * ---- GET /reboot ---------------------------------------------------------
++ *
++ * Answer first, reset once the answer has been acknowledged -- same shape as
++ * the flash-after-net_loop path, and for the same reason: resetting from
++ * inside a tx callback would drop the response on the floor and the page
++ * would report a lost connection instead of a reboot.
++ */
++static const char resp_reboot[] =
++	"HTTP/1.0 200 OK\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\nok";
++
++static int reboot_pending;
 +
 +/*
 + * ---- upload --------------------------------------------------------------
@@ -2223,6 +3045,475 @@ new file mode 100644
 +	up_ready = 1;
 +}
 +
++/*
++ * ---- GET /dump -----------------------------------------------------------
++ *
++ * Reads a UBI volume or a raw flash range into memory and hands it to the
++ * browser as a file.  What it is for is the window before a first migration:
++ * the flash still holds the factory content, ri and bosa are per-unit and
++ * unobtainable once "rebuild UBI" has run, and the machine may already have
++ * no working system left to dd from.  It is also the only way to produce the
++ * image that "back to stock" asks for.
++ *
++ * It streams.  A whole 256 MiB chip does not fit in RAM beside U-Boot on a
++ * 512 MiB board, and the obvious way out -- hand the user several files and
++ * let them stitch the thing back together -- is not a feature, it is our
++ * memory budget wearing a hat.  So only a window is held at a time and it is
++ * refilled as the browser drains it: Content-Length is still the full
++ * length, so one click is still one file, whatever its size.
++ *
++ * tx() is a pull at an arbitrary offset, which is exactly the shape this
++ * needs.  A retransmit inside the window is a memcpy; one behind it refills
++ * from the checkpoint for that window, which costs a re-read and nothing
++ * else.  Refilling blocks the net loop for as long as one window takes to
++ * read -- a few hundred milliseconds -- which TCP simply waits out.
++ */
++#define DUMP_HDR_SZ	512
++#define DUMP_WIN_MAX	(8 << 20)
++#define DUMP_WINS	512
++
++static char	dump_hdr[DUMP_HDR_SZ];
++static int	dump_hdr_len;
++static ulong	dump_base;	/* the window, not the whole thing */
++static u32	dump_len;	/* total output bytes */
++static u32	dump_win;	/* window capacity */
++static u32	dump_wpos;	/* output offset the window starts at */
++static u32	dump_wlen;	/* valid bytes in it, 0 when empty */
++static int	dump_busy;
++static int	dump_raw;
++static char	dump_vol[UBIVOL_NAME_MAX];
++static struct mtd_info	*dump_mtd;
++static char	dump_qs[160];
++
++/*
++ * When bytes last actually went out.  A download that the browser abandons
++ * -- cancelled, tab closed, cable pulled -- never reaches the end, so
++ * nothing would ever clear dump_busy and every later upload would be
++ * refused until the page was reloaded.  After this long without progress
++ * the next request takes the buffer over.  Cutting a transfer that was only
++ * paused cannot hand anybody a bad backup: the crc32 is folded in on the
++ * forward pass alone, so /dumpinfo simply never reports it.
++ */
++#define DUMP_IDLE_MS	15000
++
++static ulong	dump_t0;
++
++/*
++ * Flash offset each window starts at.  Bad blocks are skipped, so the map
++ * from output offset to flash offset is not linear and cannot be computed --
++ * but it can be remembered as the forward pass lays it down, which is all a
++ * backward seek needs.  512 entries covers a 4 GiB chip at this window size.
++ */
++static u64	dump_ckpt[DUMP_WINS];
++static u8	dump_ckpt_ok[DUMP_WINS];
++
++/* Rolling over the forward pass, so the figure covers what was really sent. */
++static u32	dump_crc;
++static u32	dump_crc_pos;
++
++/*
++ * There is one staging area and one header buffer, so a second download
++ * would take both away from the first.  Refuse it out of a buffer of its
++ * own rather than through dump_fail(), which would write over exactly the
++ * header the transfer in flight is still sending.
++ */
++/*
++ * An upload streams into $loadaddr and would run straight through any gap
++ * into the staged download, so the two cannot overlap.  Refusing is the
++ * honest answer: silently truncating the download would hand the user a
++ * corrupt backup they believe is good.
++ */
++static const char resp_postbusy[] =
++	"HTTP/1.0 400 Bad Request\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n设备正在向浏览器传送备份，等它传完再上传；或者刷新页面放弃那次下载\n";
++
++static const char resp_dumpbusy[] =
++	"HTTP/1.0 503 Service Unavailable\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n另一个备份正在传输，等它传完再试\n";
++
++/* One value out of "a=1&b=2"; 0 when the key is not there. */
++static int qs_get(const char *qs, const char *key, char *out, int max)
++{
++	int n = strlen(key);
++	const char *p = qs;
++
++	while (*p) {
++		const char *amp = strchr(p, '&');
++		int len = amp ? amp - p : (int)strlen(p);
++
++		if (len > n + 1 && !strncmp(p, key, n) && p[n] == '=') {
++			int v = len - n - 1;
++
++			if (v > max - 1)
++				v = max - 1;
++			memcpy(out, p + n + 1, v);
++			out[v] = '\0';
++
++			return 1;
++		}
++		if (!amp)
++			break;
++		p = amp + 1;
++	}
++
++	return 0;
++}
++
++/* A download nothing is pulling on any more; see DUMP_IDLE_MS. */
++static int dump_stale(void)
++{
++	return dump_busy && get_timer(dump_t0) > DUMP_IDLE_MS;
++}
++
++/* Refuse with a reason the page can show; the console gets it too. */
++static void dump_fail(const char *status, const char *fmt, ...)
++{
++	char msg[192];
++	va_list ap;
++
++	va_start(ap, fmt);
++	vsnprintf(msg, sizeof(msg), fmt, ap);
++	va_end(ap);
++
++	printf("httpd: /dump refused: %s\n", msg);
++
++	dump_len = 0;
++	dump_wlen = 0;
++	dump_busy = 0;
++	dump_hdr_len = snprintf(dump_hdr, sizeof(dump_hdr),
++				"HTTP/1.0 %s\r\n"
++				"Content-Type: text/plain; charset=utf-8\r\n"
++				"Connection: close\r\n"
++				"\r\n%s\n", status, msg);
++}
++
++/* "Nokia XG-040G-MD" + "ri" -> "nokia-xg-040g-md-ri.bin". */
++static void dump_name(char *dst, int max, const char *what)
++{
++	const char *model = fdt_getprop(gd->fdt_blob, 0, "model", NULL);
++	int n = 0;
++
++	while (model && *model && n < max - 40) {
++		char c = *model++;
++
++		if (c >= 'A' && c <= 'Z')
++			c += 'a' - 'A';
++		if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
++			dst[n++] = c;
++		else if (n && dst[n - 1] != '-')
++			dst[n++] = '-';
++	}
++	if (n && dst[n - 1] != '-')
++		dst[n++] = '-';
++	snprintf(dst + n, max - n, "%s.bin", what);
++}
++
++/*
++ * Read len bytes of flash starting at offset off, skipping bad blocks the way
++ * the mtd command does so that a dump and a restore of the same range line up
++ * with each other.  *endp comes back as the flash offset just past what was
++ * consumed -- that is what lets the next window carry on where this one
++ * stopped, which a plain multiply cannot do once a block has been skipped.
++ */
++static int dump_read_raw(u64 off, u32 len, u8 *buf, u64 *endp)
++{
++	struct mtd_info *m = dump_mtd;
++
++	while (len) {
++		u64 blk = off & ~((u64)m->erasesize - 1);
++		size_t rl = 0;
++		u32 n;
++		int ret;
++
++		if (off >= m->size) {
++			printf("httpd: /dump ran off the end of the flash\n");
++			return -1;
++		}
++		if (mtd_block_isbad(m, blk)) {
++			off = blk + m->erasesize;
++			continue;
++		}
++
++		n = m->erasesize - (u32)(off - blk);
++		if (n > len)
++			n = len;
++
++		ret = mtd_read(m, off, n, &rl, buf);
++		if (ret && ret != -EUCLEAN) {
++			printf("httpd: /dump read at 0x%llx failed (%d)\n", off, ret);
++			return -1;
++		}
++
++		buf += n;
++		off += n;
++		len -= n;
++	}
++
++	*endp = off;
++
++	return 0;
++}
++
++/* Bring the window holding output offset `want` into memory. */
++static int dump_fill(u32 want)
++{
++	u32 idx = want / dump_win;
++	u32 pos = idx * dump_win;
++	u32 len = dump_len - pos;
++
++	if (dump_wlen && pos == dump_wpos)
++		return 0;
++	if (len > dump_win)
++		len = dump_win;
++
++	if (!dump_raw) {
++		if (ubi_volume_read(dump_vol, (char *)dump_base, pos, len)) {
++			printf("httpd: /dump reading %s at %u failed\n",
++			       dump_vol, pos);
++			return -1;
++		}
++	} else {
++		u64 end;
++
++		if (idx >= DUMP_WINS || !dump_ckpt_ok[idx]) {
++			printf("httpd: /dump has no checkpoint for window %u\n",
++			       idx);
++			return -1;
++		}
++		if (dump_read_raw(dump_ckpt[idx], len, (u8 *)dump_base, &end))
++			return -1;
++		if (idx + 1 < DUMP_WINS && !dump_ckpt_ok[idx + 1]) {
++			dump_ckpt[idx + 1] = end;
++			dump_ckpt_ok[idx + 1] = 1;
++		}
++	}
++
++	dump_wpos = pos;
++	dump_wlen = len;
++
++	/*
++	 * Fold into the checksum only on the forward pass, so a retransmit
++	 * cannot count the same bytes twice.  By the end it covers exactly
++	 * what went out, which is a stronger statement than checksumming a
++	 * staging buffer would have been.
++	 */
++	if (pos == dump_crc_pos) {
++		dump_crc = crc32(dump_crc, (const u8 *)dump_base, len);
++		dump_crc_pos = pos + len;
++	}
++
++	return 0;
++}
++
++static void httpd_dump(void)
++{
++	static char part_name[] = UBI_PART;
++	char val[UBIVOL_NAME_MAX], what[80], name[128];
++	ulong top, avail;
++	u64 off = 0, good = 0;
++	u32 len = 0;
++
++	dump_busy = 1;
++	dump_t0 = get_timer(0);
++	dump_wlen = 0;
++	dump_crc = 0;
++	dump_crc_pos = 0;
++	memset(dump_ckpt_ok, 0, sizeof(dump_ckpt_ok));
++
++	if (up_active) {
++		dump_fail("503 Service Unavailable",
++			  "设备正在接收上传，等这一次写完再备份");
++		return;
++	}
++
++	dump_mtd = flash_master();
++	if (!dump_mtd) {
++		dump_fail("500 Internal Server Error", "没有找到闪存设备");
++		return;
++	}
++
++	if (qs_get(dump_qs, "vol", val, sizeof(val))) {
++		struct ubi_device *ubi;
++		struct ubi_volume *v;
++
++		if (!vol_name_ok(val)) {
++			dump_fail("400 Bad Request", "卷名不合法");
++			return;
++		}
++		if (ubi_part(part_name, NULL)) {
++			dump_fail("500 Internal Server Error",
++				  "UBI 挂不上，只能按 flash 偏移备份");
++			return;
++		}
++		ubi = ubi_get_device(0);
++		if (!ubi) {
++			dump_fail("500 Internal Server Error",
++				  "UBI 已挂载但无法访问");
++			return;
++		}
++		v = ubi_vol_find(ubi, val);
++		if (!v) {
++			ubi_put_device(ubi);
++			dump_fail("404 Not Found", "没有名为 %s 的卷", val);
++			return;
++		}
++		/*
++		 * used_bytes is the real length of a static volume and the
++		 * whole reservation of a dynamic one -- the same figure the
++		 * page put on the button, so what arrives is what it said.
++		 */
++		len = v->used_bytes > 0 ? (u32)v->used_bytes :
++			(u32)((u64)v->reserved_pebs * ubi->leb_size);
++		ubi_put_device(ubi);
++
++		dump_raw = 0;
++		strlcpy(dump_vol, val, sizeof(dump_vol));
++		snprintf(what, sizeof(what), "%s", val);
++	} else {
++		char o[24], l[24];
++
++		dump_raw = 1;
++		off = qs_get(dump_qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
++		if (off >= dump_mtd->size) {
++			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
++			return;
++		}
++		/*
++		 * No len means "to the end of the chip", which is the good
++		 * bytes from here on -- not the address span, which the bad
++		 * blocks do not fill.
++		 */
++		good = flash_good_bytes(dump_mtd, off);
++		len = qs_get(dump_qs, "len", l, sizeof(l)) ?
++			(u32)hextoul(l, NULL) : (u32)good;
++		snprintf(what, sizeof(what), "flash-0x%llx-0x%x", off, len);
++	}
++
++	if (!len) {
++		dump_fail("400 Bad Request", "长度为 0");
++		return;
++	}
++	if (dump_raw && (u64)len > good) {
++		dump_fail("400 Bad Request",
++			  "从 0x%llx 起只读得出 %llu 字节（已扣掉坏块），要不了 %u",
++			  off, good, len);
++		return;
++	}
++
++	/*
++	 * Only a window has to fit, so what used to be a ceiling on the whole
++	 * transfer is now just "is there room to work in".
++	 */
++	top = gd->start_addr_sp - UPLOAD_MARGIN;
++	avail = top > up_base + DUMP_GAP ? top - (up_base + DUMP_GAP) : 0;
++	dump_win = avail > DUMP_WIN_MAX ? DUMP_WIN_MAX : (u32)avail;
++	dump_win &= ~0xffUL;
++	if (dump_win > len)
++		dump_win = len;
++	if (dump_win < SZ_64K) {
++		dump_fail("507 Insufficient Storage",
++			  "内存不够，连一个读取窗口都放不下");
++		return;
++	}
++	if (dump_raw && (u64)len > (u64)dump_win * DUMP_WINS) {
++		dump_fail("507 Insufficient Storage",
++			  "这一段太长，请分成几次备份");
++		return;
++	}
++	dump_base = (top - dump_win) & ~0xffUL;
++
++	if (dump_raw) {
++		dump_ckpt[0] = off;
++		dump_ckpt_ok[0] = 1;
++	}
++	dump_len = len;
++	dump_wpos = 0;
++
++	/* First window now, so a read error is still a status code. */
++	if (dump_fill(0)) {
++		dump_fail("500 Internal Server Error", "读取失败，见串口日志");
++		return;
++	}
++
++	dump_name(name, sizeof(name), what);
++	strlcpy(dump_last_name, name, sizeof(dump_last_name));
++	printf("httpd: /dump %s, %u bytes, %u KiB window at 0x%lx\n",
++	       name, len, dump_win >> 10, dump_base);
++
++	dump_hdr_len = snprintf(dump_hdr, sizeof(dump_hdr),
++				"HTTP/1.0 200 OK\r\n"
++				"Content-Type: application/octet-stream\r\n"
++				"Content-Length: %u\r\n"
++				"Content-Disposition: attachment; filename=\"%s\"\r\n"
++				"Connection: close\r\n"
++				"\r\n", len, name);
++}
++
++static char dumpinfo_buf[320];
++static int dumpinfo_len;
++
++static int httpd_dumpinfo(void)
++{
++	struct jbuf jb;
++
++	jb_init(&jb, dumpinfo_buf, sizeof(dumpinfo_buf));
++	jb_printf(&jb, JSON_HDR("200 OK")
++		  "{\"seq\":%u,\"len\":%u,\"crc\":\"%08x\",\"name\":",
++		  dump_last_seq, dump_last_len, dump_last_crc);
++	jb_str(&jb, dump_last_name);
++	jb_printf(&jb, "}");
++
++	return jb_done(&jb, "/dumpinfo");
++}
++
++/* Header first, then the window; a miss refills it and comes back. */
++static int dump_tx(u32 off, void *buf, int maxlen)
++{
++	u32 total = (u32)dump_hdr_len + dump_len;
++	u32 want;
++	int n;
++
++	if (off >= total)
++		return 0;
++
++	if (off < (u32)dump_hdr_len) {
++		n = dump_hdr_len - off;
++		if (n > maxlen)
++			n = maxlen;
++		memcpy(buf, dump_hdr + off, n);
++
++		return n;
++	}
++
++	dump_t0 = get_timer(0);
++
++	want = off - dump_hdr_len;
++	if (want < dump_wpos || want >= dump_wpos + dump_wlen) {
++		if (dump_fill(want)) {
++			/*
++			 * Nothing useful can be said at this point: the 200
++			 * and the length went out long ago.  Stopping short
++			 * makes the browser call it a failed download, which
++			 * is the truth; the reason is on the console.
++			 */
++			printf("httpd: /dump aborted at %u of %u bytes\n",
++			       want, dump_len);
++			return 0;
++		}
++	}
++
++	n = dump_wpos + dump_wlen - want;
++	if (n > maxlen)
++		n = maxlen;
++	memcpy(buf, (const void *)(dump_base + (want - dump_wpos)), n);
++
++	return n;
++}
++
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
 +	/* A GET needs no body; drop whatever follows. */
@@ -2254,16 +3545,23 @@ new file mode 100644
 + */
 +static void *httpd_classify_get(const char *req, u32 rx_bytes)
 +{
-+	int n = rx_bytes < 128 ? rx_bytes : 128;
++	int n = rx_bytes < 320 ? rx_bytes : 320;
 +	int eol = mem_find(req, n, "\r\n", 2);
-+	const char *path = req + 4, *sp;
-+	int plen;
++	const char *path = req + 4, *sp, *q;
++	int plen, qlen = 0;
 +
 +	if (eol < 0)
-+		return n < 128 ? NULL : CONN_GET;
++		return n < 320 ? NULL : CONN_GET;
 +
 +	sp = memchr(path, ' ', eol - 4);
 +	plen = sp ? sp - path : eol - 4;
++
++	/* Only /dump takes arguments; for everything else the path is all. */
++	q = memchr(path, '?', plen);
++	if (q) {
++		qlen = plen - (q - path) - 1;
++		plen = q - path;
++	}
 +
 +	if (plen == 5 && !memcmp(path, "/info", 5))
 +		return CONN_INFO;
@@ -2271,6 +3569,25 @@ new file mode 100644
 +		return CONN_CHECK;
 +	if (plen == 4 && !memcmp(path, "/log", 4))
 +		return CONN_LOG;
++	if (plen == 5 && !memcmp(path, "/ping", 5))
++		return CONN_PING;
++	if (plen == 4 && !memcmp(path, "/env", 4))
++		return CONN_ENV;
++	if (plen == 9 && !memcmp(path, "/envreset", 9))
++		return CONN_ENVRESET;
++	if (plen == 7 && !memcmp(path, "/reboot", 7))
++		return CONN_REBOOT;
++	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
++		return CONN_DUMPINFO;
++	if (plen == 5 && !memcmp(path, "/dump", 5)) {
++		if (qlen > (int)sizeof(dump_qs) - 1)
++			qlen = sizeof(dump_qs) - 1;
++		if (qlen > 0)
++			memcpy(dump_qs, q + 1, qlen);
++		dump_qs[qlen > 0 ? qlen : 0] = '\0';
++
++		return CONN_DUMP;
++	}
 +
 +	return CONN_GET;
 +}
@@ -2288,6 +3605,15 @@ new file mode 100644
 +		if (up_owner != tcp || rx_bytes < 4)
 +			return;
 +		if (!memcmp(req, "POST", 4)) {
++			if (dump_stale()) {
++				printf("httpd: the download in flight went quiet, dropping it\n");
++				dump_busy = 0;
++			}
++			if (dump_busy) {
++				tcp->priv = CONN_POSTBUSY;
++				up_owner = NULL;
++				return;
++			}
 +			if (up_active) {
 +				tcp->priv = CONN_GET;	/* one upload at a time */
 +				up_owner = NULL;
@@ -2313,6 +3639,32 @@ new file mode 100644
 +				check_len = httpd_check();
 +			else if (cls == CONN_LOG)
 +				log_len = httpd_log();
++			else if (cls == CONN_PING)
++				ping_len = httpd_ping();
++			else if (cls == CONN_ENV)
++				env_len = httpd_env();
++			else if (cls == CONN_ENVRESET)
++				envreset_len = httpd_envreset();
++			else if (cls == CONN_DUMPINFO)
++				dumpinfo_len = httpd_dumpinfo();
++			else if (cls == CONN_DUMP) {
++				if (dump_stale()) {
++					printf("httpd: the download in flight went quiet, dropping it\n");
++					dump_busy = 0;
++				}
++				if (dump_busy)
++					tcp->priv = CONN_DUMPBUSY;
++				else
++					httpd_dump();
++			}
++			else if (cls == CONN_GET)
++				/*
++				 * A page load means whatever download was in
++				 * flight is gone with the old document; without
++				 * this an abandoned one would hold the staging
++				 * area until the next reboot.
++				 */
++				dump_busy = 0;
 +			return;
 +		}
 +	}
@@ -2349,6 +3701,24 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_LOG) {
 +		*len = log_len;
 +		return log_buf;
++	} else if (tcp->priv == CONN_PING) {
++		*len = ping_len;
++		return ping_buf;
++	} else if (tcp->priv == CONN_ENV) {
++		*len = env_len;
++		return env_buf;
++	} else if (tcp->priv == CONN_ENVRESET) {
++		*len = envreset_len;
++		return envreset_buf;
++	} else if (tcp->priv == CONN_REBOOT) {
++		s = resp_reboot;
++	} else if (tcp->priv == CONN_DUMPBUSY) {
++		s = resp_dumpbusy;
++	} else if (tcp->priv == CONN_POSTBUSY) {
++		s = resp_postbusy;
++	} else if (tcp->priv == CONN_DUMPINFO) {
++		*len = dumpinfo_len;
++		return dumpinfo_buf;
 +	} else {
 +		s = NULL;
 +	}
@@ -2362,6 +3732,9 @@ new file mode 100644
 +{
 +	const char *s;
 +	int total, len;
++
++	if (tcp->priv == CONN_DUMP)
++		return dump_tx(tx_offs, buf, maxlen);
 +
 +	s = httpd_response(tcp, &total);
 +	if (!s || tx_offs >= (u32)total)
@@ -2381,6 +3754,29 @@ new file mode 100644
 +	const char *s;
 +	int total;
 +
++	if (tcp->priv == CONN_DUMP) {
++		if (tx_bytes < (u32)dump_hdr_len + dump_len)
++			return;
++
++		/*
++		 * Now, not when the read started: the checksum covers the
++		 * bytes that actually went out, and the page learning it at
++		 * all is proof the transfer ran to the end.
++		 */
++		if (dump_len && dump_crc_pos == dump_len) {
++			dump_last_seq++;
++			dump_last_len = dump_len;
++			dump_last_crc = dump_crc;
++			printf("httpd: /dump %s delivered, %u bytes, crc32 0x%08x\n",
++			       dump_last_name, dump_len, dump_crc);
++		}
++
++		dump_busy = 0;
++		tcp_stream_close(tcp);
++
++		return;
++	}
++
 +	s = httpd_response(tcp, &total);
 +	if (!s || tx_bytes < (u32)total)
 +		return;
@@ -2390,6 +3786,14 @@ new file mode 100644
 +	 * would break the stream, which is why this lives here.
 +	 */
 +	tcp_stream_close(tcp);
++
++	/* Same shape as flash_pending: act once the answer is out. */
++	if (tcp->priv == CONN_REBOOT) {
++		reboot_pending = 1;
++		net_set_state(NETLOOP_SUCCESS);
++
++		return;
++	}
 +
 +	if (tcp->priv != CONN_POST)
 +		return;
@@ -2437,6 +3841,11 @@ new file mode 100644
 +	up_nparts = 0;
 +	up_bound_len = 0;
 +	flash_pending = 0;
++	reboot_pending = 0;
++	dump_busy = 0;
++	dump_len = 0;
++	dump_wlen = 0;
++	dump_hdr_len = 0;
 +	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
 +	fvols_parse();
 +
@@ -2445,7 +3854,7 @@ new file mode 100644
 +	net_set_udp_handler(httpd_dhcp_rx);
 +	httpd_led_start();
 +
-+	printf("Airoha Web U-Boot " WEB_VERSION " by Loong\n");
++	printf("Airoha Web U-Boot " WEB_VERSION " by " AUTHOR "\n");
 +	printf("Project " PROJECT_URL "\n");
 +	printf("Guide   " PORTAL_URL "recovery-guide.html\n");
 +	/*
@@ -2712,6 +4121,13 @@ new file mode 100644
 +		if (err < 0) {
 +			printf("httpd error: %d\n", err);
 +			return CMD_RET_FAILURE;
++		}
++
++		if (reboot_pending) {
++			printf("httpd: rebooting on request\n");
++			run_command("reset", 0);
++
++			return CMD_RET_SUCCESS;
 +		}
 +
 +		if (!flash_pending)
