@@ -228,11 +228,24 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     /* 整片在桩里要跑十几秒（真机是十几分钟），
        而这里验的是「读取期间不打扰」，不是快慢 */
     $(w, '#dumpoff').value = '0x0';
-    $(w, '#dumplen').value = '0x800000';
+    $(w, '#dumplen').value = '0x4000000';
     w.dumpraw();
+    /*
+     * 心跳是 3 秒一次的，得等真的轮到一次、并且那一次打不通。传输在桩里跑
+     * 6.7 秒，5 秒这个点两边都稳：至少有一次心跳失败了，传输还没结束。
+     */
     await sleep(5000);
     ok('备份期间不弹框', !on(w, '#off'));
-    ok('边读边传，点一直是绿的', $(w, '#lived').className === 'dot s0',
+    /*
+     * net/tcp.c 只有一条流，下载那条连接从头开到尾 —— 所以这期间心跳也打不
+     * 通，点本来就该转黄。以前这里断言「一直是绿的」，那是桩只静默 900 ms 的
+     * 产物，真设备上从来不是这样。
+     */
+    ok('边读边传时点转黄', $(w, '#lived').className === 'dot s1',
+       $(w, '#lived').className);
+    ok('点旁边写设备忙', /设备忙/.test(txt(w, '#lives')), txt(w, '#lives'));
+    await sleep(9000);
+    ok('传完点转回绿', $(w, '#lived').className === 'dot s0',
        $(w, '#lived').className);
     ok('传完记了一行', w.document.querySelectorAll('#dll tr').length === 1);
 
@@ -655,12 +668,13 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        sent2 && sent2.body instanceof w2.FormData, sent2 && String(sent2.body));
   }
 
-  console.log('\n--- 备份时也有进度条 ---');
+  console.log('\n--- 备份的进度条只说它知道的 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p10]').click();
     await sleep(400);
     ok('还没开始时不占地方', $(w, '#dlprog').hidden);
+    ok('那条说明也收着', $(w, '#dlwhy').hidden);
 
     $(w, '#dumpoff').value = '0x0';
     $(w, '#dumplen').value = '0x4000000';
@@ -669,22 +683,32 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('开始就露出来', !$(w, '#dlprog').hidden);
     ok('先说在读哪一段', /正在读取并传送/.test(txt(w, '#dlprog .pwhat')),
        txt(w, '#dlprog .pwhat'));
+    ok('给了总长度', /MiB|KiB/.test(txt(w, '#dlprog .pct')),
+       txt(w, '#dlprog .pct'));
 
+    /*
+     * 字节进度是问不到的：net/tcp.c 里只有一个 static struct tcp_stream，旧连接
+     * 没进 CLOSED 之前新 SYN 直接被拒，而下载那条从浏览器点「保存」一直开到传
+     * 完 —— /dumpinfo 在这期间根本连不上设备。
+     *
+     * 这四条以前断言的是百分比、速率、剩余时间，全绿，因为桩是并发应答的；真
+     * 设备上那几个数一次都没出现过。判据自己错了比没有判据更坏，所以改成断言
+     * 它确实没有假装知道，并且把去哪儿看说清楚了。
+     */
     await sleep(4200);
-    const pct = txt(w, '#dlprog .pct');
-    ok('报了已传多少', /MiB \/ /.test(pct), pct);
-    ok('报了百分比', /%/.test(pct), pct);
-    ok('报了速率', /(MiB|KiB|B)\/s/.test(pct), pct);
-    ok('报了剩余时间', /剩余 /.test(pct), pct);
-    ok('进度条不是那根来回晃的',
-       !$(w, '#dlprog .pbar').className.includes('ind'),
+    ok('进度条是不确定那根', $(w, '#dlprog .pbar').className.includes('ind'),
        $(w, '#dlprog .pbar').className);
+    ok('不摆假百分比', !/%/.test(txt(w, '#dlprog .pct')), txt(w, '#dlprog .pct'));
+    ok('说清了为什么没有字节数', !$(w, '#dlwhy').hidden &&
+       /只有一条连接/.test(txt(w, '#dlwhy')), txt(w, '#dlwhy'));
+    ok('指了去哪儿看', /浏览器自己的下载栏/.test(txt(w, '#dlwhy')));
 
     await sleep(9000);
     ok('传完转绿', $(w, '#dlprog').className === 'prog ok',
        $(w, '#dlprog').className);
     ok('传完那行说传输完成', /传输完成/.test(txt(w, '#dlprog .pwhat')),
        txt(w, '#dlprog .pwhat'));
+    ok('传完把那条说明收起来', $(w, '#dlwhy').hidden);
     ok('完成记录也照旧', w.document.querySelectorAll('#dll tr').length === 1);
   }
 

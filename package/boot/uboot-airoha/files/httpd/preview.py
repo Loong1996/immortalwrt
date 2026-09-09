@@ -317,6 +317,12 @@ document.addEventListener('DOMContentLoaded',function(){
  /*
   * 下载本身在 file:// 下没有设备可下，所以只换掉最里面这一层：读取期间设备
   * 静默、读完记下 crc32 —— 页面那套问 /dumpinfo 的逻辑跑的是真的。
+  *
+  * 「静默」是整段传输，不是象征性的一下子。net/tcp.c 只有一个
+  * static struct tcp_stream，旧连接没 CLOSED 之前新 SYN 直接被拒，而下载那条
+  * 从头开到尾 —— 所以这期间设备对任何请求都不应答。桩以前只 fall(900)，于是
+  * /dumpinfo 一路答得好好的，页面那套百分比、速率、剩余时间在这里全绿，在真
+  * 设备上一次都没出现过。判据自己错了，比没有判据更坏。
   */
  window.dlstart=function(u,n){
   /* 长度留空时由设备算到片尾，这里照做，好让进度和 crc32 都有个数 */
@@ -324,7 +330,7 @@ document.addEventListener('DOMContentLoaded',function(){
    n=D.info.flash.size-(o?parseInt(o[1],16):0)}
   /* 第一个窗口读完就开始传，所以静默很短；crc32 要等整份传完才有 */
   var send=Math.max(1200,Math.min(n/1e4,30000)),t0=Date.now();
-  fall(900);
+  fall(send);
   DBUSY=1;DSENT=0;DTOTAL=n;clearInterval(DTICK);
   DTICK=setInterval(function(){
    DSENT=Math.min(n,Math.round(n*(Date.now()-t0)/send))},200);

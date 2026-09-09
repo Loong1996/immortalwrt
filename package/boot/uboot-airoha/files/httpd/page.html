@@ -274,6 +274,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
 <div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span></div>
 <div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+<p class=note id=dlwhy hidden>传输期间设备不应答：U-Boot 的 TCP 栈同时只有一条连接，而这条连接正被下载占着，所以本页面问不到「传了多少字节」。<b>字节进度请看浏览器自己的下载栏</b>。传完这里会给出 crc32，可与本地文件核对。</p>
 </div>
 
 <div class=pane id=p5>
@@ -412,7 +413,6 @@ var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;
 var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
 var RT=0,RN=0,RATE=0;
 var DLSEQ=0,DLBAD=0,STUCK='';
-var DLT=0,DLN=0,DLRATE=0;
 var LOGN=0,LOGT=null,LOGGEN=0;
 /* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */
 var NETINIT=0;
@@ -667,34 +667,38 @@ t=t.replace(/\s+/g,' ').trim();if(!t)return;
 DLBAD=1;dlstop('bad');
 $('.pwhat',$('#dlprog')).textContent='设备拒绝了本次备份';
 $('#dlh').textContent='设备拒绝了本次备份：'+t}
+/*
+ * 进度条只能是不确定的那根，这不是偷懒。net/tcp.c 里只有一个
+ * static struct tcp_stream，旧连接没进 CLOSED 之前新的 SYN 直接被拒 —— 而下载
+ * 那条连接从浏览器点「保存」一直开到文件传完。所以这期间 /dumpinfo 根本连不上
+ * 设备，字节数是问不到的。
+ *
+ * 设备侧照样在数（dump_sent），也照样在 /dumpinfo 里报，只是送不出去；哪天
+ * tcp.c 长出第二条流，这里改回轮询即可。在那之前把话说清楚，比摆一个永远不动
+ * 的百分比强。
+ */
 function sink(u,what,n){silent();DLBAD=0;
-DLT=Date.now();DLN=0;DLRATE=0;
 var pg=$('#dlprog');pg.hidden=false;pg.className='prog';
 $('.pbar',pg).className='pbar ind';$('.pbar',pg).style.width='100%';
-$('.pwhat',pg).textContent='正在读取并传送 '+what;$('.pct',pg).textContent='';
+$('.pwhat',pg).textContent='正在读取并传送 '+what;
+$('.pct',pg).textContent=n===null?'到片尾':sz(n);
+$('#dlwhy').hidden=false;
 $('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';
 get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
 DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}
 /*
- * 同一个 /dumpinfo：传输中报进度，读完报 crc32。页面本来每两秒就在问它，
- * 不必再开一个端点。
+ * 传输期间这几次问必然打不通（见 sink() 上面那段），所以这里等的只有一件事：
+ * 连接关掉之后 /dumpinfo 的 seq 变了 —— 那说明读完了，crc32 也就有了。
  */
 function dlpoll(k){if(DLBAD)return;
 get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}
 if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;
 dlrow(r);return}
-if(st==200&&r&&r.busy&&r.total)dlprog(r);
 if(k<120)setTimeout(function(){dlpoll(k+1)},2000);
 else{dlstop('bad');
 $('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「诊断」中的串口日志'}})}
-function dlprog(r){var pg=$('#dlprog'),p=r.sent/r.total,
-now=Date.now(),dt=(now-DLT)/1000;
-if(dt>=1.5){DLRATE=(r.sent-DLN)/dt;DLT=now;DLN=r.sent}
-$('.pbar',pg).className='pbar';$('.pbar',pg).style.width=(p*100)+'%';
-$('.pct',pg).textContent=sz(r.sent)+' / '+sz(r.total)+' · '
-+(p*100).toFixed(0)+'%'
-+(DLRATE>0?' · '+spd(DLRATE)+' · 剩余 '+dur((r.total-r.sent)/DLRATE):'')}
 function dlstop(cls){var pg=$('#dlprog');pg.className='prog'+(cls?' '+cls:'');
+$('#dlwhy').hidden=true;
 $('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';
 $('.pct',pg).textContent=''}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
