@@ -51,8 +51,8 @@ INFO = {
     "ram": 536870912,
     "mac": "90:03:2e:12:34:56",
     "uboot": "U-Boot 2026.07-ImmortalWrt (Sep 06 2026 - 10:21:03 +0800)",
-    "flash": {"name": "spi-nand0", "size": 268435456, "good": 268435456,
-              "erase": 131072, "page": 2048},
+    "flash": {"name": "spi-nand0", "size": 268435456, "erase": 131072,
+              "page": 2048},
     "parts": [{"n": "bl2", "o": 0, "s": 131072},
               {"n": "ubi", "o": 131072, "s": 268304384}],
     "uploadmax": 0xf8d1000,
@@ -148,7 +148,7 @@ httpd: DHCP ACK -> 192.168.1.100
 STUB = r"""
 <script>(function(){
 var D=@DATA@,S={dev:'ok',post:'ok',conn:'up'},T0=Date.now(),DOWN=0;
-var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',name:''};
+var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',holes:0,name:''};
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
@@ -182,19 +182,30 @@ x.send=function(fd){
   var t=body(x.u);
   setTimeout(function(){if(t==null){x.status=404;x.responseText='';x.onerror?x.onerror():x.onload&&x.onload()}
    else{x.status=200;x.responseText=t;x.onload&&x.onload()}},x.u=='/check'?1500:x.u=='/ping'?60:300);return}
- var tot=0,n=0,stay=false;try{fd.forEach(function(v){if(v&&v.size)tot+=v.size})}catch(e){}if(!tot)tot=1;
+ /* p4 发的是裸 File，不是 FormData —— 那条路没有表单可遍历 */
+ var tot=0,n=0,stay=false;try{tot=fd.size||0}catch(e){}
+ if(!tot)try{fd.forEach(function(v){if(v&&v.size)tot+=v.size})}catch(e){}
+ if(!tot)tot=1;
  try{stay=fd.get('stay')=='1'}catch(e){}
  var tick=setInterval(function(){n+=Math.max(tot/40,65536);if(n>=tot){n=tot;clearInterval(tick);x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot});x.upload.onload&&x.upload.onload();
   setTimeout(function(){if(S.post=='drop'){x.onerror&&x.onerror();return}
-   if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well'}
-   else{x.status=200;x.responseText='OK';fall(stay?7000:60000)}
+   if(S.post=='fail500'){x.status=500;
+    x.responseText=x.u&&x.u.indexOf('/stock')==0?
+     '写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电':
+     '写入失败，详见串口日志'}
+   else if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well'}
+   else{x.status=200;
+    x.responseText=x.u&&x.u.indexOf('/stock')==0?
+     'ok '+tot+' bytes crc32 '+((0x3f2a91c4+tot)>>>0).toString(16)+
+     ' skipped 0':'OK';
+    fall(stay?7000:60000)}
    x.onload&&x.onload()},1200);return}
   x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot})},80)}}
 window.XMLHttpRequest=XHR;
 document.addEventListener('DOMContentLoaded',function(){
  var b=document.createElement('div');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=drop>断线</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
  var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn');
  sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};
@@ -207,12 +218,12 @@ document.addEventListener('DOMContentLoaded',function(){
  window.dlstart=function(u,n){
   /* 长度留空时由设备算到片尾，这里照做，好让进度和 crc32 都有个数 */
   if(n===null){var o=/off=0x([0-9a-f]+)/.exec(u);
-   n=D.info.flash.good-(o?parseInt(o[1],16):0)}
+   n=D.info.flash.size-(o?parseInt(o[1],16):0)}
   /* 第一个窗口读完就开始传，所以静默很短；crc32 要等整份传完才有 */
   var send=Math.max(1200,Math.min(n/2e5,12000));
   fall(900);
   setTimeout(function(){DSEQ++;
-   DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),
+   DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),holes:0,
           name:'nokia-xg-040g-md-'+(/vol=([^&]+)/.exec(u)||[0,'flash'])[1]+'.bin'}},
    send)};
 });
