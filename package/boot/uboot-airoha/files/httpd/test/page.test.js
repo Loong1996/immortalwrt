@@ -242,7 +242,7 @@ function stayUpload(w) {
     const w = await boot();
     $(w, '.nav[data-p=p8]').click();
     await sleep(2200);
-    ok('体检跑完且没弹框', !on(w, '#off') && /15 项正常/.test(txt(w, '#chkh')));
+    ok('体检跑完且没弹框', !on(w, '#off') && /16 项正常/.test(txt(w, '#chkh')));
   }
 
   console.log('\n--- 重启 (p12) ---');
@@ -1260,12 +1260,12 @@ function stayUpload(w) {
     await sleep(2200);
     const heads = [...w.document.querySelectorAll('#chk th.g')].map(t => t.textContent);
     ok('五组标题都在', heads.join(',') === '闪存,引导,UBI,环境,出厂数据', heads.join(','));
-    ok('十六项都在',
-       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 16);
+    ok('十七项都在',
+       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 17);
     ok('envver 报出来了', /envver/.test(txt(w, '#chk')));
     ok('固件版本报出来了', /2026-09-05 17:01/.test(txt(w, '#chk')));
     ok('两份环境对比过', /与 ubootenv 一致/.test(txt(w, '#chk')));
-    ok('汇总仍然正确', /1 项注意 · 15 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
+    ok('汇总仍然正确', /1 项注意 · 16 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
   }
 
   console.log('\n--- 卷名当数据看，不当代码看 ---');
