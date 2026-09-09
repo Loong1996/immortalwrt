@@ -630,7 +630,8 @@ function stayUpload(w) {
   console.log('\n--- 串口日志实时跟随 ---');
   {
     const w = await boot();
-    $(w, '.nav[data-p=p9]').click();
+    $(w, '.nav[data-p=p8]').click();
+    $(w, '#logtab').click();
     await sleep(600);
     const first = txt(w, '#log');
     ok('先按老路整段读出来', /probing by address aliasing/.test(first));
@@ -717,7 +718,7 @@ function stayUpload(w) {
        rows[0].cells[1].textContent);
     ok('命令也摆出来', rows[0].cells[2].textContent === 'run boot_ubi',
        rows[0].cells[2].textContent);
-    ok('说清不按键会怎样', /秒内不按键/.test(txt(w, '#bmh')), txt(w, '#bmh'));
+    ok('说清不按键会怎样', /秒内无按键/.test(txt(w, '#bmh')), txt(w, '#bmh'));
 
     /* 串口上红的那几条是会写闪存的，这里也标红；颜色码不能漏进标题 */
     w.ENV = { env: [
@@ -731,7 +732,7 @@ function stayUpload(w) {
 
     w.ENV = { env: [{ k: 'bootcmd', v: 'x' }], cut: 0 };
     w.bmfill();
-    ok('没有菜单也说清楚', /直接走 bootcmd/.test(txt(w, '#bmh')),
+    ok('没有菜单也说清楚', /直接执行 bootcmd/.test(txt(w, '#bmh')),
        txt(w, '#bmh'));
   }
 
@@ -751,7 +752,7 @@ function stayUpload(w) {
     ok('文件名带机型', got && got.name === 'nokia-xg-040g-md-diag.txt',
        got && got.name);
     ok('带设备详情', /Nokia XG-040G-MD/.test(got.text));
-    ok('带体检结果', /== 健康检查 ==/.test(got.text) && /BL2/.test(got.text));
+    ok('带体检结果', /== 快速检查 ==/.test(got.text) && /BL2/.test(got.text));
     ok('带环境变量', /== 环境变量 ==/.test(got.text) &&
        /bootcmd=/.test(got.text));
     ok('带串口日志', /== 串口日志 ==/.test(got.text) &&
@@ -771,7 +772,7 @@ function stayUpload(w) {
 
     w.ask();
     ok('确认框的主按钮改口', txt(w, '#yes') === '启动它', txt(w, '#yes'));
-    ok('说清闪存不写', /闪存不写/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('说清闪存不写', /不写入闪存/.test(txt(w, '#abody')), txt(w, '#abody'));
     ok('没把它说成写入', !/仍要写入/.test(txt(w, '#yes')));
     w.hide();
 
@@ -789,10 +790,10 @@ function stayUpload(w) {
     ok('走到完成页', on(w, '#p7'));
     ok('标题不说上传完成', txt(w, '#p7 h1') === '已交给设备启动',
        txt(w, '#p7 h1'));
-    ok('说清闪存没动', /闪存没有改动/.test(txt(w, '#p7 .sub')),
+    ok('说清闪存没动', /闪存未改动/.test(txt(w, '#p7 .sub')),
        txt(w, '#p7 .sub'));
     const steps = txt(w, '#steps');
-    ok('步骤是启动不是写入', /直接启动它/.test(steps) && !/写入固件/.test(steps),
+    ok('步骤是启动不是写入', /直接引导/.test(steps) && !/写入固件/.test(steps),
        steps);
     ok('说清起不来怎么办', /断电/.test(steps), steps);
   }
@@ -814,7 +815,7 @@ function stayUpload(w) {
     ok('立刻说在启动', on(w, '#off') && /设备正在启动系统/.test(txt(w, '#offt')),
        txt(w, '#offt'));
     ok('不给重连按钮', $(w, '#offr').hidden);
-    ok('说清起不来会回来', /会回到这个页面/.test(txt(w, '#offb')),
+    ok('说清起不来会回来', /回到本页面/.test(txt(w, '#offb')),
        txt(w, '#offb'));
   }
 
@@ -825,7 +826,7 @@ function stayUpload(w) {
     $(w, '#bob').click();
     await sleep(600);
     ok('按钮改口', txt(w, '#bob') === '已设置', txt(w, '#bob'));
-    ok('说清只生效一次', /再下一次恢复正常/.test(txt(w, '#boh')),
+    ok('说清只生效一次', /再下次开机恢复正常/.test(txt(w, '#boh')),
        txt(w, '#boh'));
 
     /* 存不进闪存是要说的：断电就白设了 */
@@ -835,7 +836,7 @@ function stayUpload(w) {
     $(w2, '.nav[data-p=p12]').click();
     $(w2, '#bob').click();
     await sleep(600);
-    ok('保存失败要说明', /断电就失效/.test(txt(w2, '#boh')), txt(w2, '#boh'));
+    ok('保存失败要说明', /断电后失效/.test(txt(w2, '#boh')), txt(w2, '#boh'));
   }
 
   console.log('\n--- 网络状态 ---');
@@ -847,7 +848,7 @@ function stayUpload(w) {
     ok('报了地址', /192\.168\.1\.1/.test(t), t);
     ok('0.0.0.0 的掩码不往外摆', !/0\.0\.0\.0/.test(t), t);
     ok('报了网卡', /airoha-gdm1/.test(t), t);
-    ok('说清地址是设备发的', /你现在用的地址是设备发的/.test(t), t);
+    ok('说清地址是设备发的', /当前地址由设备分配/.test(t), t);
     ok('带上了客户端 MAC', /a4:5e:60:11:22:33/.test(t), t);
 
     const rows = [...w.document.querySelectorAll('#net tr')]
@@ -864,16 +865,16 @@ function stayUpload(w) {
     ok('没插的点是黄的', rows[0].cells[0].querySelector('.dot').className
        === 'dot s1');
     ok('说清端口号的口径', !$(w, '#portn').hidden &&
-       /不一定等于机壳上的丝印/.test(txt(w, '#portn')));
+       /与外壳丝印不一定对应/.test(txt(w, '#portn')));
 
     /* 没发过地址 = 用户自己配的 IP，后续建议不一样 */
     w.INFO.net.ack = 0; w.INFO.net.offer = 0;
     w.netfill();
-    ok('没发过地址就直说', /自己配置的 IP/.test(txt(w, '#net')), txt(w, '#net'));
+    ok('没发过地址就直说', /手动配置的 IP/.test(txt(w, '#net')), txt(w, '#net'));
     w.INFO.net.offer = 3;
     w.netfill();
     ok('发了没被接受也分得清',
-       /发出过 3 次地址但没有被接受/.test(txt(w, '#net')), txt(w, '#net'));
+       /已发出 3 次地址，均未被接受/.test(txt(w, '#net')), txt(w, '#net'));
 
     /* 读不到端口的板子不该留一张空表 */
     w.INFO.ports = [];
@@ -901,11 +902,11 @@ function stayUpload(w) {
     ok('确认框写清新地址', /192\.168\.9\.1/.test(txt(w, '#abody')),
        txt(w, '#abody'));
     ok('说清页面会断', /重新打开/.test(txt(w, '#abody')));
-    ok('不保存时说清断电会回去', /断电就回到原来的地址/.test(txt(w, '#abody')));
+    ok('不保存时说清断电会回去', /断电后恢复原地址/.test(txt(w, '#abody')));
 
     $(w, '#nsave').checked = true;
     w.asknetset();
-    ok('保存时把话说重', /断电也回不去/.test(txt(w, '#abody')),
+    ok('保存时把话说重', /断电也无法恢复/.test(txt(w, '#abody')),
        txt(w, '#abody'));
     $(w, '#nsave').checked = false;
 
@@ -913,14 +914,14 @@ function stayUpload(w) {
     $(w, '#yes').click();
     await sleep(600);
     ok('改完盖一层说明', on(w, '#off'));
-    ok('说清设备去哪了', /设备已移到 192\.168\.9\.1/.test(txt(w, '#offt')),
+    ok('说清设备去哪了', /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')),
        txt(w, '#offt'));
     ok('给出新地址的链接文字', /192\.168\.9\.1/.test(txt(w, '#offb')));
     ok('不给「重新连接」按钮 —— 旧地址上没人了', $(w, '#offr').hidden);
     ok('心跳停了，不再空敲旧地址', w.HB === 0);
   }
 
-  console.log('\n--- 向上级路由要地址 ---');
+  console.log('\n--- DHCP 获取地址 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
@@ -928,16 +929,136 @@ function stayUpload(w) {
     w.askdhcp();
     ok('要确认', on(w, '#mask'));
     ok('说清页面事先不知道新地址',
-       /这个页面事先不知道是多少/.test(txt(w, '#abody')), txt(w, '#abody'));
+       /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
     ok('给出要找的 MAC', /90:03:2e:12:34:56/.test(txt(w, '#abody')));
-    ok('说清要不到会退回去', /退回现在这个地址/.test(txt(w, '#abody')));
+    ok('说清要不到会退回去', /退回当前地址/.test(txt(w, '#abody')));
 
     $(w, '#yes').click();
     await sleep(400);
-    ok('盖一层说明', on(w, '#off') && /设备正在要地址/.test(txt(w, '#offt')),
+    ok('盖一层说明', on(w, '#off') && /正在获取地址/.test(txt(w, '#offt')),
        txt(w, '#offt'));
     ok('说清去哪找', /客户端列表/.test(txt(w, '#offb')), txt(w, '#offb'));
     ok('心跳停了', w.HB === 0);
+  }
+
+  console.log('\n--- 侧栏合并：诊断 ---');
+  {
+    const w = await boot();
+    ok('串口日志不再单独占一格', !$(w, '.nav[data-p=p9]'));
+    ok('侧栏剩十项', w.document.querySelectorAll('.nav').length === 10,
+       w.document.querySelectorAll('.nav').length);
+    ok('诊断这一格在', /诊断/.test(txt(w, '.nav[data-p=p8]')),
+       txt(w, '.nav[data-p=p8]'));
+    ok('日志段在诊断屏里', $(w, '#p8').contains($(w, '#log')));
+
+    /* 进段才读，别一进诊断就白读一遍日志 */
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(700);
+    ok('只开诊断不读日志', txt(w, '#log') === '未读取', txt(w, '#log'));
+    $(w, '#logtab').click();
+    await sleep(600);
+    ok('切进日志段才读', /probing by address aliasing/.test(txt(w, '#log')));
+
+    /* 跟随开着的时候切走：不能在背后一直敲设备 */
+    $(w, '#logf').checked = true;
+    w.logfollow();
+    await sleep(600);
+    const n1 = w.LOGN;
+    $(w, '.seg[data-seg=g8] button').click();
+    ok('切到别的段就把跟随关了', !$(w, '#logf').checked);
+    await sleep(4200);
+    ok('关了就真的不再取', w.LOGN === n1, w.LOGN + ' vs ' + n1);
+
+    /* 离开诊断屏同样要停 */
+    $(w, '#logtab').click();
+    await sleep(600);
+    $(w, '#logf').checked = true;
+    w.logfollow();
+    $(w, '.nav[data-p=p5]').click();
+    ok('切走别的屏也把跟随关了', !$(w, '#logf').checked);
+  }
+
+  console.log('\n--- 改名 ---');
+  {
+    const w = await boot();
+    ok('创建改成写入 UBI 卷', txt(w, '.nav[data-p=p3]') === '写入 UBI 卷',
+       txt(w, '.nav[data-p=p3]'));
+    ok('屏内标题也跟着改', txt(w, '#p3 h1') === '写入 UBI 卷', txt(w, '#p3 h1'));
+    ok('重启改成启动与重启', txt(w, '.nav[data-p=p12]') === '启动与重启',
+       txt(w, '.nav[data-p=p12]'));
+    ok('环境变量屏的标题写全', txt(w, '#p11 h1') === 'U-Boot 环境变量',
+       txt(w, '#p11 h1'));
+    ok('侧栏那格还是短的', txt(w, '.nav[data-p=p11]') === '环境变量',
+       txt(w, '.nav[data-p=p11]'));
+    ok('引导菜单那段叫预览',
+       /引导菜单预览/.test(txt(w, '.seg[data-seg=g11]')),
+       txt(w, '.seg[data-seg=g11]'));
+  }
+
+  console.log('\n--- 空状态 ---');
+  {
+    const w = await boot();
+    /* 进「诊断」就自己跑体检，所以初始空态要在进去之前看 */
+    ok('体检没跑时是空态', !!$(w, '#chk .empty'), txt(w, '#chk'));
+    ok('空态说清该点哪个按钮', /开始检查/.test(txt(w, '#chk .empty')));
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(1800);
+    ok('跑完就不是空态了', !$(w, '#chk .empty'), txt(w, '#chk').slice(0, 40));
+    ok('扫描那段仍是空态', !!$(w, '#scan .empty') &&
+       /开始扫描/.test(txt(w, '#scan .empty')), txt(w, '#scan'));
+
+    /* 空态那句是给人看的，不该混进诊断包 */
+    let got = null;
+    w.save = (name, text) => { got = { name, text } };
+    w.diagfile($(w, '#chkb'));
+    await sleep(1500);
+    ok('诊断包里未扫描就写未扫描',
+       got && /== 全片扫描 ==\s*\(未扫描\)/.test(got.text),
+       got && got.text.split('== 全片扫描 ==')[1].slice(0, 40));
+
+    ok('主题按钮换成图标了',
+       !!$(w, '.tb svg') && txt(w, '.tb').trim() === '', txt(w, '.tb'));
+  }
+
+  console.log('\n--- 胶囊分段 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('默认落在第一段', on(w, '#s51') && !on(w, '#s52') && !on(w, '#s53'));
+    ok('第一段是选中态',
+       $(w, '.seg[data-seg=g5] button').getAttribute('aria-selected') === 'true');
+
+    const segb = g => Array.from(
+      w.document.querySelectorAll('.seg[data-seg=' + g + '] button'));
+    const b = segb('g5')[1];
+    b.click();
+    ok('切过去了', on(w, '#s52') && !on(w, '#s51') && !on(w, '#s53'));
+    ok('选中态跟着走', b.getAttribute('aria-selected') === 'true' &&
+       $(w, '.seg[data-seg=g5] button').getAttribute('aria-selected') === 'false');
+
+    /* 藏起来的那段还在 DOM 里 —— 读到的数据不该因为切段就丢 */
+    ok('没被切走的段仍有内容', /机型/.test(txt(w, '#s51')), txt(w, '#s51'));
+
+    /* 每屏一组，互不牵连 */
+    $(w, '.nav[data-p=p11]').click();
+    await sleep(400);
+    ok('另一屏不受影响', on(w, '#s111') && on(w, '#s52'));
+    segb('g11')[2].click();
+    ok('三段的也切得动', on(w, '#s113') && !on(w, '#s111'));
+    ok('恢复默认的按钮在第三段里',
+       $(w, '#s113').contains($(w, 'button[onclick="askenvdef()"]')));
+
+    /* 备份下载：两段共用一条状态行，它不能待在任何一段里 */
+    $(w, '.nav[data-p=p10]').click();
+    await sleep(400);
+    ok('状态行在分段外', !$(w, '#s101').contains($(w, '#dlh')) &&
+       !$(w, '#s102').contains($(w, '#dlh')));
+    ok('进度条也在分段外', !$(w, '#s102').contains($(w, '#dlprog')));
+    segb('g10')[1].click();
+    ok('区段那两个按钮跟着区段走',
+       $(w, '#s102').contains($(w, 'button[onclick="dumpraw()"]')) &&
+       $(w, '#s102').contains($(w, 'button[onclick="dumpall()"]')));
   }
 
   console.log('\n--- 全片扫描 ---');
@@ -958,7 +1079,7 @@ function stayUpload(w) {
     /* 停得下来 —— 整片要几分钟，停不下来就是耍赖 */
     $(w, '#scanb').click();
     ok('点停就停', w.SCAN === null);
-    ok('说清结果只覆盖扫过的部分', /只覆盖已扫过的部分/.test(txt(w, '#scanh')),
+    ok('说清结果只覆盖扫过的部分', /仅覆盖已扫描的部分/.test(txt(w, '#scanh')),
        txt(w, '#scanh'));
     const off = txt(w, '#scan');
     await sleep(2500);
@@ -975,9 +1096,9 @@ function stayUpload(w) {
     const t = txt(w, '#scan');
     ok('报了扫过多少', /256\.0 MiB \/ 256\.0 MiB/.test(t), t.slice(0, 60));
     ok('两个坏块都列出来了', /0x2a00000/.test(t) && /0x9c00000/.test(t), t);
-    ok('ECC 纠错报了页数', /页读出来时被纠正过/.test(t), t);
-    ok('说清 ECC 意味着什么', /颗粒在退化/.test(t));
-    ok('没有读失败就写无', /读失败/.test(t) && !/数据已经丢了/.test(t));
+    ok('ECC 纠错报了页数', /页在读取时被纠正/.test(t), t);
+    ok('说清 ECC 意味着什么', /颗粒退化/.test(t));
+    ok('没有读失败就写无', /读失败/.test(t) && !/数据已丢失/.test(t));
     ok('汇总说整片读得回来或见上表',
        /扫描完成/.test(txt(w, '#scanh')), txt(w, '#scanh'));
 
@@ -985,7 +1106,7 @@ function stayUpload(w) {
     ok('全程没弹断开框', !on(w, '#off'));
   }
 
-  console.log('\n--- 健康检查分组 ---');
+  console.log('\n--- 快速检查分组 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p8]').click();
@@ -1005,7 +1126,8 @@ function stayUpload(w) {
     const w = await boot();
     ok('设备详情还在填', /Nokia XG-040G-MD/.test(txt(w, '#dev')));
     ok('UBI 卷表还在', w.document.querySelectorAll('#ubi tr').length === 8);
-    $(w, '.nav[data-p=p9]').click();
+    $(w, '.nav[data-p=p8]').click();
+    $(w, '#logtab').click();
     await sleep(600);
     ok('串口日志还能读', /Airoha Web U-Boot/.test(txt(w, '#log')));
     ok('日志里有内存推导过程', /probing by address aliasing/.test(txt(w, '#log')));
