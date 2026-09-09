@@ -848,8 +848,11 @@ function stayUpload(w) {
     ok('报了地址', /192\.168\.1\.1/.test(t), t);
     ok('0.0.0.0 的掩码不往外摆', !/0\.0\.0\.0/.test(t), t);
     ok('报了网卡', /airoha-gdm1/.test(t), t);
-    ok('说清地址是设备发的', /当前地址由设备分配/.test(t), t);
-    ok('带上了客户端 MAC', /a4:5e:60:11:22:33/.test(t), t);
+    /* 这几句是 DHCP 服务自己的账，跟着开关那一段走了 */
+    ok('说清地址是设备发的',
+       /用的就是设备发的地址/.test(txt(w, '#dhsum')), txt(w, '#dhsum'));
+    ok('带上了客户端 MAC',
+       /a4:5e:60:11:22:33/.test(txt(w, '#dhsum')), txt(w, '#dhsum'));
 
     const rows = [...w.document.querySelectorAll('#net tr')]
       .filter(r => /端口/.test(r.cells[0].textContent));
@@ -870,16 +873,123 @@ function stayUpload(w) {
     /* 没发过地址 = 用户自己配的 IP，后续建议不一样 */
     w.INFO.net.ack = 0; w.INFO.net.offer = 0;
     w.netfill();
-    ok('没发过地址就直说', /手动配置的 IP/.test(txt(w, '#net')), txt(w, '#net'));
+    ok('没发过地址就直说', /手动配置的 IP/.test(txt(w, '#dhsum')),
+       txt(w, '#dhsum'));
     w.INFO.net.offer = 3;
     w.netfill();
     ok('发了没被接受也分得清',
-       /已发出 3 次地址，均未被接受/.test(txt(w, '#net')), txt(w, '#net'));
+       /已发出 3 次地址，均未被接受/.test(txt(w, '#dhsum')),
+       txt(w, '#dhsum'));
 
     /* 读不到端口的板子不该留一张空表 */
     w.INFO.ports = [];
     w.netfill();
     ok('没有端口就不摆那条说明', $(w, '#portn').hidden);
+  }
+
+  console.log('\n--- 靠设备发的地址连上来的机器 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    w.asknetset();
+    ok('点名本机用的是设备发的地址',
+       /本机用的是设备发的地址/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('给出该配成哪个网段', /192\.168\.9\.x/.test(txt(w, '#abody')));
+    ok('也给了另一条路', /改用该网络里的机器/.test(txt(w, '#abody')));
+    w.hide();
+
+    /* 自己配的静态 IP 上来的机器不受影响，别吓唬人 */
+    w.INFO.net.ack = 0;
+    w.asknetset();
+    ok('自己配 IP 的就不提这茬', !/本机用的是设备发的地址/.test(txt(w, '#abody')));
+    w.hide();
+
+    w.INFO.net.ack = 1;
+    w.askdhcp();
+    ok('自动获取那边也点名',
+       /本机用的是设备发的地址/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('说清之后从本机访问不到', /访问不到设备/.test(txt(w, '#abody')));
+  }
+
+  console.log('\n--- 地址获取方式 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('默认是静态', $(w, '#amode').value === 'static');
+    ok('静态时看得到 IP 那几行', !$(w, '#arow1').hidden && !$(w, '#arow3').hidden);
+
+    $(w, '#amode').value = 'dhcp';
+    w.amodesw();
+    ok('自动获取时把静态那几行收起来',
+       $(w, '#arow1').hidden && $(w, '#arow2').hidden && $(w, '#arow3').hidden);
+    ok('说清地址是上级路由给的', /本页面无法预知/.test(txt(w, '#nh')),
+       txt(w, '#nh'));
+    ok('说清自动获取不保存', /断电后仍是当前的静态地址/.test(txt(w, '#nh')));
+
+    /* 一个「应用」管两种，按当前方式分派 */
+    w.applyaddr();
+    ok('自动获取走的是要地址那个框',
+       /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+
+    $(w, '#amode').value = 'static';
+    w.amodesw();
+    ok('切回静态又露出来了', !$(w, '#arow1').hidden);
+    w.applyaddr();
+    ok('静态走的是改地址那个框',
+       /192\.168\.1\.1/.test(txt(w, '#abody')), txt(w, '#abody'));
+  }
+
+  console.log('\n--- DHCP 服务开关 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('默认是开着的', $(w, '#dhcpd').checked);
+    ok('说清它对谁都答', /对任何请求都应答/.test(txt(w, '#p5')));
+    ok('说清接入已有网络前必须关', /接入已有网络前必须关闭/.test(txt(w, '#p5')));
+
+    $(w, '#dhcpd').checked = false;
+    w.setdhcpd();
+    await sleep(600);
+    ok('关掉之后有回执', /已关闭/.test(txt(w, '#dhs')), txt(w, '#dhs'));
+    ok('设备侧也记下了', w.INFO.net.dhcpd === 0, w.INFO.net.dhcpd);
+
+    /* 重新读一遍 /info，开关不该弹回去 */
+    w.info();
+    await sleep(600);
+    ok('重读之后仍是关的', !$(w, '#dhcpd').checked);
+
+    $(w, '#dhcpd').checked = true;
+    w.setdhcpd();
+    await sleep(600);
+    ok('开回来也认', $(w, '#dhcpd').checked && w.INFO.net.dhcpd === 1);
+  }
+
+  console.log('\n--- 改地址会关掉 DHCP 服务 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.9.1';
+    w.asknetset();
+    ok('开着的时候确认框要说', /同时关闭 DHCP 服务/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    ok('说清为什么', /抢着发地址/.test(txt(w, '#abody')));
+    w.hide();
+
+    $(w, '#dhcpd').checked = false;
+    w.asknetset();
+    ok('已经关了就不再提', !/同时关闭 DHCP 服务/.test(txt(w, '#abody')));
+    w.hide();
+
+    $(w, '#dhcpd').checked = true;
+    w.askdhcp();
+    ok('DHCP 获取地址同样要说', /同时关闭 DHCP 服务/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
   }
 
   console.log('\n--- 改地址 ---');

@@ -38,7 +38,8 @@ input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events
 .fc{display:flex;align-items:center;gap:.6rem;min-width:0}
 .fc.end{justify-content:flex-end}
 input[type=text]{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radius:5px;font:inherit;padding:.22rem .5rem;width:100%;max-width:220px;outline:0}
-input[type=text]:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}
+input[type=text]:focus,.fc select:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25);border-color:var(--blue)}
+.fc select{border:1px solid var(--btnb);background:var(--card);color:var(--fg);border-radius:5px;font:inherit;padding:.22rem .5rem;outline:0;max-width:220px}
 input::placeholder{color:var(--c3)}
 .note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}
 .note b{color:var(--org);font-weight:500}
@@ -275,14 +276,21 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=sp data-g=g5 id=s52>
 <div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>
 <p class=note id=portn hidden>端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。</p>
-<p class=bh>改地址<small>应用后需以新地址重新打开本页面</small></p>
+<p class=bh>地址<small>应用后需以新地址重新打开本页面</small></p>
 <div class=box>
-<div class=fr><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input type=text id=nip class=mono style="width:160px"><span class=fn>主机需在同一网段</span></span></div>
-<div class=fr><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono value=255.255.255.0 style="width:160px"></span></div>
-<div class="fr wide"><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
+<div class=fr><span class=fl>获取方式</span><span class=fc><select id=amode onchange=amodesw()><option value=static>静态地址</option><option value=dhcp>自动获取（DHCP）</option></select></span></div>
+<div class=fr id=arow1><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input type=text id=nip class=mono style="width:160px"><span class=fn>主机需在同一网段</span></span></div>
+<div class=fr id=arow2><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono value=255.255.255.0 style="width:160px"></span></div>
+<div class="fr wide" id=arow3><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
 </div>
 <p class=note id=nh>接入已有网络时，建议在此指定该网段内的空闲地址：地址由本方指定，应用后即可直接访问。</p>
-<div class=row><button type=button class=pb onclick=askdhcp()>DHCP 获取地址</button><button type=button class="pb pri" onclick=asknetset()>应用</button></div>
+<div class=row><button type=button class="pb pri" onclick=applyaddr()>应用</button></div>
+<p class=bh>DHCP 服务<small>本机给电脑发地址，与上面的「自动获取」方向相反</small></p>
+<div class=box>
+<div class="fr wide"><span class=fl>给电脑分配地址<small>电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP</small></span><span class="fc end"><span class=fs id=dhs></span><input type=checkbox class=sw id=dhcpd onchange=setdhcpd()></span></div>
+</div>
+<p class=note id=dhsum></p>
+<p class=note>它对任何请求都应答，发出的地址固定为本网段 .100，网关指向本设备且不带 DNS。<b>接入已有网络前必须关闭</b>，否则会和该网络的路由器抢着发地址，被抢到的机器会断网。改地址与自动获取会自动关闭它。</p>
 </div>
 <div class=sp data-g=g5 id=s53>
 <p class=note id=ubih></p>
@@ -485,6 +493,22 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span
 '<div class=w>闪存内容不受影响</div>';
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
+/* 静态与自动获取是同一件事的两种做法，所以共用一个「应用」 */
+function amodesw(){var d=$('#amode').value=='dhcp';
+$('#arow1').hidden=d;$('#arow2').hidden=d;$('#arow3').hidden=d;
+$('#nh').textContent=d?'地址由上级路由分配，本页面无法预知，'
++'需在上级路由的客户端列表中按 MAC 查找。不保存：断电后仍是当前的静态地址。'
+:'接入已有网络时，建议在此指定该网段内的空闲地址：'
++'地址由本方指定，应用后即可直接访问。'}
+function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}
+/* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */
+function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0;
+c.disabled=true;$('#dhs').textContent='…';
+get('/netdhcpd?on='+v,function(st,t){c.disabled=false;
+if(st!=200||!/^ok/.test((t||'').trim())){
+c.checked=!v;$('#dhs').textContent='设备没有接受';return}
+$('#dhs').textContent=v?'已开启':'已关闭';
+if(INFO&&INFO.net)INFO.net.dhcpd=v})}
 var IP4=/^(\d{1,3}\.){3}\d{1,3}$/;
 function asknetset(){var ip=$('#nip').value.trim(),
 mk=$('#nmask').value.trim()||'255.255.255.0',
@@ -496,7 +520,13 @@ $('#abody').innerHTML='<div class=r><span>新地址</span><span class=v>'+esc(ip
 '<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>'+
 '<div class=w>主机需在同一网段，否则无法访问</div>'+
 (sv?'<div class=w><b>保存到闪存</b>：地址填错时断电也无法恢复</div>'
-:'<div class=w>不保存，断电后恢复原地址</div>');
+:'<div class=w>不保存，断电后恢复原地址</div>')+
+($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'
++'避免和这个网络里的路由器抢着发地址</div>':'')+
+(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'
++'：改完之后拿不到新地址，需手动把本机配成 '
++esc(ip.replace(/\.\d+$/,'.x'))+' 的一个地址；'
++'若是把设备接进已有网络，改用该网络里的机器访问即可</div>':'');
 var y=$('#yes');y.hidden=false;y.textContent='改地址';
 YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}
 function donetset(ip,mk,sv){
@@ -511,7 +541,11 @@ function askdhcp(){$('#atitle').textContent='DHCP 获取地址';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>dhcp</span></div>'+
 '<div class=w><b>地址由上级路由分配，本页面无法预知。</b>请在上级路由的客户端列表中按 MAC 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'+
 '<div class=w>未取得租约时退回当前地址</div>'+
-'<div class=w>不保存，断电后恢复原地址</div>';
+'<div class=w>不保存，断电后恢复原地址</div>'+
+($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'
++'这个网络里已经有路由器在发地址了</div>':'')+
+(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'
++'：之后从本机访问不到设备，请改用上级路由那个网络里的机器</div>':'');
 var y=$('#yes');y.hidden=false;y.textContent='获取';YES=dodhcp;
 $('#mask').setAttribute('data-on','')}
 function dodhcp(){get('/netdhcp',function(){});hbstop();
@@ -662,12 +696,12 @@ h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)
 +(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';
 if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';
 h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
-h+='<tr><td>DHCP</td><td>'+(n.ack?'已发出 '+n.ack+' 个地址'
-+(n.client?'，最近一次分配给 '+esc(n.client):'')+'。当前地址由设备分配'
+$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
++(n.client?'，最近一次分配给 '+esc(n.client):'')
++'。当前打开本页面的主机用的就是设备发的地址。'
 :n.offer?'已发出 '+n.offer+' 次地址，均未被接受；'
-+'当前为手动配置的 IP'
-:'未发出过地址；当前为手动配置的 IP，'
-+'更换主机后需重新配置')+'</td></tr>';
++'当前主机用的是手动配置的 IP。'
+:'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';
 (INFO.ports||[]).forEach(function(p){
 h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+p.p+'</td>'
 +'<td'+(p.link?'':' class=s1')+'>'+(p.link?
@@ -675,6 +709,8 @@ h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+p.p+'</td>'
 +(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
 t.innerHTML=h;
 $('#portn').hidden=!(INFO.ports&&INFO.ports.length);
+$('#dhcpd').checked=!!n.dhcpd;
+$('#dhs').textContent='';
 if(!$('#nip').value)$('#nip').value=n.ip||'';
 if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
