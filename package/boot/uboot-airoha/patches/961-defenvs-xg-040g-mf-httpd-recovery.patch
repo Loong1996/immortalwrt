@@ -9,6 +9,14 @@ the front of _firstboot -- on a first migration the environment is not built
 yet, so without it the button is never looked at on the one boot where the
 user is most likely to be holding it.
 
+_firstboot then checks the flash as well, and that is the check that does not
+depend on the user at all: "ubi part ubi || run _no_ubi".  A layout this
+U-Boot cannot attach -- the factory one, on the very first xmodem round --
+used to fall through _init_env into ubi_format, which erases the ubi
+partition and resets, throwing away the RAM-resident U-Boot and leaving the
+factory BL2 with no FIP to load.  Same reasoning and same wording as md; see
+951 for the full account.
+
 Flashing.  Two httpd_* scripts next to the board's own ubi_write_*: writing
 BL2 goes through mtd with an offset so mtd itself skips the first 0x800
 bytes (BootROM looks for the FIP there), and formatting UBI is ubi_format
@@ -56,11 +64,12 @@ not from the menu.
  ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
-@@ -48,6 +52,6 @@ _init_env=setenv _init_env ; run ubi_create_env ; save
+@@ -48,6 +52,7 @@ _init_env=setenv _init_env ; run ubi_create_env ; save
  ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; ubi create fip 0x100000 static && ubi write $loadaddr fip $filesize
  ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
  _init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv ; run ubi_create_board_data
 -_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
-+_firstboot=setenv _firstboot ; run check_buttons ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
++_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
++_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "Web recovery starts in 3s at http://$ipaddr - press a key for the menu" ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
  _switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
  _bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"

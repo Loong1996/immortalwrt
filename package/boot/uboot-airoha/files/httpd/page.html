@@ -224,7 +224,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 <div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
 </div>
-<p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。</p>
+<p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。写入期间指示灯保持<b>流水</b>而非其他页面的齐闪：本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
@@ -493,9 +493,16 @@ if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.classNam
 $('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}
 /* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */
 function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if(!HB)HB=1;ping()}
-function askreboot(){$('#atitle').textContent='重启';
-$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+
-'<div class=w>闪存内容不受影响</div>';
+/*
+ * 「闪存内容不受影响」单说这一句会误导：闪存没变正是问题所在 —— 当前这个
+ * U-Boot 只在内存里（首次迁移经串口传进来，或 fip 卷已丢），reset 之后就没了。
+ * 顶部红条已经在报同一件事，这里把它的后果直接写进确认框。
+ */
+function askreboot(){var w='<div class=w>闪存内容不受影响</div>';
+if(INFO&&!INFO.ubi)w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';
+else if(INFO&&INFO.ubi&&!INFO.ubi.fip)w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>';
+$('#atitle').textContent='重启';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
 /* 静态与自动获取是同一件事的两种做法，所以共用一个「应用」 */
@@ -576,7 +583,8 @@ function bootonce(){var b=$('#bob');b.disabled=true;
 get('/bootonce',function(st,t){b.disabled=false;
 t=(t||'').trim();
 if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}
-b.textContent='已设置';
+/* saveenv 失败时只在内存里生效，断电即失效 —— 按钮不能跟着说「已设置」 */
+b.textContent=t.indexOf('armed')<0?'未设置':t.indexOf('saving failed')>=0?'未保存':'已设置';
 $('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t
 :t.indexOf('saving failed')>=0?'已设置，但未能保存到闪存：断电后失效，'+'请在「诊断」中确认 ubootenv 卷'
 :t.indexOf('already')>=0?'此前已设置，下次开机将停在本页面'
@@ -671,7 +679,13 @@ $('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已
  * bootmenu_<n>=<标题>=<命令>，标题取到第一个 = 为止（U-Boot 自己就是
  * 这么切的）。标题里可能裹着 ANSI 颜色，串口上红的那几条是危险项，
  * 这里照样标红。
+ *
+ * 序号列给的是串口菜单上按的那个键，不是变量名里的 n：U-Boot 的
+ * bootmenu 只有一位快捷键，1~9 之后接 a~z，0 留给 Exit，所以
+ * bootmenu_0 在屏幕上是「1.」、bootmenu_9 是「a.」。照变量名从 0
+ * 标起会跟用户眼前的菜单差一位。
  */
+function bmkey(i){return i<9?String(i+1):i<35?String.fromCharCode(88+i):'?'}
 function bmfill(){var t=$('#bmenu'),m={},h='',d;
 if(!ENV){t.innerHTML='<tr><td>正在读取…</td></tr>';return}
 ENV.env.forEach(function(e){var g=/^bootmenu_(\d+)$/.exec(e.k);
@@ -681,10 +695,10 @@ Object.keys(m).map(Number).sort(function(a,b){return a-b})
 ti=p<0?v:v.slice(0,p),cm=p<0?'':v.slice(p+1),
 hot=/\x1b\[[0-9;]*3[147]m/.test(ti);
 ti=ti.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'');
-h+='<tr><td class=n>'+i+'</td><td'+(hot?' class=hot':'')+'>'+esc(ti)
+h+='<tr><td class=n>'+bmkey(i)+'.</td><td'+(hot?' class=hot':'')+'>'+esc(ti)
 +'</td><td class=cmd>'+esc(cm)+'</td></tr>'});
 t.innerHTML=h||'<tr><td class=empty>没有 bootmenu_* 条目</td></tr>';
-$('#bmh').textContent=h?'设备启动时的菜单'+(d?'；'+d+' 秒内无按键则执行 bootcmd':'')+'。红色条目会写入闪存'
+$('#bmh').textContent=h?'设备启动时的菜单，序号即串口上按的键'+(d?'；'+d+' 秒内无按键则执行 bootcmd':'')+'。红色条目会写入闪存'
 :'环境中没有引导菜单：串口不会停顿，直接执行 bootcmd'}
 function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\n'))}
 function askenvdef(){$('#atitle').textContent='环境变量';
