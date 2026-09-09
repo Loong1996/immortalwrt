@@ -39,7 +39,7 @@ diff --git a/defenvs/an7583_nokia_xg-040g-mf_env b/defenvs/an7583_nokia_xg-040g-
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
 +bootmenu_title=      [1;39mAiroha Web U-Boot 0.3.0[0m
-+envver=5
++web_uboot_envver=6
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
 +bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
@@ -49,9 +49,9 @@ diff --git a/defenvs/an7583_nokia_xg-040g-mf_env b/defenvs/an7583_nokia_xg-040g-
  bootmenu_2=Boot production system from NAND=run boot_production ; run bootmenu_confirm_return
  bootmenu_3=Load production system via TFTP then write to NAND=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
 @@ -39,7 +43,7 @@ check_buttons=if button reset ; then httpd ; fi
- httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
- httpd_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
- httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+ web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
+ web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
+ web_uboot_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
 +ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
  part_default=production

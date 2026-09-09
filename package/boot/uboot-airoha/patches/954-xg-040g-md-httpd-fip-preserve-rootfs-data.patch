@@ -41,12 +41,12 @@ create-and-evict logic: at that point ubi_write_fip's own "ubi check fip
 equivalent to what the routine-update branch already established as safe,
 just spelled once instead of twice.
 
-httpd_write_fip is a new, independent env script -- same pattern as the
-existing httpd_write_bl2 next to mtd_write_bl2 -- so a future change to
+web_uboot_write_fip is a new, independent env script -- same pattern as the
+existing web_uboot_write_bl2 next to mtd_write_bl2 -- so a future change to
 either the TFTP-menu reset flow or the web page's routine-update flow
 cannot silently change the other's behaviour.
 
-BL2 (preloader.bin) was never implicated: httpd_write_bl2 is a plain
+BL2 (preloader.bin) was never implicated: web_uboot_write_bl2 is a plain
 "mtd erase bl2 && mtd write bl2", operating on the bl2 mtd partition
 (0x0-0x20000), entirely outside the ubi partition (0x20000 onward) where
 every UBI volume, rootfs_data included, lives.  Flashing BL2 alongside FIP
@@ -57,8 +57,8 @@ during an upgrade carries no risk to settings.
 @@ -45,6 +45,7 @@
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
  mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
- httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
-+httpd_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+ web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
++web_uboot_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
  ubi_create_board_data=ubi check bosa || ubi create bosa 0x40000 || run ubi_format ; ubi check ri || ubi create ri 0x40000 || run ubi_format
  ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
  ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset

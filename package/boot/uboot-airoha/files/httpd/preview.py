@@ -55,7 +55,8 @@ INFO = {
     "mac": "90:03:2e:12:34:56",
     "net": {"ip": "192.168.1.1", "mask": "0.0.0.0",
             "gw": "0.0.0.0", "server": "192.168.1.254",
-            "dev": "airoha-gdm1", "offer": 1, "ack": 1, "dhcpd": 1,
+            "dev": "airoha-gdm1", "offer": 1, "ack": 1,
+            "mode": "server", "ram": 0, "saved": None,
             "client": "a4:5e:60:11:22:33"},
     "ports": [{"p": 1, "link": 0, "speed": 0, "fd": 0},
               {"p": 2, "link": 1, "speed": 1000, "fd": 1},
@@ -78,7 +79,7 @@ CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
     ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["envver", 0, "5，与当前 U-Boot 一致", "引导"],
+    ["web_uboot_envver", 0, "6，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
@@ -106,15 +107,9 @@ ENV = [
     ("bootmenu_8", "网页恢复（Airoha Web U-Boot 0.3.0）.=httpd"),
     ("bootmenu_delay", "3"),
     ("check_buttons", "if button reset ; then echo recovery ; httpd ; fi"),
-    ("envver", "5"),
     ("ethaddr", "90:03:2e:12:34:56"),
     ("ethaddr_factory", "90:03:2e:12:34:56"),
     ("fdtcontroladdr", "bfad0f10"),
-    ("httpd_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
-    ("httpd_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0 $filesize"),
-    ("httpd_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
-                        "$filesize ; else ubi create fip $filesize static && "
-                        "ubi write $loadaddr fip $filesize ; fi"),
     ("ipaddr", "192.168.1.1"),
     ("loadaddr", "0x84000000"),
     ("netmask", "255.255.255.0"),
@@ -128,6 +123,12 @@ ENV = [
                              "ubi create fit $filesize dynamic && "
                              "ubi write $loadaddr fit $filesize"),
     ("vendor", "nokia"),
+    ("web_uboot_envver", "6"),
+    ("web_uboot_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
+    ("web_uboot_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0 $filesize"),
+    ("web_uboot_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
+                            "$filesize ; else ubi create fip $filesize static "
+                            "&& ubi write $loadaddr fip $filesize ; fi"),
 ]
 
 LOG = """
@@ -196,6 +197,25 @@ function body(u){
   {seq:DINFO.seq,len:DINFO.len,crc:DINFO.crc,holes:DINFO.holes,
    name:DINFO.name,busy:DBUSY,sent:DSENT,total:DBUSY?DTOTAL:0});
  if(u=='/info')return S.dev=='noinfo'?null:JSON.stringify(info());
+ /* 网络这一页轮询的那一半：地址与端口，不含 UBI */
+ if(u=='/net')return JSON.stringify({net:D.info.net,ports:D.info.ports});
+ /* 三种模式走同一个端点；server 那一档掩码与末位由设备定死 */
+ if(u.indexOf('/netmode')==0){
+  var mo=/[?&]mode=([^&]*)/.exec(u),g=/[?&]ip=([^&]*)/.exec(u),
+      k=/[?&]mask=([^&]*)/.exec(u),sv=/[?&]save=1(&|$)/.test(u),
+      md=mo?mo[1]:'',ip=g?decodeURIComponent(g[1]):'',
+      mk=k?decodeURIComponent(k[1]):'';
+  if(md!='server'&&md!='static'&&md!='client')return 'bad mode';
+  if(md=='client'){D.info.net.mode='client';D.info.net.ram=sv?0:1;
+   if(sv)D.info.net.saved={mode:'client'};
+   return 'ok client - - '+(sv?'saved':'ram')}
+  if(!ip4(ip))return 'bad ip';
+  if(md=='server'){mk='255.255.255.0';ip=ip.replace(/\.\d+$/,'.1')}
+  else if(!ip4(mk)||!maskok(mk))return 'bad mask';
+  D.info.net.mode=md;D.info.net.ip=ip;D.info.net.mask=mk;
+  D.info.net.ram=sv?0:1;
+  if(sv)D.info.net.saved={mode:md,ip:ip,mask:mk};
+  return 'ok '+md+' '+ip+' '+mk+(sv?' saved':' ram')}
  if(u=='/check')return JSON.stringify({items:check()});
  /* 一段 4 MiB，和设备的 SCAN_SLICE 一样；坏块与 ECC 是编的，但位置固定 */
  if(u.indexOf('/scan')==0){
@@ -218,18 +238,6 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
- if(u.indexOf('/netdhcpd')==0){var d=/[?&]on=([^&]*)/.exec(u);
-  if(!d||(d[1]!='0'&&d[1]!='1'))return 'bad on';
-  D.info.net.dhcpd=+d[1];return 'ok '+d[1]}
- if(u.indexOf('/netset')==0){
-  var g=/[?&]ip=([^&]*)/.exec(u),k=/[?&]mask=([^&]*)/.exec(u),
-      sv=/[?&]save=1(&|$)/.test(u),
-      ip=g?decodeURIComponent(g[1]):'',mk=k?decodeURIComponent(k[1]):'';
-  if(!ip4(ip))return 'bad ip';
-  if(!ip4(mk)||!maskok(mk))return 'bad mask';
-  D.info.net.ip=ip;D.info.net.mask=mk;
-  return 'ok '+ip+' '+mk+(sv?' saved':' ram')}
- if(u=='/netdhcp')return 'ok dhcp';
  if(u=='/bootonce')return S.dev=='noubi'?'armed, but saving failed':'armed and saved';
  if(u=='/boot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'ok'}
  if(u=='/reboot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'OK'}
@@ -295,6 +303,8 @@ function wrrun(L,i){if(i>=L.length)return;
  if(L[i+1]&&L[i+1][0].charAt(0)=='r')fall(d);
  setTimeout(function(){wrrun(L,i+1)},d)}
 window.XMLHttpRequest=XHR;
+/* 桩的数据自己也是可看可改的：用例要模拟「网线换了个口」就动这里 */
+window.PV=D;
 document.addEventListener('DOMContentLoaded',function(){
  var b=document.createElement('div');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');

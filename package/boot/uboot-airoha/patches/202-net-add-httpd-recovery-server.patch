@@ -19,8 +19,8 @@ them).  One sidebar entry per task:
     whole chip;
   - UBI volumes: the per-unit factory data volumes named in
     CONFIG_HTTPD_FACTORY_VOLS, checked for exact size, or any volume by
-    name -- created for the file if it does not exist.  "Stay" keeps the
-    server up afterwards so several can be restored in one sitting;
+    name -- created for the file if it does not exist.  A write never
+    reboots on its own, so several can be restored in one sitting;
   - device details: model, SoC, RAM, flash geometry, partitions, MAC,
     U-Boot version and the UBI volume table, all read at request time
     (GET /info).  The page carries no board name, so one copy of it serves
@@ -48,14 +48,34 @@ Notable points:
   - Requests are classified in on_rcv_nxt_update() rather than rx(), because
     the first segment can be shorter than the request line.
 
-  - A minimal DHCP server hands out one fixed lease.  Without it the user has
-    to configure a static address before the page is reachable, which is
-    exactly the kind of step that makes a rescue flow fail.
+  - The network is one value with three settings -- hand out addresses,
+    take a fixed one, ask a router for one -- rather than an address mode
+    plus an independent DHCP-server switch.  Two independent things make
+    four combinations for three meanings, and the fourth ("ask a router for
+    an address while also being a router") is simply wrong; expressing it as
+    one value makes it unrepresentable instead of something code has to
+    reach in and correct.  The default is the first: without a DHCP server
+    the user has to configure a static address before the page is reachable
+    at all, which is exactly the kind of step that makes a rescue flow fail.
 
-  - The panel LEDs chase while waiting and blink together while writing.  A
-    solid panel is indistinguishable from a hung board.  Flashing is
-    synchronous, so the blink is driven by the cyclic framework: the SPI-NAND
-    layer calls schedule() once per written page.
+  - "Apply" and "save" are separate, and the separation is structural.  What
+    survives a power cycle is web_uboot_netmode / _ipaddr / _netmask, read
+    once at boot; an unsaved change writes ipaddr and netmask, which are
+    runtime state.  So no saveenv from anywhere else can promote a
+    deliberately temporary address to a permanent one, and pulling the power
+    stays the way out of a wrong one.
+
+  - Every environment variable this feature introduces is prefixed
+    web_uboot_, so a glance at the environment says which ones came from
+    here.  The one exception is ubi_write_production, which is the board's
+    own script: the page and a serial TFTP upgrade have to write a firmware
+    the same way, so it is used rather than duplicated.
+
+  - The panel LEDs chase for as long as the board is working -- waiting for
+    an upload, writing, reading back.  A solid panel is indistinguishable
+    from a hung board.  Writing a volume is synchronous, so that stretch is
+    driven by the cyclic framework instead of the netloop timeout handler:
+    the SPI-NAND layer calls schedule() once per written page.
 
   - The page is kept as files/httpd/page.html next to this package and
     spliced into net/httpd.c by files/httpd/gen.py, one string literal per
@@ -150,7 +170,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,6940 @@
+@@ -0,0 +1,7229 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -183,6 +203,10 @@ new file mode 100644
 + *   backup           GET /dump?vol=<name> or ?off=&len=, read out to the
 + *                    browser as a file -- the only way to keep the
 + *                    per-unit factory volumes when the system is gone
++ *   network          GET /net for the address and the link state of each
++ *                    port (polled while that tab is open); GET
++ *                    /netmode?mode=server|static|client&ip=&mask=&save= to
++ *                    change it
 + *   environment      GET /env read-only, GET /envreset for the defaults
 + *   reboot           GET /reboot
 + *
@@ -284,11 +308,10 @@ new file mode 100644
 +#define CONN_SCAN		((void *)15)
 +#define CONN_BOOT		((void *)16)
 +#define CONN_BOOTONCE		((void *)17)
-+#define CONN_NETSET		((void *)18)
-+#define CONN_NETDHCP		((void *)19)
-+#define CONN_DHCPD		((void *)20)
-+#define CONN_WR			((void *)21)
-+#define CONN_WRBUSY		((void *)22)
++#define CONN_NETMODE		((void *)18)
++#define CONN_WR			((void *)19)
++#define CONN_WRBUSY		((void *)20)
++#define CONN_NET		((void *)21)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -300,10 +323,11 @@ new file mode 100644
 + * volume shadows the defaults compiled into this image, and would fail at the
 + * first step -- precisely when there is no other way in.
 + */
-+#define ENV_WRITE_BL2		"httpd_write_bl2"
-+#define ENV_FORMAT_UBI		"httpd_format_ubi"
-+#define ENV_WRITE_FIP		"httpd_write_fip"
++#define ENV_WRITE_BL2		"web_uboot_write_bl2"
++#define ENV_FORMAT_UBI		"web_uboot_format_ubi"
++#define ENV_WRITE_FIP		"web_uboot_write_fip"
 +#define ENV_WRITE_FIT		"ubi_write_production"
++#define ENV_VER			"web_uboot_envver"
 +
 +#define UBI_PART		"ubi"
 +#define CMD_ATTACH_UBI		"ubi part " UBI_PART
@@ -789,29 +813,23 @@ new file mode 100644
 +	"<div class=sp data-g=g5 id=s52>\n"
 +	"<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>\n"
 +	"<p class=note id=portn hidden>端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。</p>\n"
-+	"<p class=bh>地址<small>应用后需以新地址重新打开本页面</small></p>\n"
++	"<p class=bh>地址<small>三种模式互斥，应用后需以新地址重新打开本页面</small></p>\n"
 +	"<div class=box>\n"
-+	"<div class=fr><span class=fl>获取方式</span><span class=fc><select id=amode"
-+		" onchange=amodesw()><option value=static>静态地址</option><option"
-+		" value=dhcp>自动获取（DHCP）</option></select></span></div>\n"
-+	"<div class=fr id=arow1><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input"
-+		" type=text id=nip class=mono style=\"width:160px\"><span class=fn>主机需在同一网段</span></span></div>\n"
++	"<div class=fr><span class=fl>模式</span><span class=fc><select id=amode"
++		" onchange=amodesw()><option value=server>DHCP 服务器 · 本机发地址</option><option"
++		" value=static>静态地址</option><option value=client>DHCP 客户端 · 向上级路由要</option></select></span></div>\n"
++	"<div class=fr id=arow1><span class=fl id=iplab>路由器 IP<small>本机地址，末位固定为 1</small></span><span"
++		" class=fc><input type=text id=nip class=mono style=\"width:160px\" oninput=ippv()><span class=fn"
++		" id=ipfn></span></span></div>\n"
 +	"<div class=fr id=arow2><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask"
 +		" class=mono value=255.255.255.0 style=\"width:160px\"></span></div>\n"
-+	"<div class=\"fr wide\" id=arow3><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span"
-+		"><span class=\"fc end\"><input type=checkbox class=sw id=nsave value=1></span></div>\n"
++	"<div class=\"fr wide\" id=arow3><span class=fl>保存到闪存<small>不保存则只在本次开机有效</small></span><span"
++		" class=\"fc end\"><input type=checkbox class=sw id=nsave value=1></span></div>\n"
 +	"</div>\n"
-+	"<p class=note id=nh>接入已有网络时，建议在此指定该网段内的空闲地址：地址由本方指定，应用后即可直接访问。</p>\n"
++	"<p class=note id=nh></p>\n"
 +	"<div class=row><button type=button class=\"pb pri\" onclick=applyaddr()>应用</button></div>\n"
-+	"<p class=bh>DHCP 服务<small>本机给电脑发地址，与上面的「自动获取」方向相反</small></p>\n"
-+	"<div class=box>\n"
-+	"<div class=\"fr wide\"><span class=fl>给电脑分配地址<small>电脑直接插到本设备上时，插上就能拿到地址，不必手动配"
-+		" IP</small></span><span class=\"fc end\"><span class=fs id=dhs></span><input type=checkbox"
-+		" class=sw id=dhcpd onchange=setdhcpd()></span></div>\n"
-+	"</div>\n"
-+	"<p class=note id=dhsum></p>\n"
-+	"<p class=note>它对任何请求都应答，发出的地址固定为本网段 .100，网关指向本设备且不带"
-+		" DNS。<b>接入已有网络前必须关闭</b>，否则会和该网络的路由器抢着发地址，被抢到的机器会断网。改地址与自动获取会自动关闭它。</p>\n"
++	"<p class=note id=nboot></p>\n"
++	"<p class=note id=dhsum hidden></p>\n"
 +	"</div>\n"
 +	"<div class=sp data-g=g5 id=s53>\n"
 +	"<div class=vbar id=vbar hidden></div>\n"
@@ -984,7 +1002,9 @@ new file mode 100644
 +	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
 +	"var DLT=0,DLN=0,DLRATE=0;\n"
 +	"var LOGN=0,LOGT=null,LOGGEN=0;\n"
-+	"var DHCPD_BUSY=0;\n"
++	"/* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */\n"
++	"var NETINIT=0;\n"
++	"var NET=null,NETT=null;\n"
 +	"/*\n"
 +	"* 擦除加写入，SPI-NAND 上大致这个量级，只用于估算等待时间。设备写完会报\n"
 +	"* 一次实测速度，存下来给下次用 —— 同一块板子第二次起就不是拍脑袋了。\n"
@@ -1018,12 +1038,13 @@ new file mode 100644
 +	"$$('.sp[data-g='+g+']').forEach(function(p){\n"
 +	"if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});\n"
 +	"/* 跟随开着的时候整篇重读会和增量追加叠出重复，而且会把按钮解禁 */\n"
-+	"if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}}\n"
++	"if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}\n"
++	"if(g=='g5')netpoll(id=='s52')}\n"
 +	"function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}\n"
 +	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
 +		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
-+		"FO)info();if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!E"
-+		"NV)getenv()}\n"
++		"FO)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'"
++		"&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}\n"
 +	"function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}\n"
 +	"/*\n"
 +	"* 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；\n"
@@ -1062,6 +1083,19 @@ new file mode 100644
 +	"function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x"
 +		".onerror=function(){cb(0,'')};x.open('GET',u);x.send()}\n"
 +	"function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}\n"
++	"/*\n"
++	"* 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。\n"
++	"* 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个\n"
++	"* 口亮着不值当。所以只报地址与端口的那一半单独开在 /net，网络这一页在前台\n"
++	"* 时每 3 秒问一次，切走就停。\n"
++	"*/\n"
++	"function netget(){if(GONE)return;get('/net',function(st,t){var r=null;\n"
++	"try{r=JSON.parse(t)}catch(e){}\n"
++	"if(!r||!r.net)return;NET=r;\n"
++	"if(INFO){INFO.net=r.net;INFO.ports=r.ports}\n"
++	"netfill()})}\n"
++	"function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}\n"
++	"if(!on)return;netget();NETT=setInterval(netget,3000)}\n"
 +	"function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的"
 +		" UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有"
 +		" U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot"
@@ -1133,70 +1167,83 @@ new file mode 100644
 +	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
 +		"n','')}\n"
 +	"function doreboot(){get('/reboot',function(){});expect('reboot')}\n"
-+	"/* 静态与自动获取是同一件事的两种做法，所以共用一个「应用」 */\n"
-+	"function amodesw(){var d=$('#amode').value=='dhcp';\n"
-+	"$('#arow1').hidden=d;$('#arow2').hidden=d;$('#arow3').hidden=d;\n"
-+	"$('#nh').textContent=d?'地址由上级路由分配，本页面无法预知，'\n"
-+	"+'需在上级路由的客户端列表中按 MAC 查找。不保存：断电后仍是当前的静态地址。'\n"
-+	":'接入已有网络时，建议在此指定该网段内的空闲地址：'\n"
-+	"+'地址由本方指定，应用后即可直接访问。'}\n"
-+	"function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}\n"
-+	"/* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */\n"
-+	"/* 请求在飞的时候 /info 会回来把开关写回旧值：记下前后两个状态，自己收尾 */\n"
-+	"function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0,prev=v?false:true;\n"
-+	"c.disabled=true;DHCPD_BUSY=1;$('#dhs').textContent='…';\n"
-+	"get('/netdhcpd?on='+v,function(st,t){c.disabled=false;DHCPD_BUSY=0;\n"
-+	"if(st!=200||!/^ok/.test((t||'').trim())){\n"
-+	"c.checked=prev;$('#dhs').textContent='设备没有接受';return}\n"
-+	"c.checked=!!v;$('#dhs').textContent=v?'已开启':'已关闭';\n"
-+	"if(INFO&&INFO.net)INFO.net.dhcpd=v})}\n"
++	"/*\n"
++	"* 一个下拉框，三种模式，互斥：本机发地址 / 本机用固定地址 / 向上级路由要\n"
++	"* 地址。原来是「静态 or 自动获取」再叠一个独立的 DHCP 服务开关 —— 两个维度\n"
++	"* 四种组合，其中「自动获取 + 服务开着」是纯粹的错，只能靠代码在背后偷偷关\n"
++	"* 掉，而「关掉」这件事又存不进闪存。合成一维之后，那种组合根本表达不出来。\n"
++	"*\n"
++	"* DHCP 服务器那一档掩码固定 /24：设备发出去的地址一直是按 /24 算的\n"
++	"* （net_ip & 0xffffff00 | 100），能改掩码只会让它和实际发出去的地址对不上。\n"
++	"*/\n"
++	"var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};\n"
++	"function amodesw(){var m=$('#amode').value;\n"
++	"$('#arow1').hidden=m=='client';\n"
++	"$('#arow2').hidden=m!='static';\n"
++	"$('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'\n"
++	":'IP<small>设备的接口地址</small>';\n"
++	"$('#nh').innerHTML=m=='server'\n"
++	"?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，网关指向本设备且不带"
++		" DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'\n"
++	":m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'\n"
++	":'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';\n"
++	"ippv();bootline()}\n"
++	"/* 末位固定 .1 是这一档的规矩，那就当场把结果摆出来，别等按了「应用」才说 */\n"
++	"function ippv(){var m=$('#amode').value,ip=$('#nip').value.trim(),f=$('#ipfn'),b;\n"
++	"if(m=='client'){f.textContent='';return}\n"
++	"if(m=='static'){f.textContent='主机需在同一网段';return}\n"
++	"if(!IP4.test(ip)){f.textContent='填本网段内任一地址即可，如 192.168.1.1';return}\n"
++	"b=ip.replace(/\\.\\d+$/,'');\n"
++	"f.innerHTML='设备 <b>'+esc(b)+'.1</b> · 电脑 <b>'+esc(b)+'.100</b>'}\n"
++	"/* 闪存里存着的那一套；从没存过就是出厂默认 */\n"
++	"function bootdesc(){var v=INFO&&INFO.net&&INFO.net.saved;\n"
++	"if(!v)return 'DHCP 服务器 192.168.1.1 / 255.255.255.0（出厂默认）';\n"
++	"return MODES[v.mode]+(v.mode=='client'?'':' '+v.ip\n"
++	"+(v.mode=='static'?' / '+v.mask:''))}\n"
++	"function bootline(){$('#nboot').innerHTML='<b>下次开机：'+esc(bootdesc())\n"
++	"+'</b>。勾上「保存到闪存」才会把当前这一套写进去替换它；不勾就只管本次开机。'}\n"
 +	"var IP4=/^(\\d{1,3}\\.){3}\\d{1,3}$/;\n"
-+	"function asknetset(){var ip=$('#nip').value.trim(),\n"
-+	"mk=$('#nmask').value.trim()||'255.255.255.0',\n"
-+	"sv=$('#nsave').checked;\n"
-+	"$('#atitle').textContent='改地址';\n"
++	"function applyaddr(){var m=$('#amode').value,ip=$('#nip').value.trim(),\n"
++	"mk=m=='server'?'255.255.255.0':($('#nmask').value.trim()||'255.255.255.0'),\n"
++	"sv=$('#nsave').checked,h;\n"
++	"if(m!='client'){\n"
 +	"if(!IP4.test(ip)){$('#nh').textContent='IP 不是一个合法的地址';return}\n"
-+	"if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}\n"
-+	"$('#abody').innerHTML='<div class=r><span>新地址</span><span class=v>'+esc(ip)+' /"
-+		" '+esc(mk)+'</span></div>'+\n"
-+	"'<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>'+\n"
-+	"'<div class=w>主机需在同一网段，否则无法访问</div>'+\n"
-+	"(sv?'<div class=w><b>保存到闪存</b>：地址填错时断电也无法恢复</div>'\n"
-+	":'<div class=w>不保存，断电后恢复原地址</div>')+\n"
-+	"($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'\n"
-+	"+'避免和这个网络里的路由器抢着发地址</div>':'')+\n"
-+	"(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'\n"
-+	"+'：改完之后拿不到新地址，需手动把本机配成 '\n"
-+	"+esc(ip.replace(/\\.\\d+$/,'.x'))+' 的一个地址；'\n"
-+	"+'若是把设备接进已有网络，改用该网络里的机器访问即可</div>':'');\n"
-+	"var y=$('#yes');y.hidden=false;y.textContent='改地址';\n"
-+	"YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}\n"
-+	"function donetset(ip,mk,sv){\n"
-+	"get('/netset?ip='+encodeURIComponent(ip)+'&mask='+encodeURIComponent(mk)\n"
-+	"+'&save='+(sv?1:0),function(st,t){\n"
++	"if(m=='server')ip=ip.replace(/\\.\\d+$/,'.1');\n"
++	"else if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}}\n"
++	"$('#atitle').textContent='改网络模式';\n"
++	"h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'\n"
++	"+(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)\n"
++	"+(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');\n"
++	"if(m=='server')h+='<div class=w>本机开始发地址：电脑将拿到 <b>'\n"
++	"+esc(ip.replace(/\\.\\d+$/,'.100'))+'</b></div>';\n"
++	"if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';\n"
++	"if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'\n"
++	"+'请在上级路由的客户端列表中按 MAC 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'\n"
++	"+'<div class=w>本机<b>不再发地址</b>；未取得租约时退回当前地址</div>';\n"
++	"if(m!='client')h+='<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>';\n"
++	"h+=sv?'<div class=w><b>保存到闪存</b>：下次开机就用这一套。地址填错时断电也无法恢复</div>'\n"
++	":'<div class=w>不保存：只管本次开机，下次开机回到 <b>'+esc(bootdesc())+'</b></div>';\n"
++	"if(INFO&&INFO.net&&INFO.net.ack&&m!='server')h+='<div class=w><b>本机用的是设备发的地址</b>'\n"
++	"+'：本机这个地址马上就没人续租了，'+(m=='static'?'需手动把本机配成 '\n"
++	"+esc(ip.replace(/\\.\\d+$/,'.x'))+' 的一个地址':'请改用上级路由那个网络里的机器')+'</div>';\n"
++	"$('#abody').innerHTML=h;\n"
++	"var y=$('#yes');y.hidden=false;y.textContent='应用';\n"
++	"YES=function(){donetmode(m,ip,mk,sv)};$('#mask').setAttribute('data-on','')}\n"
++	"function donetmode(m,ip,mk,sv){\n"
++	"get('/netmode?mode='+m+(m=='client'?'':'&ip='+encodeURIComponent(ip)\n"
++	"+'&mask='+encodeURIComponent(mk))+'&save='+(sv?1:0),function(st,t){\n"
 +	"if(st!=200||!/^ok /.test((t||'').trim())){\n"
 +	"$('#nh').textContent='设备没有接受：'+((t||'').trim()||st);return}\n"
-+	"hbstop();gone('设备已移至 '+ip,\n"
-+	"'本页面连接的是旧地址，不会自动恢复。请以 <b>http://'+esc(ip)+'/</b> 重新打开。'\n"
-+	"+(sv?'':'断电后恢复原地址。'),'http://'+ip+'/')})}\n"
-+	"function askdhcp(){$('#atitle').textContent='DHCP 获取地址';\n"
-+	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>dhcp</span></div>'+\n"
-+	"'<div class=w><b>地址由上级路由分配，本页面无法预知。</b>请在上级路由的客户端列表中按 MAC"
-+		" 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'+\n"
-+	"'<div class=w>未取得租约时退回当前地址</div>'+\n"
-+	"'<div class=w>不保存，断电后恢复原地址</div>'+\n"
-+	"($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'\n"
-+	"+'这个网络里已经有路由器在发地址了</div>':'')+\n"
-+	"(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'\n"
-+	"+'：之后从本机访问不到设备，请改用上级路由那个网络里的机器</div>':'');\n"
-+	"var y=$('#yes');y.hidden=false;y.textContent='获取';YES=dodhcp;\n"
-+	"$('#mask').setAttribute('data-on','')}\n"
-+	"function dodhcp(){get('/netdhcp',function(){});hbstop();\n"
-+	"gone('正在获取地址',\n"
++	"hbstop();\n"
++	"if(m=='client')gone('正在获取地址',\n"
 +	"'获取成功后设备位于新地址，请在上级路由的客户端列表中按 <b>'\n"
-+	"+esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约或断电后均恢复原地址。','')}\n"
++	"+esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约时退回原地址。'\n"
++	"+(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'');\n"
++	"else gone('设备已移至 '+ip,\n"
++	"'本页面连接的是旧地址，不会自动恢复。请以 <b>http://'+esc(ip)+'/</b> 重新打开。'\n"
++	"+(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'http://'+ip+'/')})}\n"
 +	"/* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */\n"
-+	"function gone(title,body,url){GONE=1;\n"
++	"function gone(title,body,url){GONE=1;netpoll(0);\n"
 +	"$('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';\n"
 +	"$('#offt').textContent=title;\n"
 +	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+body+'</div>'\n"
@@ -1211,7 +1258,7 @@ new file mode 100644
 +	"function doboot(){get('/boot',function(){});expect('boot')}\n"
 +	"/* 一次性的，所以「设置」之后按钮不该还写着「设置」 */\n"
 +	"function bootonce(){var b=$('#bob');b.disabled=true;\n"
-+	"get('/bootonce',function(st,t){b.disabled=false;\n"
++	"get('/bootonce',function(st,t){b.disabled=false;CHK=null;ENV=null;\n"
 +	"t=(t||'').trim();\n"
 +	"if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}\n"
 +	"/* saveenv 失败时只在内存里生效，断电即失效 —— 按钮不能跟着说「已设置」 */\n"
@@ -1300,8 +1347,9 @@ new file mode 100644
 +	"if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
 +	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
 +		" 起的区段',l)}\n"
-+	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|"
-+		"check_buttons|httpd_|ubi_)/;\n"
++	"/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */\n"
++	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_b"
++		"uttons|web_uboot_|envver|httpd_|ubi_)/;\n"
 +	"function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;va"
 +		"r r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}\n"
@@ -1352,20 +1400,25 @@ new file mode 100644
 +		",'')}\n"
 +	"/* 自己的位置：#envh 归 envfill() 管，紧接着的 getenv() 会把它写掉 */\n"
 +	"function envdef(){$('#envdh').textContent='正在恢复…';\n"
-+	"get('/envreset',function(st,t){if(st==200){$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复"
-+		"并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
++	"get('/envreset',function(st,t){if(st==200){CHK=null;$('#envdh').textContent=t&&t.indexOf('saved'"
++		")>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}\n"
 +	"else $('#envdh').textContent='恢复失败（'+st+'）'})}\n"
 +	"/*\n"
 +	"* 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是\n"
 +	"* 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口\n"
 +	"* 那几行是直接读 PHY 寄存器来的；读不到的口不列。\n"
 +	"*/\n"
-+	"function netfill(){var t=$('#net'),n=INFO&&INFO.net,h='';\n"
++	"function netfill(){var t=$('#net'),n=(NET&&NET.net)||(INFO&&INFO.net),\n"
++	"ports=(NET&&NET.ports)||(INFO&&INFO.ports)||[],h='',m;\n"
 +	"if(!n){t.innerHTML='<tr><td class=empty>读不到网络信息</td></tr>';return}\n"
++	"m=n.mode||'server';\n"
++	"h+='<tr><td>模式</td><td>'+(MODES[m]||m)+(n.ram?'<span class=tag>未保存</span>':'')+'</td></tr>';\n"
 +	"h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)\n"
 +	"+(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';\n"
 +	"if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';\n"
 +	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
++	"/* 发地址这本账只有在真的在发的时候才有意义 */\n"
++	"$('#dhsum').hidden=m!='server';\n"
 +	"$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'\n"
 +	"+(n.client?'，最近一次分配给 '+n.client:'')\n"
 +	"+'。当前打开本页面的主机用的就是设备发的地址。'\n"
@@ -1373,17 +1426,19 @@ new file mode 100644
 +	"+'当前主机用的是手动配置的 IP。'\n"
 +	":'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';\n"
 +	"/* 端口那几个数是设备给的，先当数字看待再拼进 HTML */\n"
-+	"(INFO.ports||[]).forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;\n"
++	"ports.forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;\n"
 +	"h+='<tr><td><span class=\"dot s'+(p.link?0:1)+'\"></span>端口 '+pn+'</td>'\n"
 +	"+'<td'+(p.link?'':' class=s1')+'>'+(p.link?\n"
 +	"(sp?sp>=1000?(sp/1000)+' Gb/s':sp+' Mb/s':'已连接')\n"
 +	"+(sp?fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
 +	"t.innerHTML=h;\n"
-+	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length);\n"
-+	"/* 开关正在等设备回话时别插队，等它自己收尾 */\n"
-+	"if(!DHCPD_BUSY){$('#dhcpd').checked=!!n.dhcpd;$('#dhs').textContent=''}\n"
++	"$('#portn').hidden=!ports.length;\n"
++	"/* 表单只在第一次照着设备填，之后是用户在编辑它，三秒一次的轮询别去动 */\n"
++	"if(!NETINIT){NETINIT=1;$('#amode').value=m;\n"
 +	"if(!$('#nip').value)$('#nip').value=n.ip||'';\n"
-+	"if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}\n"
++	"if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask;\n"
++	"amodesw()}\n"
++	"else bootline()}\n"
 +	"/*\n"
 +	"* 卷占用条：每段的宽度是那个卷的预留容量，按卷 ID 排。UBI 把 LEB 映射到\n"
 +	"* 任意 PEB，还会因磨损均衡把它们搬走，所以这张图说的是「分掉了多少」，\n"
@@ -1760,6 +1815,12 @@ new file mode 100644
 +	"if(!WR||WR.fin)return;\n"
 +	"WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;\n"
 +	"HBOFF=0;busy(0);\n"
++	"/*\n"
++	"* 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、\n"
++	"* ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。\n"
++	"* 作废掉，切过去时自然会重跑；关掉这个框时 rhide() 那边同样会重读 /info。\n"
++	"*/\n"
++	"CHK=null;\n"
 +	"prog.className='prog ok';bar.className='pbar';bar.style.width='100%';\n"
 +	"$('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';\n"
 +	"btn.disabled=false;btn.textContent=SENT.btxt;clear(p);\n"
@@ -1782,7 +1843,7 @@ new file mode 100644
 +	"'<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+\n"
 +	"'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'}\n"
 +	"else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';\n"
-+	"$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}\n"
++	"CHK=null;$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}\n"
 +	"function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var"
 +		" lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classLis"
 +		"t.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode"
@@ -1811,7 +1872,7 @@ new file mode 100644
 + *
 + * Every GET endpoint below builds its whole answer once, when the request is
 + * classified, into a static buffer of its own -- info_buf, check_buf,
-+ * scan_buf, log_buf, ping_buf, env_buf, netset_buf, dumpinfo_buf -- and then
++ * scan_buf, log_buf, ping_buf, env_buf, netmode_buf, dumpinfo_buf -- and then
 + * hands tx() a pointer into that buffer for as long as the connection lives.
 + *
 + * That is sound only because of two properties of the U-Boot TCP stack.
@@ -1926,7 +1987,7 @@ new file mode 100644
 +static char		wr_buf[2048];
 +static char		wr_qs[48];
 +static int		wr_len;
-+static u8		vf_buf[VF_CHUNK];
++static u8		vf_buf[VF_CHUNK] __aligned(64);
 +static ulong		vf_off;
 +static ulong		vf_size;
 +static ulong		vf_next;
@@ -2255,20 +2316,64 @@ new file mode 100644
 +#define DHCP_ACK		5
 +#define DHCP_MIN_LEN		240
 +#define DHCP_LEASE_SECS		3600
-+#define ENV_DHCPD		"httpd_dhcpd"
-+
 +/*
-+ * The switch exists because this server is only ever right on one kind of
-+ * wire: a cable straight from a PC to this board.  On any network that
-+ * already has a router it answers requests that were not addressed to it,
-+ * hands out one fixed address with itself as the gateway and no DNS, and
-+ * whoever takes that lease loses its connectivity.  So it goes off the
-+ * moment the device is moved onto such a network -- see netchange_apply()
-+ * -- and the environment carries that decision across a reboot, since a
-+ * saved LAN address without it would put the rogue server back on the
-+ * network at every power-up.
++ * What this board's network is for, in one value.
++ *
++ *   server   hand out addresses; a cable straight from a PC to this board
++ *   static   a fixed address on a network somebody else runs
++ *   client   ask that network's router for one
++ *
++ * They used to be two independent things -- "static or DHCP" plus a separate
++ * DHCP-server switch -- which is four combinations for three meanings, and
++ * one of the four ("ask a router for an address while also being a router")
++ * is simply wrong.  Code had to reach in and turn the switch off behind the
++ * user's back to keep it from happening, and that decision then could not be
++ * saved, so the switch was write-once-zero: after one saved address it could
++ * never be turned back on.  One value cannot express the wrong combination
++ * at all, so none of that machinery is needed.
++ *
++ * Server mode fixes the netmask at /24 and the last octet at 1.  That is not
++ * a restriction, it is the truth being written down: dhcp_client_ip() has
++ * always handed out (net_ip & 0xffffff00) | 100 with itself as the gateway,
++ * so any other netmask described a network the leases did not belong to.
 + */
-+static int	dhcpd_on = 1;
++#define NET_SERVER	0
++#define NET_STATIC	1
++#define NET_CLIENT	2
++
++#define ENV_NETMODE		"web_uboot_netmode"
++#define ENV_NETIP		"web_uboot_ipaddr"
++#define ENV_NETMASK		"web_uboot_netmask"
++
++static int	netmode = NET_SERVER;
++/*
++ * The running configuration is not the one in flash: applied without the
++ * save box, or a lease.  Nothing depends on it except what the page says --
++ * "next boot goes back to ..." -- because the two are kept apart by
++ * construction rather than by a flag: an unsaved change writes ipaddr and
++ * nothing else, and netmode_load() overwrites ipaddr from web_uboot_ipaddr
++ * at every boot.  So even a saveenv from somewhere else entirely cannot
++ * make an unsaved address outlive the power cycle.
++ */
++static int	net_unsaved;
++
++static const char *netmode_name(int m)
++{
++	return m == NET_STATIC ? "static" : m == NET_CLIENT ? "client" :
++	       "server";
++}
++
++/* Anything unrecognised is the default, which is also the safe one. */
++static int netmode_parse(const char *s)
++{
++	if (s && !strcmp(s, "static"))
++		return NET_STATIC;
++	if (s && !strcmp(s, "client"))
++		return NET_CLIENT;
++
++	return NET_SERVER;
++}
++
 +static u32	dhcp_offers;
 +static u32	dhcp_acks;
 +static u8	dhcp_last_mac[6];
@@ -2355,7 +2460,7 @@ new file mode 100644
 +	u8 *o;
 +	int n;
 +
-+	if (!dhcpd_on)
++	if (netmode != NET_SERVER)
 +		return;
 +	if (dport != DHCP_SERVER_PORT || len < DHCP_MIN_LEN)
 +		return;
@@ -2644,6 +2749,56 @@ new file mode 100644
 +}
 +
 +/*
++ * The half of /info that changes while the page is open: the address, what
++ * the DHCP server has handed out, and the link state of each port.  Served on
++ * its own as /net because that is the half worth asking for again -- /info
++ * re-attaches UBI, which rescans every eraseblock and prints a screenful, and
++ * "which socket is the cable in" must not cost that.
++ */
++static void info_net(struct jbuf *jb)
++{
++	const char *m;
++
++	jb_printf(jb, "\"net\":{\"ip\":\"%pI4\",\"mask\":\"%pI4\","
++		  "\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
++		  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
++	jb_str(jb, eth_get_name());
++	jb_printf(jb, ",\"mode\":\"%s\",\"ram\":%d", netmode_name(netmode),
++		  net_unsaved);
++	jb_printf(jb, ",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
++	if (dhcp_offers || dhcp_acks)
++		jb_printf(jb, ",\"client\":\"%pM\"", dhcp_last_mac);
++	/*
++	 * What the flash holds, which is a different question from what is
++	 * running: the page names it in so many words ("next boot goes back
++	 * to ...") rather than leaving the user to guess what "not saved"
++	 * costs.  Absent means this board has never been through this page,
++	 * and the answer is the default environment -- server mode on
++	 * whatever ipaddr it ships with.
++	 */
++	m = env_get(ENV_NETMODE);
++	if (m) {
++		jb_printf(jb, ",\"saved\":{\"mode\":\"%s\"",
++			  netmode_name(netmode_parse(m)));
++		m = env_get(ENV_NETIP);
++		if (m) {
++			jb_printf(jb, ",\"ip\":");
++			jb_str(jb, m);
++		}
++		m = env_get(ENV_NETMASK);
++		if (m) {
++			jb_printf(jb, ",\"mask\":");
++			jb_str(jb, m);
++		}
++		jb_printf(jb, "}");
++	} else {
++		jb_printf(jb, ",\"saved\":null");
++	}
++	jb_printf(jb, "}");
++	info_ports(jb);
++}
++
++/*
 + * ---- GET /info -----------------------------------------------------------
 + *
 + * Everything the page shows about the board, read when asked rather than
@@ -2688,16 +2843,8 @@ new file mode 100644
 +
 +	P(",\"ram\":%llu", (unsigned long long)gd->ram_size);
 +
-+	P(",\"mac\":\"%pM\"", net_ethaddr);
-+	P(",\"net\":{\"ip\":\"%pI4\",\"mask\":\"%pI4\",\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
-+	  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
-+	S(eth_get_name());
-+	P(",\"dhcpd\":%d", dhcpd_on);
-+	P(",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
-+	if (dhcp_offers || dhcp_acks)
-+		P(",\"client\":\"%pM\"", dhcp_last_mac);
-+	P("}");
-+	info_ports(&jb);
++	P(",\"mac\":\"%pM\",", net_ethaddr);
++	info_net(&jb);
 +	P(",\"uboot\":");
 +	S(version_string);
 +
@@ -2790,6 +2937,29 @@ new file mode 100644
 +static int info_len;
 +
 +/*
++ * ---- GET /net ------------------------------------------------------------
++ *
++ * What the network tab polls: the same "net" and "ports" objects /info
++ * carries, without the device tree, the flash geometry or the UBI attach.
++ * Cheap enough to ask for every few seconds, which is what a link light has
++ * to be to mean anything.
++ */
++static char net_buf[1024];
++static int net_len;
++
++static int httpd_net(void)
++{
++	struct jbuf jb;
++
++	jb_init(&jb, net_buf, sizeof(net_buf));
++	jb_printf(&jb, JSON_HDR("200 OK") "{");
++	info_net(&jb);
++	jb_printf(&jb, "}");
++
++	return jb_done(&jb, "/net");
++}
++
++/*
 + * ---- GET /check ----------------------------------------------------------
 + *
 + * A health check, run when asked: is there a BL2 where the BootROM looks
@@ -2811,7 +2981,7 @@ new file mode 100644
 +#define FIT_MAGIC	0xd00dfeed
 +/*
 + * Where the BootROM expects the BL2 container inside the bl2 partition; the
-+ * 2 KiB before it are left erased (see httpd_write_bl2 in the defenv).
++ * 2 KiB before it are left erased (see web_uboot_write_bl2 in the defenv).
 + */
 +#define BL2_PART	"bl2"
 +#define BL2_IMAGE_OFF	0x800
@@ -2926,30 +3096,31 @@ new file mode 100644
 +}
 +
 +/*
-+ * envver, bootcmd and the menu.  A saved environment older than the running
-+ * U-Boot, or one somebody edited by hand, is a common reason a board stops
-+ * booting -- and with no serial console there is otherwise no way to see it.
++ * The env version, bootcmd and the menu.  A saved environment older than the
++ * running U-Boot, or one somebody edited by hand, is a common reason a board
++ * stops booting -- and with no serial console there is otherwise no way to
++ * see it.
 + * Everything is compared against what this build ships, never a hardcoded
 + * expectation, so the check keeps telling the truth as the defenv changes.
 + */
 +static void chk_env_defaults(struct jbuf *jb, int *first)
 +{
-+	const char *cur = env_get("envver");
-+	const char *def = defenv_get("envver");
++	const char *cur = env_get(ENV_VER);
++	const char *def = defenv_get(ENV_VER);
 +	char name[24];
 +	int n = 0, dn = 0, i;
 +
 +	if (!def)
 +		;			/* this build does not version its env */
 +	else if (!cur)
-+		chk_item(jb, first, "envver", CHK_WARN,
-+			 "环境中无 envver，当前 U-Boot 为 %s。引导菜单为旧版本，下次正常启动时自动刷新",
++		chk_item(jb, first, ENV_VER, CHK_WARN,
++			 "环境中没有这一项，当前 U-Boot 为 %s。引导菜单为旧版本，下次正常启动时自动刷新",
 +			 def);
 +	else if (!strcmp(cur, def))
-+		chk_item(jb, first, "envver", CHK_OK, "%s，与当前 U-Boot 一致",
++		chk_item(jb, first, ENV_VER, CHK_OK, "%s，与当前 U-Boot 一致",
 +			 cur);
 +	else
-+		chk_item(jb, first, "envver", CHK_WARN,
++		chk_item(jb, first, ENV_VER, CHK_WARN,
 +			 "闪存中为 %s，当前 U-Boot 为 %s。下次正常启动时自动刷新引导菜单",
 +			 cur, def);
 +
@@ -4009,7 +4180,7 @@ new file mode 100644
 + * nothing to try.
 + *
 + * /bootonce arranges for the next boot to stop here instead.  It is one
-+ * shot and undoes itself: httpd_boot_once is cleared and the old bootcmd
++ * shot and undoes itself: web_uboot_boot_once is cleared and the old bootcmd
 + * put back the next time the httpd command is entered at all, so a user who
 + * sets it and then walks away still gets a normal boot the time after.
 + *
@@ -4023,8 +4194,8 @@ new file mode 100644
 + * session ends.  A one-shot that can strand the board is not worth having.
 + */
 +#define BOOT_CMD	"boot_ubi"
-+#define ENV_ONCE	"httpd_boot_once"
-+#define ENV_SAVED	"httpd_bootcmd_saved"
++#define ENV_ONCE	"web_uboot_boot_once"
++#define ENV_SAVED	"web_uboot_bootcmd_saved"
 +
 +static char bootonce_buf[256];
 +static int bootonce_len;
@@ -4070,45 +4241,53 @@ new file mode 100644
 +}
 +
 +/*
-+ * ---- GET /netset?ip=&mask=&save=, GET /netdhcp ---------------------------
++ * ---- GET /netmode?mode=&ip=&mask=&save= ----------------------------------
 + *
-+ * The address this page is reachable at, changed from the page itself.
++ * The whole network configuration in one request: which of the three modes,
++ * the address it needs (none, in client mode), and whether it outlives the
++ * power cycle.  It replaces /netset, /netdhcp and /netdhcpd, which between
++ * them could express a combination that was never meant to exist.
 + *
-+ * Both are deferred: the answer has to leave on the old address, because
-+ * the browser is holding a connection to it and a reply sourced from the
-+ * new one would simply be dropped.  So the request only records what to
-+ * do, the netloop ends, and the change happens in httpd() before the
-+ * server is started again.
++ * Deferred, like the two it replaces: the answer has to leave on the old
++ * address, because the browser is holding a connection to it and a reply
++ * sourced from the new one would simply be dropped.  So the request only
++ * records what to do, the netloop ends, and the change happens in httpd()
++ * before the server is started again.
 + *
-+ * Not saved unless asked.  A wrong address here means the device is gone
-+ * until somebody works out where it went, and a recovery tool should not
-+ * make that survive a power cycle by default.
++ * Not saved unless asked -- and here "not saved" is exact rather than
++ * approximate.  An unsaved change writes ipaddr and netmask, which are
++ * runtime state, and leaves web_uboot_netmode / _ipaddr / _netmask alone.
++ * Those three are the only thing netmode_load() reads at the next boot, so
++ * nothing that runs saveenv for its own reasons -- /bootonce, /envreset --
++ * can turn a deliberately temporary address into a permanent one on the way
++ * past.  A wrong address is the one mistake this page cannot talk its way
++ * out of, and pulling the power has to keep working as the way back.
 + *
-+ * /netdhcp has a problem no code here can fix: after it succeeds the
++ * Client mode has a problem no code here can fix: after it succeeds the
 + * device is at an address the browser does not know.  The lease comes from
-+ * the upstream router, so that is where the user has to look -- by MAC.
-+ * The page says so before it starts.  It is offered anyway because putting
-+ * the device on an existing network is sometimes the only way in, and it
-+ * falls back to the static address when no lease arrives.
++ * the upstream router, so that is where the user has to look -- by MAC.  The
++ * page says so before it starts.  It is offered anyway because putting the
++ * device on an existing network is sometimes the only way in, and it falls
++ * back to the previous address when no lease arrives.
 + */
-+static char netset_buf[256];
-+static int netset_len;
-+static int netchange_pending;	/* 1 = static, 2 = dhcp */
++static char netmode_buf[256];
++static int netmode_len;
++static int netmode_pending;
 +/*
-+ * Parsed and held, but not yet acted on.  netchange_pending is raised only
-+ * once the answer has been acknowledged, the way /netdhcp already does it.
-+ * Raising it while the request was being parsed left it set for an answer
-+ * that may never have arrived, and the next exit from net_loop() -- an
-+ * acknowledged flash, say -- would be taken for the address change: the
-+ * address would move, do_httpd() would loop, httpd_start_server() would
-+ * clear flash_pending, and the write the page had already been told was
-+ * accepted would be dropped without a word.
++ * Parsed and held, but not yet acted on.  netmode_pending is raised only
++ * once the answer has been acknowledged.  Raising it while the request was
++ * still being parsed left it set for an answer that may never have arrived,
++ * and the next exit from net_loop() -- an acknowledged flash, say -- would
++ * be taken for the address change: the address would move, do_httpd() would
++ * loop, httpd_start_server() would clear flash_pending, and the write the
++ * page had already been told was accepted would be dropped without a word.
 + */
-+static int netset_armed;
-+static char netset_ip[20];
-+static char netset_mask[20];
-+static int netset_save;
-+static char netset_qs[96];
++static int netmode_armed;
++static int nm_mode;
++static char nm_ip[20];
++static char nm_mask[20];
++static int nm_save;
++static char netmode_qs[96];
 +
 +/* Dotted quad, and not one that cannot be an interface address. */
 +static int ip_ok(const char *s, struct in_addr *out)
@@ -4179,7 +4358,7 @@ new file mode 100644
 +	return ((~m + 1) & ~m) == 0;
 +}
 +
-+static int netset_reply(const char *fmt, ...)
++static int netmode_reply(const char *fmt, ...)
 +{
 +	char msg[160];
 +	va_list ap;
@@ -4188,106 +4367,86 @@ new file mode 100644
 +	vsnprintf(msg, sizeof(msg), fmt, ap);
 +	va_end(ap);
 +
-+	netset_len = snprintf(netset_buf, sizeof(netset_buf),
-+			      "HTTP/1.0 200 OK\r\n"
-+			      "Content-Type: text/plain; charset=utf-8\r\n"
-+			      "Connection: close\r\n"
-+			      "\r\n%s\n", msg);
++	netmode_len = snprintf(netmode_buf, sizeof(netmode_buf),
++			       "HTTP/1.0 200 OK\r\n"
++			       "Content-Type: text/plain; charset=utf-8\r\n"
++			       "Connection: close\r\n"
++			       "\r\n%s\n", msg);
 +
-+	return netset_len;
++	return netmode_len;
 +}
 +
-+static int httpd_netset(void)
++/*
++ * Parsed now, applied once the answer is out.
++ *
++ * Server mode does not take the address as given: the last octet becomes 1
++ * and the netmask becomes /24, because dhcp_client_ip() hands out
++ * (net_ip & 0xffffff00) | 100 with this board as the gateway.  Letting the
++ * user pick either of those would only let them describe a network their own
++ * leases do not belong to.  The page shows the two addresses it is about to
++ * produce while the field is still being typed in, so this is not a surprise
++ * sprung after the button.
++ */
++static int httpd_netmode(void)
 +{
-+	char ip[20], mask[20], sv[8];
++	char m[12], ip[20], mask[20], sv[8];
++	struct in_addr a;
++	int mode;
 +
-+	netset_armed = 0;
++	netmode_armed = 0;
 +
-+	if (!qs_get(netset_qs, "ip", ip, sizeof(ip)) || !ip_ok(ip, NULL))
-+		return netset_reply("bad ip");
-+	if (qs_get(netset_qs, "mask", mask, sizeof(mask))) {
-+		if (!mask_ok(mask))
-+			return netset_reply("bad mask");
-+	} else {
-+		strlcpy(mask, "255.255.255.0", sizeof(mask));
++	if (!qs_get(netmode_qs, "mode", m, sizeof(m)))
++		return netmode_reply("bad mode");
++	if (!strcmp(m, "server"))
++		mode = NET_SERVER;
++	else if (!strcmp(m, "static"))
++		mode = NET_STATIC;
++	else if (!strcmp(m, "client"))
++		mode = NET_CLIENT;
++	else
++		return netmode_reply("bad mode");
++
++	nm_ip[0] = '\0';
++	nm_mask[0] = '\0';
++
++	if (mode != NET_CLIENT) {
++		if (!qs_get(netmode_qs, "ip", ip, sizeof(ip)) || !ip_ok(ip, &a))
++			return netmode_reply("bad ip");
++
++		if (mode == NET_SERVER) {
++			a.s_addr = (a.s_addr & htonl(0xffffff00)) | htonl(1);
++			snprintf(nm_ip, sizeof(nm_ip), "%pI4", &a);
++			strlcpy(nm_mask, "255.255.255.0", sizeof(nm_mask));
++		} else {
++			strlcpy(nm_ip, ip, sizeof(nm_ip));
++			if (qs_get(netmode_qs, "mask", mask, sizeof(mask))) {
++				if (!mask_ok(mask))
++					return netmode_reply("bad mask");
++				strlcpy(nm_mask, mask, sizeof(nm_mask));
++			} else {
++				strlcpy(nm_mask, "255.255.255.0",
++					sizeof(nm_mask));
++			}
++		}
 +	}
 +
-+	strlcpy(netset_ip, ip, sizeof(netset_ip));
-+	strlcpy(netset_mask, mask, sizeof(netset_mask));
-+	netset_save = qs_get(netset_qs, "save", sv, sizeof(sv)) && sv[0] == '1';
-+	netset_armed = 1;
++	nm_mode = mode;
++	nm_save = qs_get(netmode_qs, "save", sv, sizeof(sv)) && sv[0] == '1';
++	netmode_armed = 1;
 +
-+	return netset_reply("ok %s %s %s", netset_ip, netset_mask,
-+			    netset_save ? "saved" : "ram");
++	return netmode_reply("ok %s %s %s %s", netmode_name(mode),
++			     nm_ip[0] ? nm_ip : "-",
++			     nm_mask[0] ? nm_mask : "-",
++			     nm_save ? "saved" : "ram");
 +}
 +
-+/* GET /netdhcpd?on=0|1 -- immediate, nothing to defer. */
-+static int httpd_dhcpd_set(void)
-+{
-+	char v[8];
-+
-+	if (!qs_get(netset_qs, "on", v, sizeof(v)) ||
-+	    (v[0] != '0' && v[0] != '1') || v[1])
-+		return netset_reply("bad on");
-+
-+	dhcpd_on = v[0] == '1';
-+	env_set(ENV_DHCPD, dhcpd_on ? "1" : "0");
-+	printf("httpd: DHCP server %s\n", dhcpd_on ? "on" : "off");
-+
-+	return netset_reply("ok %d", dhcpd_on);
-+}
-+
-+/* Apply what /netset or /netdhcp asked for, once the answer is out. */
-+static void netchange_apply(void)
++/* Ask the network's own router for an address, and keep the old one if it
++ * does not answer. */
++static void netmode_lease(void)
 +{
 +	char back[20], bootfile[256];
 +	int bf_stash;
 +	const char *cur;
-+	int mode = netchange_pending;
-+	int dhcpd_was_on = dhcpd_on;
-+
-+	netchange_pending = 0;
-+	if (!mode)
-+		return;
-+
-+	/*
-+	 * Either way the device is being pointed at a network somebody else
-+	 * runs, and our server would only fight that network's router over
-+	 * the same addresses.  Written to the environment too, so a saved
-+	 * address does not bring it back at the next power-up -- for /netset
-+	 * that rides along with the address if "save" was ticked, for
-+	 * /netdhcp it is saved on its own just below.
-+	 */
-+	dhcpd_on = 0;
-+	env_set(ENV_DHCPD, "0");
-+
-+	if (mode == 1) {
-+		printf("httpd: moving to %s/%s%s\n", netset_ip, netset_mask,
-+		       netset_save ? " (saved)" : " (this boot only)");
-+		env_set("ipaddr", netset_ip);
-+		env_set("netmask", netset_mask);
-+		if (netset_save && run_command("saveenv", 0))
-+			printf("httpd: saving failed; this lasts until reboot\n");
-+
-+		return;
-+	}
-+
-+	/*
-+	 * Saved here, before anything else is touched, because this is the
-+	 * one thing that has to outlive the reboot: not the address the
-+	 * router is about to hand out -- that comes from a lease and will be
-+	 * asked for again -- but the decision to stop serving DHCP on a
-+	 * network that already has a server.
-+	 *
-+	 * saveenv writes the whole environment, not one variable, so this
-+	 * also commits whatever else this boot changed in RAM -- an address
-+	 * set through /netset without the save box, say.  Rare enough to
-+	 * accept over a rogue DHCP server coming back at the next power
-+	 * cycle; skipped entirely when the flag was already off.
-+	 */
-+	if (dhcpd_was_on && run_command("saveenv", 0))
-+		printf("httpd: could not save; the DHCP server comes back at "
-+		       "the next reboot\n");
 +
 +	cur = env_get("ipaddr");
 +	strlcpy(back, cur ? cur : "", sizeof(back));
@@ -4321,6 +4480,99 @@ new file mode 100644
 +	 */
 +	if (bf_stash)
 +		env_set("bootfile", bootfile[0] ? bootfile : NULL);
++}
++
++/* Apply what /netmode asked for, once the answer is out. */
++static void netmode_apply(void)
++{
++	if (!netmode_pending)
++		return;
++	netmode_pending = 0;
++
++	netmode = nm_mode;
++	printf("httpd: %s mode%s%s, %s\n", netmode_name(netmode),
++	       nm_ip[0] ? " at " : "", nm_ip,
++	       nm_save ? "saved" : "this boot only");
++
++	if (nm_mode != NET_CLIENT) {
++		env_set("ipaddr", nm_ip);
++		env_set("netmask", nm_mask);
++	}
++
++	if (!nm_save) {
++		net_unsaved = 1;
++	} else {
++		env_set(ENV_NETMODE, netmode_name(nm_mode));
++		/*
++		 * A lease is not an address this board owns, so client mode
++		 * saves the decision and nothing else: the next boot asks for
++		 * one again rather than coming up on somebody else's address.
++		 */
++		env_set(ENV_NETIP, nm_ip[0] ? nm_ip : NULL);
++		env_set(ENV_NETMASK, nm_mask[0] ? nm_mask : NULL);
++		if (run_command("saveenv", 0)) {
++			printf("httpd: saving failed; this lasts until "
++			       "reboot\n");
++			net_unsaved = 1;
++		} else {
++			net_unsaved = 0;
++		}
++	}
++
++	if (nm_mode == NET_CLIENT)
++		netmode_lease();
++}
++
++/*
++ * Put the saved configuration into effect.  net_init_loop() reads ipaddr on
++ * every entry to net_loop(), so this has to have written it before the first
++ * one.
++ *
++ * A board with no web_uboot_netmode has never been through this page.  It
++ * gets server mode -- which is what this whole thing is for, a cable
++ * straight from a PC -- and its ipaddr is left exactly as it is: that value
++ * may well have been set by hand on the serial console, and there is no
++ * reason for this page to have an opinion about it before it is used.
++ */
++static void netmode_load(void)
++{
++	const char *s = env_get(ENV_NETMODE);
++
++	if (!s)
++		return;
++
++	netmode = netmode_parse(s);
++
++	s = env_get(ENV_NETIP);
++	if (s && netmode != NET_CLIENT)
++		env_set("ipaddr", s);
++
++	if (netmode == NET_SERVER) {
++		env_set("netmask", "255.255.255.0");
++	} else if (netmode == NET_STATIC) {
++		s = env_get(ENV_NETMASK);
++		if (s)
++			env_set("netmask", s);
++	}
++}
++
++/*
++ * Once per boot rather than once per httpd invocation: the boot script runs
++ * "while true ; do httpd ; sleep 1 ; done", and re-applying on the way back
++ * in would undo an unsaved change every time the server restarted, and ask
++ * for a fresh lease every time round the loop.
++ */
++static void netmode_boot(void)
++{
++	static int done;
++
++	if (done)
++		return;
++	done = 1;
++
++	netmode_load();
++	if (netmode == NET_CLIENT)
++		netmode_lease();
 +}
 +
 +/*
@@ -5686,6 +5938,8 @@ new file mode 100644
 +	}
 +	if (plen == 5 && !memcmp(path, "/ping", 5))
 +		return CONN_PING;
++	if (plen == 4 && !memcmp(path, "/net", 4))
++		return CONN_NET;
 +	if (plen == 4 && !memcmp(path, "/env", 4))
 +		return CONN_ENV;
 +	if (plen == 9 && !memcmp(path, "/envreset", 9))
@@ -5696,19 +5950,16 @@ new file mode 100644
 +		return CONN_BOOT;
 +	if (plen == 9 && !memcmp(path, "/bootonce", 9))
 +		return CONN_BOOTONCE;
-+	if (plen == 8 && !memcmp(path, "/netdhcp", 8))
-+		return CONN_NETDHCP;
-+	if ((plen == 9 && !memcmp(path, "/netdhcpd", 9)) ||
-+	    (plen == 7 && !memcmp(path, "/netset", 7))) {
++	if (plen == 8 && !memcmp(path, "/netmode", 8)) {
 +		int k = qlen;
 +
-+		if (k > (int)sizeof(netset_qs) - 1)
-+			k = sizeof(netset_qs) - 1;
++		if (k > (int)sizeof(netmode_qs) - 1)
++			k = sizeof(netmode_qs) - 1;
 +		if (k > 0)
-+			memcpy(netset_qs, q + 1, k);
-+		netset_qs[k > 0 ? k : 0] = '\0';
++			memcpy(netmode_qs, q + 1, k);
++		netmode_qs[k > 0 ? k : 0] = '\0';
 +
-+		return plen == 7 ? CONN_NETSET : CONN_DHCPD;
++		return CONN_NETMODE;
 +	}
 +	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
 +		return CONN_DUMPINFO;
@@ -5794,8 +6045,7 @@ new file mode 100644
 +			 */
 +			if (flash_running &&
 +			    (cls == CONN_ENVRESET || cls == CONN_BOOTONCE ||
-+			     cls == CONN_NETSET || cls == CONN_NETDHCP ||
-+			     cls == CONN_DHCPD || cls == CONN_REBOOT ||
++			     cls == CONN_NETMODE || cls == CONN_REBOOT ||
 +			     cls == CONN_BOOT)) {
 +				tcp->priv = CONN_WRBUSY;
 +
@@ -5826,18 +6076,16 @@ new file mode 100644
 +				wr_len = httpd_wr();
 +			else if (cls == CONN_PING)
 +				ping_len = httpd_ping();
++			else if (cls == CONN_NET)
++				net_len = httpd_net();
 +			else if (cls == CONN_ENV)
 +				env_len = httpd_env();
 +			else if (cls == CONN_ENVRESET)
 +				envreset_len = httpd_envreset();
 +			else if (cls == CONN_BOOTONCE)
 +				bootonce_len = httpd_bootonce();
-+			else if (cls == CONN_NETSET)
-+				netset_len = httpd_netset();
-+			else if (cls == CONN_NETDHCP)
-+				netset_len = netset_reply("ok dhcp");
-+			else if (cls == CONN_DHCPD)
-+				netset_len = httpd_dhcpd_set();
++			else if (cls == CONN_NETMODE)
++				netmode_len = httpd_netmode();
 +			else if (cls == CONN_DUMPINFO)
 +				dumpinfo_len = httpd_dumpinfo();
 +			else if (cls == CONN_DUMP) {
@@ -5906,6 +6154,9 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_PING) {
 +		*len = ping_len;
 +		return ping_buf;
++	} else if (tcp->priv == CONN_NET) {
++		*len = net_len;
++		return net_buf;
 +	} else if (tcp->priv == CONN_ENV) {
 +		*len = env_len;
 +		return env_buf;
@@ -5915,10 +6166,9 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_BOOTONCE) {
 +		*len = bootonce_len;
 +		return bootonce_buf;
-+	} else if (tcp->priv == CONN_NETSET || tcp->priv == CONN_NETDHCP ||
-+		   tcp->priv == CONN_DHCPD) {
-+		*len = netset_len;
-+		return netset_buf;
++	} else if (tcp->priv == CONN_NETMODE) {
++		*len = netmode_len;
++		return netmode_buf;
 +	} else if (tcp->priv == CONN_BOOT) {
 +		s = resp_reboot;
 +	} else if (tcp->priv == CONN_REBOOT) {
@@ -6044,18 +6294,11 @@ new file mode 100644
 +		return;
 +	}
 +
-+	if (tcp->priv == CONN_NETDHCP) {
-+		netchange_pending = 2;
-+		net_set_state(NETLOOP_SUCCESS);
-+
-+		return;
-+	}
-+
-+	if (tcp->priv == CONN_NETSET) {
-+		/* Only now is the answer really out; see netset_armed. */
-+		if (netset_armed) {
-+			netset_armed = 0;
-+			netchange_pending = 1;
++	if (tcp->priv == CONN_NETMODE) {
++		/* Only now is the answer really out; see netmode_armed. */
++		if (netmode_armed) {
++			netmode_armed = 0;
++			netmode_pending = 1;
 +			net_set_state(NETLOOP_SUCCESS);
 +		}
 +
@@ -6238,13 +6481,17 @@ new file mode 100644
 +	boot_pending = 0;
 +	tryboot_pending = 0;
 +	/*
-+	 * Both cleared here rather than only in netchange_apply(): a /netset
++	 * Both cleared here rather than only in netmode_apply(): a /netmode
 +	 * whose answer was never acknowledged must not still be armed when
 +	 * the server comes back up.
++	 *
++	 * netmode itself is deliberately not re-read from the environment
++	 * here.  It is set once per boot by netmode_boot() and then only by
++	 * the user; re-loading it on every entry to net_loop() would undo an
++	 * unsaved change the moment anything else made the server restart.
 +	 */
-+	netchange_pending = 0;
-+	netset_armed = 0;
-+	dhcpd_on = env_get_ulong(ENV_DHCPD, 10, 1) ? 1 : 0;
++	netmode_pending = 0;
++	netmode_armed = 0;
 +	dump_busy = 0;
 +	dump_len = 0;
 +	dump_wlen = 0;
@@ -6267,10 +6514,10 @@ new file mode 100644
 +	 */
 +	printf("Using %s device, MAC %pM\n", eth_get_name(), net_ethaddr);
 +	printf("Listening for HTTP on %pI4 port %d\n", &net_ip, HTTPD_PORT);
-+	if (dhcpd_on)
++	if (netmode == NET_SERVER)
 +		printf("Handing out DHCP leases from %pI4\n", &net_ip);
 +	else
-+		printf("DHCP server off\n");
++		printf("DHCP server off (%s mode)\n", netmode_name(netmode));
 +	printf("Press Ctrl-C to abort\n");
 +}
 +
@@ -6529,6 +6776,61 @@ new file mode 100644
 +	return VF_VOL;
 +}
 +
++/*
++ * The UBI half of vf_read(), spelled out rather than handed to
++ * ubi_volume_read().
++ *
++ * That wrapper prints "Read 4096 bytes from volume fit to ..." on every call,
++ * and reading a firmware volume back takes some seven thousand of them: the
++ * serial console scrolls for a minute and the recorded log -- the one the
++ * diagnostics page shows -- is flushed of everything that came before, which
++ * is exactly the output somebody debugging a failed write needs.  It also
++ * malloc()s and frees a bounce buffer per call and leaves $filesize set to
++ * the size of the last chunk, neither of which is wanted here.
++ *
++ * Underneath it is this loop, so this is the same read without the noise.
++ * check = 0 because the caller is about to CRC the whole thing against what
++ * it uploaded, which is a stronger statement than UBI's own per-LEB check and
++ * is the entire point of reading it back.
++ */
++static int vf_ubi_read(const char *name, ulong off, ulong len)
++{
++	struct ubi_device *ubi = ubi_get_device(0);
++	struct ubi_volume *vol;
++	u8 *buf = vf_buf;
++	int ret = 0;
++
++	if (!ubi)
++		return -1;
++
++	vol = ubi_vol_find(ubi, name);
++	if (!vol || vol->updating || vol->upd_marker ||
++	    (long long)(off + len) > vol->used_bytes) {
++		ubi_put_device(ubi);
++
++		return -1;
++	}
++
++	while (len) {
++		int lnum = off / vol->usable_leb_size;
++		int o = off % vol->usable_leb_size;
++		int n = vol->usable_leb_size - o;
++
++		if ((ulong)n > len)
++			n = len;
++		if (ubi_eba_read_leb(ubi, vol, lnum, buf, o, n, 0)) {
++			ret = -1;
++			break;
++		}
++		buf += n;
++		off += n;
++		len -= n;
++	}
++	ubi_put_device(ubi);
++
++	return ret;
++}
++
 +/* One window of what was just written, back off the flash. */
 +static int vf_read(int kind, char *vol, ulong off, ulong len)
 +{
@@ -6547,7 +6849,7 @@ new file mode 100644
 +		return (ret && ret != -EUCLEAN) ? -1 : 0;
 +	}
 +
-+	return ubi_volume_read(vol, (char *)vf_buf, off, len) ? -1 : 0;
++	return vf_ubi_read(vol, off, len);
 +}
 +
 +/*
@@ -6922,6 +7224,13 @@ new file mode 100644
 +	int err;
 +
 +	/*
++	 * Before the first net_loop(), which reads ipaddr on the way in.  It
++	 * guards itself against the second and later invocations of httpd in
++	 * the boot script's loop.
++	 */
++	netmode_boot();
++
++	/*
 +	 * Once per command, not once per net_loop(): the loop below re-enters
 +	 * net_loop() after an address change or a "stay up" flash, and
 +	 * disarming from httpd_start_server() would have pulled the rug out
@@ -7049,9 +7358,9 @@ new file mode 100644
 +
 +
 +		/*
-+		 * Last of the deferred actions.  /netset and /netdhcp are
-+		 * refused outright while a write is running, so this can no
-+		 * longer be pending alongside one -- but the ordering stays,
++		 * Last of the deferred actions.  /netmode is refused outright
++		 * while a write is running, so this can no longer be pending
++		 * alongside one -- but the ordering stays,
 +		 * because an address change loops back into net_loop(), which
 +		 * calls httpd_start_server(), and that clears flash_pending.
 +		 * One line moved above this one and a write the page had been
@@ -7065,8 +7374,8 @@ new file mode 100644
 +		 * cable can answer.  Changing an address must not depend on any
 +		 * of that; net_loop() re-reads ipaddr on the way back in.
 +		 */
-+		if (netchange_pending)
-+			netchange_apply();
++		if (netmode_pending)
++			netmode_apply();
 +		else if (!staying)
 +			return CMD_RET_SUCCESS;
 +

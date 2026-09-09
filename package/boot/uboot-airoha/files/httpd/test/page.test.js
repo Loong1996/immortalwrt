@@ -138,8 +138,8 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     $(w, '#envq').value = ''; $(w, '#envkey').checked = true; w.envfill();
     const names = [...w.document.querySelectorAll('#envt tr')].map(r => r.cells[0].textContent);
     ok('只看关键项筛掉噪声', names.length === 19 && !names.includes('stdin'), names.length);
-    ok('关键项留下 bootcmd 与 envver',
-       names.includes('bootcmd') && names.includes('envver'));
+    ok('关键项留下 bootcmd 与版本号',
+       names.includes('bootcmd') && names.includes('web_uboot_envver'));
 
     $(w, '#envkey').checked = false; w.envfill();
     w.askenvdef();
@@ -154,6 +154,24 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     $(w, '#yes').click();
     await sleep(600);
     ok('恢复成功说重启后生效', /已恢复并保存，重启后生效/.test(txt(w, '#envdh')), txt(w, '#envdh'));
+  }
+
+  console.log('\n--- 改过环境的动作也让体检作废 ---');
+  {
+    const w = await boot();
+    /* envver、bootcmd、引导菜单这三项体检都在看 */
+    w.CHK = [{ n: 'bootcmd', s: 0, v: '旧的', g: '引导' }];
+    w.envdef();
+    await sleep(600);
+    ok('恢复默认环境之后作废', w.CHK === null, String(w.CHK));
+
+    w.CHK = [{ n: 'bootcmd', s: 0, v: '旧的', g: '引导' }];
+    w.ENV = [{ k: 'bootcmd', v: '旧的' }];
+    w.bootonce();
+    await sleep(600);
+    ok('设过一次性引导入口之后也作废', w.CHK === null, String(w.CHK));
+    /* bootonce 改的就是 bootcmd，环境变量那一页照抄旧值只会误导 */
+    ok('环境变量那一页也跟着作废', w.ENV === null, String(w.ENV));
   }
 
   console.log('\n--- UBI 挂不上时恢复默认环境 ---');
@@ -264,6 +282,12 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
   console.log('\n--- 写入过程与结果框 ---');
   {
     const w = await boot();
+    /* 先跑一遍体检：写完之后它读的那片闪存已经不是这一份了 */
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(2200);
+    const chk0 = w.CHK;
+    ok('写之前体检跑过一遍', !!chk0 && chk0.length > 0);
+    $(w, '.nav[data-p=p1]').click();
     const i = $(w, '#p1 input[name=firmware]');
     Object.defineProperty(i, 'files', {
       value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
@@ -299,10 +323,20 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('实测速度记下来给下次估算', +w.localStorage.getItem('xgwrspd') > 0,
        w.localStorage.getItem('xgwrspd'));
 
+    /*
+     * 卷刚建出来、ri/bosa 刚写进去，再进「诊断」却还摆着写之前那一份结果，
+     * 看上去就像没写成 —— 报过的就是这个。
+     */
+    ok('写完之后旧的体检结果作废', w.CHK === null, String(w.CHK));
+
     w.rhide();
     ok('留在恢复页就把框关掉', !on(w, '#rmask'));
     ok('进度条停在写入完成', /写入完成/.test(txt(w, '#p1 .pwhat')) &&
        $(w, '#p1 .prog').className === 'prog ok', txt(w, '#p1 .pwhat'));
+
+    $(w, '.nav[data-p=p8]').click();
+    await sleep(2200);
+    ok('再进诊断是重跑出来的', !!w.CHK && w.CHK !== chk0);
   }
 
   console.log('\n--- 写坏了不弹框 ---');
@@ -909,10 +943,12 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
     const t = txt(w, '#net');
+    ok('报了模式', /DHCP 服务器/.test(t), t);
+    ok('存过的就不挂「未保存」', !/未保存/.test(t), t);
     ok('报了地址', /192\.168\.1\.1/.test(t), t);
     ok('0.0.0.0 的掩码不往外摆', !/0\.0\.0\.0/.test(t), t);
     ok('报了网卡', /airoha-gdm1/.test(t), t);
-    /* 这几句是 DHCP 服务自己的账，跟着开关那一段走了 */
+    /* 这几句是 DHCP 服务自己的账，只有在真的在发地址时才有意义 */
     ok('说清地址是设备发的',
        /用的就是设备发的地址/.test(txt(w, '#dhsum')), txt(w, '#dhsum'));
     ok('带上了客户端 MAC',
@@ -949,6 +985,143 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     w.INFO.ports = [];
     w.netfill();
     ok('没有端口就不摆那条说明', $(w, '#portn').hidden);
+
+    /* 不在发地址的时候这本账是噪音 */
+    w.INFO.net.mode = 'client';
+    w.netfill();
+    ok('客户端档就把发地址那本账收起来', $(w, '#dhsum').hidden);
+    ok('模式那行跟着变', /DHCP 客户端/.test(txt(w, '#net')), txt(w, '#net'));
+    w.INFO.net.ram = 1;
+    w.netfill();
+    ok('没保存的挂个标记', /未保存/.test(txt(w, '#net')), txt(w, '#net'));
+  }
+
+  console.log('\n--- 端口链路自己会刷新 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('硬件那一段在前台时不轮询', !w.NETT);
+
+    $(w, '#p5 button[data-s=s52]').click();
+    await sleep(600);
+    ok('切到网络就开始轮询', !!w.NETT);
+    /* /info 会重新挂载 UBI，为了看一眼哪个口亮着不该付那个代价 */
+    ok('问的是 /net 那一半，不是整份 /info',
+       !!(w.NET && w.NET.net && w.NET.ports) && w.NET.ubi === undefined);
+
+    const row = () => [...w.document.querySelectorAll('#net tr')]
+      .filter(r => /端口 1$/.test(r.cells[0].textContent))[0];
+    ok('一开始 1 口是空的', row().cells[1].textContent === '未连接',
+       row().cells[1].textContent);
+
+    /* 把网线插到 1 口上 */
+    w.PV.info.ports[0] = { p: 1, link: 1, speed: 1000, fd: 1 };
+    w.netget();
+    await sleep(600);
+    ok('换个口之后这张表跟着变', /1 Gb\/s/.test(row().cells[1].textContent),
+       row().cells[1].textContent);
+    ok('点也跟着变绿', row().cells[0].querySelector('.dot').className
+       === 'dot s0');
+
+    $(w, '.nav[data-p=p8]').click();
+    ok('看不见这一页了就停下来', !w.NETT);
+  }
+
+  console.log('\n--- 三种模式互斥 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    ok('默认是 DHCP 服务器', $(w, '#amode').value === 'server');
+    ok('只有三个选项',
+       [...w.document.querySelectorAll('#amode option')].map(o => o.value)
+         .join(',') === 'server,static,client');
+    /* 原来是「静态 or 自动获取」再叠一个独立开关，四种组合三种含义 */
+    ok('独立的 DHCP 服务开关没有了', !$(w, '#dhcpd'));
+
+    ok('服务器档要填地址', !$(w, '#arow1').hidden);
+    ok('服务器档不给改掩码', $(w, '#arow2').hidden);
+    ok('说清掩码固定 /24', /255\.255\.255\.0/.test(txt(w, '#nh')), txt(w, '#nh'));
+    ok('说清电脑拿到的是 .100', /\.100/.test(txt(w, '#nh')));
+    ok('警告别拿它接已有网络', /接入已有网络前不要用这一档/.test(txt(w, '#nh')));
+
+    $(w, '#amode').value = 'static'; w.amodesw();
+    ok('静态档露出掩码', !$(w, '#arow2').hidden && !$(w, '#arow1').hidden);
+    ok('静态档说明本机不再发地址', /本机不再发地址/.test(txt(w, '#nh')),
+       txt(w, '#nh'));
+
+    $(w, '#amode').value = 'client'; w.amodesw();
+    ok('客户端档两行都收起来', $(w, '#arow1').hidden && $(w, '#arow2').hidden);
+    ok('客户端档仍可选保存', !$(w, '#arow3').hidden);
+    ok('说清地址预知不了', /本页面事先不知道/.test(txt(w, '#nh')), txt(w, '#nh'));
+    ok('客户端档也不再发地址', /本机不再发地址/.test(txt(w, '#nh')));
+  }
+
+  console.log('\n--- 服务器档的末位与掩码不归用户挑 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    $(w, '#nip').value = '192.168.5.77';
+    w.ippv();
+    /* 设备发的地址一直是 (net_ip & 0xffffff00) | 100，所以这两个数是绑死的；
+       与其等按下「应用」再纠正，不如打字的时候就把结果摆出来 */
+    ok('打字时就把 .1 摆出来', /192\.168\.5\.1</.test($(w, '#ipfn').innerHTML),
+       $(w, '#ipfn').innerHTML);
+    ok('顺带说清电脑会拿到什么',
+       /192\.168\.5\.100/.test($(w, '#ipfn').innerHTML));
+
+    w.applyaddr();
+    ok('确认框里也是改正过的地址',
+       /192\.168\.5\.1 \/ 255\.255\.255\.0/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    ok('确认框说清电脑会拿到 .100',
+       /192\.168\.5\.100/.test(txt(w, '#abody')));
+
+    let url = null;
+    const real = w.get;
+    w.get = (u, cb) => { url = u; return real(u, cb) };
+    w.YES();
+    await sleep(600);
+    ok('发出去的也是 .1', /ip=192\.168\.5\.1&/.test(url), url);
+    ok('掩码是设备档位定的 /24', /mask=255\.255\.255\.0/.test(url), url);
+    w.get = real;
+  }
+
+  console.log('\n--- 不保存就说清下次开机回哪去 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    /* 从没存过：闪存里没有 web_uboot_netmode，回的是出厂默认 */
+    ok('先摆出下次开机是什么', /下次开机/.test(txt(w, '#nboot')), txt(w, '#nboot'));
+    ok('没存过就说是出厂默认', /出厂默认/.test(txt(w, '#nboot')));
+    ok('并且把默认那一套写出来',
+       /DHCP 服务器 192\.168\.1\.1/.test(txt(w, '#nboot')), txt(w, '#nboot'));
+
+    $(w, '#amode').value = 'static'; w.amodesw();
+    $(w, '#nip').value = '192.168.9.1';
+    $(w, '#nsave').checked = false;
+    w.applyaddr();
+    ok('不保存时确认框点名会回到哪',
+       /下次开机回到/.test(txt(w, '#abody')) && /出厂默认/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    w.hide();
+
+    $(w, '#nsave').checked = true;
+    w.applyaddr();
+    ok('勾了保存就换一句话', /下次开机就用这一套/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    w.YES();
+    await sleep(700);
+
+    /* 存过之后，「下次开机」那行说的就是刚存的那一套 */
+    w.GONE = 0; w.netget();
+    await sleep(600);
+    ok('存过之后下次开机跟着变',
+       /静态地址 192\.168\.9\.1/.test(txt(w, '#nboot')), txt(w, '#nboot'));
+    ok('不再说出厂默认', !/出厂默认/.test(txt(w, '#nboot')));
   }
 
   console.log('\n--- 靠设备发的地址连上来的机器 ---');
@@ -956,104 +1129,33 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
+    $(w, '#amode').value = 'static'; w.amodesw();
     $(w, '#nip').value = '192.168.9.1';
-    w.asknetset();
+    w.applyaddr();
     ok('点名本机用的是设备发的地址',
        /本机用的是设备发的地址/.test(txt(w, '#abody')), txt(w, '#abody'));
     ok('给出该配成哪个网段', /192\.168\.9\.x/.test(txt(w, '#abody')));
-    ok('也给了另一条路', /改用该网络里的机器/.test(txt(w, '#abody')));
     w.hide();
 
     /* 自己配的静态 IP 上来的机器不受影响，别吓唬人 */
     w.INFO.net.ack = 0;
-    w.asknetset();
+    w.applyaddr();
     ok('自己配 IP 的就不提这茬', !/本机用的是设备发的地址/.test(txt(w, '#abody')));
     w.hide();
 
+    /* 还是服务器档的话，本机继续能续到租约，这条提醒就是噪音 */
     w.INFO.net.ack = 1;
-    w.askdhcp();
-    ok('自动获取那边也点名',
+    $(w, '#amode').value = 'server'; w.amodesw();
+    w.applyaddr();
+    ok('仍然发地址的话不提这茬',
+       !/本机用的是设备发的地址/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+
+    $(w, '#amode').value = 'client'; w.amodesw();
+    w.applyaddr();
+    ok('客户端档也点名',
        /本机用的是设备发的地址/.test(txt(w, '#abody')), txt(w, '#abody'));
-    ok('说清之后从本机访问不到', /访问不到设备/.test(txt(w, '#abody')));
-  }
-
-  console.log('\n--- 地址获取方式 ---');
-  {
-    const w = await boot();
-    $(w, '.nav[data-p=p5]').click();
-    await sleep(600);
-    ok('默认是静态', $(w, '#amode').value === 'static');
-    ok('静态时看得到 IP 那几行', !$(w, '#arow1').hidden && !$(w, '#arow3').hidden);
-
-    $(w, '#amode').value = 'dhcp';
-    w.amodesw();
-    ok('自动获取时把静态那几行收起来',
-       $(w, '#arow1').hidden && $(w, '#arow2').hidden && $(w, '#arow3').hidden);
-    ok('说清地址是上级路由给的', /本页面无法预知/.test(txt(w, '#nh')),
-       txt(w, '#nh'));
-    ok('说清自动获取不保存', /断电后仍是当前的静态地址/.test(txt(w, '#nh')));
-
-    /* 一个「应用」管两种，按当前方式分派 */
-    w.applyaddr();
-    ok('自动获取走的是要地址那个框',
-       /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
-    w.hide();
-
-    $(w, '#amode').value = 'static';
-    w.amodesw();
-    ok('切回静态又露出来了', !$(w, '#arow1').hidden);
-    w.applyaddr();
-    ok('静态走的是改地址那个框',
-       /192\.168\.1\.1/.test(txt(w, '#abody')), txt(w, '#abody'));
-  }
-
-  console.log('\n--- DHCP 服务开关 ---');
-  {
-    const w = await boot();
-    $(w, '.nav[data-p=p5]').click();
-    await sleep(600);
-    ok('默认是开着的', $(w, '#dhcpd').checked);
-    ok('说清它对谁都答', /对任何请求都应答/.test(txt(w, '#p5')));
-    ok('说清接入已有网络前必须关', /接入已有网络前必须关闭/.test(txt(w, '#p5')));
-
-    $(w, '#dhcpd').checked = false;
-    w.setdhcpd();
-    await sleep(600);
-    ok('关掉之后有回执', /已关闭/.test(txt(w, '#dhs')), txt(w, '#dhs'));
-    ok('设备侧也记下了', w.INFO.net.dhcpd === 0, w.INFO.net.dhcpd);
-
-    /* 重新读一遍 /info，开关不该弹回去 */
-    w.info();
-    await sleep(600);
-    ok('重读之后仍是关的', !$(w, '#dhcpd').checked);
-
-    $(w, '#dhcpd').checked = true;
-    w.setdhcpd();
-    await sleep(600);
-    ok('开回来也认', $(w, '#dhcpd').checked && w.INFO.net.dhcpd === 1);
-  }
-
-  console.log('\n--- 改地址会关掉 DHCP 服务 ---');
-  {
-    const w = await boot();
-    $(w, '.nav[data-p=p5]').click();
-    await sleep(600);
-    $(w, '#nip').value = '192.168.9.1';
-    w.asknetset();
-    ok('开着的时候确认框要说', /同时关闭 DHCP 服务/.test(txt(w, '#abody')),
-       txt(w, '#abody'));
-    ok('说清为什么', /抢着发地址/.test(txt(w, '#abody')));
-    w.hide();
-
-    $(w, '#dhcpd').checked = false;
-    w.asknetset();
-    ok('已经关了就不再提', !/同时关闭 DHCP 服务/.test(txt(w, '#abody')));
-    w.hide();
-
-    $(w, '#dhcpd').checked = true;
-    w.askdhcp();
-    ok('DHCP 获取地址同样要说', /同时关闭 DHCP 服务/.test(txt(w, '#abody')),
-       txt(w, '#abody'));
+    ok('说清该换台机器访问', /改用上级路由那个网络里的机器/.test(txt(w, '#abody')));
   }
 
   console.log('\n--- 改地址 ---');
@@ -1061,58 +1163,58 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
-    ok('当前地址预填进去了', $(w, '#nip').value === '192.168.1.1',
-       $(w, '#nip').value);
-
-    $(w, '#nip').value = '不是地址';
-    w.asknetset();
-    ok('格式不对就不弹框', !on(w, '#mask'));
-    ok('并且说清哪里不对', /不是一个合法的地址/.test(txt(w, '#nh')),
-       txt(w, '#nh'));
+    $(w, '#amode').value = 'static'; w.amodesw();
+    $(w, '#nip').value = '1.2.3';
+    w.applyaddr();
+    ok('地址不合法就当场说', /不是一个合法的地址/.test(txt(w, '#nh')), txt(w, '#nh'));
+    ok('并且不弹确认框', !on(w, '#mask'));
 
     $(w, '#nip').value = '192.168.9.1';
-    w.asknetset();
-    ok('合法的才弹框', on(w, '#mask'));
-    ok('确认框写清新地址', /192\.168\.9\.1/.test(txt(w, '#abody')),
-       txt(w, '#abody'));
-    ok('说清页面会断', /重新打开/.test(txt(w, '#abody')));
-    ok('不保存时说清断电会回去', /断电后恢复原地址/.test(txt(w, '#abody')));
+    $(w, '#nmask').value = '255.255.0';
+    w.applyaddr();
+    ok('掩码不合法也当场说', /子网掩码/.test(txt(w, '#nh')), txt(w, '#nh'));
+
+    $(w, '#nmask').value = '255.255.255.0';
+    $(w, '#nsave').checked = false;
+    w.applyaddr();
+    ok('说清页面会断', /本页面将断开/.test(txt(w, '#abody')));
+    ok('给出新地址', /192\.168\.9\.1/.test(txt(w, '#abody')));
+    w.hide();
 
     $(w, '#nsave').checked = true;
-    w.asknetset();
-    ok('保存时把话说重', /断电也无法恢复/.test(txt(w, '#abody')),
-       txt(w, '#abody'));
-    $(w, '#nsave').checked = false;
-
-    w.asknetset();
-    $(w, '#yes').click();
+    w.applyaddr();
+    ok('保存到闪存要单说', /保存到闪存/.test(txt(w, '#abody')));
+    ok('说清填错了断电也回不去', /断电也无法恢复/.test(txt(w, '#abody')));
+    w.YES();
     await sleep(600);
-    ok('改完盖一层说明', on(w, '#off'));
-    ok('说清设备去哪了', /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')),
-       txt(w, '#offt'));
-    ok('给出新地址的链接文字', /192\.168\.9\.1/.test(txt(w, '#offb')));
-    ok('不给「重新连接」按钮 —— 旧地址上没人了', $(w, '#offr').hidden);
-    ok('心跳停了，不再空敲旧地址', w.HB === 0);
+    ok('之后是「设备已移至」而不是断开框',
+       /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
+    ok('给出新的打开地址', /http:\/\/192\.168\.9\.1\//.test(txt(w, '#offb')));
+    ok('重连按钮收起来了', $(w, '#offr').hidden);
   }
 
-  console.log('\n--- DHCP 获取地址 ---');
+  console.log('\n--- DHCP 客户端 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
-    w.askdhcp();
-    ok('要确认', on(w, '#mask'));
-    ok('说清页面事先不知道新地址',
-       /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
-    ok('给出要找的 MAC', /90:03:2e:12:34:56/.test(txt(w, '#abody')));
-    ok('说清要不到会退回去', /退回当前地址/.test(txt(w, '#abody')));
+    $(w, '#amode').value = 'client'; w.amodesw();
+    w.applyaddr();
+    ok('说清地址无法预知', /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('给出要按什么找', /90:03:2e:12:34:56/.test(txt(w, '#abody')));
+    ok('说清拿不到就退回来', /退回当前地址/.test(txt(w, '#abody')));
 
-    $(w, '#yes').click();
-    await sleep(400);
-    ok('盖一层说明', on(w, '#off') && /正在获取地址/.test(txt(w, '#offt')),
+    let url = null;
+    const real = w.get;
+    w.get = (u, cb) => { url = u; return real(u, cb) };
+    w.YES();
+    await sleep(600);
+    w.get = real;
+    ok('客户端档不往设备发地址', /mode=client/.test(url) && !/[?&]ip=/.test(url),
+       url);
+    ok('之后停在「正在获取地址」', /正在获取地址/.test(txt(w, '#offt')),
        txt(w, '#offt'));
-    ok('说清去哪找', /客户端列表/.test(txt(w, '#offb')), txt(w, '#offb'));
-    ok('心跳停了', w.HB === 0);
+    ok('说清去上级路由按 MAC 找', /按 <b>90:03:2e/.test($(w, '#offb').innerHTML));
   }
 
   console.log('\n--- 侧栏合并：诊断 ---');
@@ -1486,8 +1588,9 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
 
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
+    $(w, '#amode').value = 'static'; w.amodesw();
     $(w, '#nip').value = '192.168.9.1';
-    w.asknetset();
+    w.applyaddr();
     $(w, '#yes').click();
     await sleep(600);
     ok('先说清设备去哪了', /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')),
@@ -1508,12 +1611,13 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
   }
 
-  console.log('\n--- 自动获取地址之后同样盖不掉 ---');
+  console.log('\n--- 要到 DHCP 客户端之后同样盖不掉 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
-    w.askdhcp();
+    $(w, '#amode').value = 'client'; w.amodesw();
+    w.applyaddr();
     $(w, '#yes').click();
     await sleep(300);
     ok('先说在要地址', /正在获取地址/.test(txt(w, '#offt')), txt(w, '#offt'));
@@ -1537,42 +1641,28 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('设备回来框就散了', !on(w, '#off'));
   }
 
-  console.log('\n--- DHCP 开关在飞时 /info 插队 ---');
+  console.log('\n--- 轮询回来不许覆盖正在编辑的表单 ---');
   {
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
-    ok('一开始是开着的', $(w, '#dhcpd').checked);
+    ok('第一次照着设备填', $(w, '#amode').value === 'server' &&
+       $(w, '#nip').value === '192.168.1.1', $(w, '#nip').value);
 
-    $(w, '#dhcpd').checked = false;
-    w.setdhcpd();
-    w.netfill();                         // /info 正好这时候回来
-    ok('在飞期间不把开关拨回去', !$(w, '#dhcpd').checked);
-    await sleep(700);
-    ok('结束后开关就是关的', !$(w, '#dhcpd').checked);
-    ok('文案跟开关对得上', txt(w, '#dhs') === '已关闭', txt(w, '#dhs'));
-    ok('设备侧也记下了', w.INFO.net.dhcpd === 0, w.INFO.net.dhcpd);
+    /* 三秒一次的 /net 轮询回来时，用户可能正在改这几个框 */
+    $(w, '#amode').value = 'client'; w.amodesw();
+    $(w, '#nip').value = '10.0.0.1';
+    w.netget();
+    await sleep(600);
+    ok('模式没被拨回去', $(w, '#amode').value === 'client');
+    ok('地址没被写回去', $(w, '#nip').value === '10.0.0.1', $(w, '#nip').value);
 
-    /* 设备不认的时候，回到动手之前那个样子 */
-    const real = w.get;
-    w.get = function (u, cb) {
-      if (String(u).indexOf('/netdhcpd') === 0)
-        return setTimeout(function () { cb(200, 'bad on') }, 10);
-      return real(u, cb);
-    };
-    $(w, '#dhcpd').checked = true;
-    w.setdhcpd();
-    w.netfill();
-    await sleep(300);
-    ok('设备不认就还原成原样', !$(w, '#dhcpd').checked, $(w, '#dhcpd').checked);
-    ok('并且说清没被接受', /没有接受/.test(txt(w, '#dhs')), txt(w, '#dhs'));
-    w.get = real;
-
-    /* 桩照设备的口径答：on 不是 0/1 就是 bad on */
-    let r = null;
-    w.get('/netdhcpd?on=2', (st, t) => { r = t });
-    await sleep(500);
-    ok('on 只认 0 和 1', r === 'bad on', r);
+    /* 但设备那边的实况该跟着变 */
+    w.PV.info.net.mode = 'static';
+    w.netget();
+    await sleep(600);
+    ok('信息表跟着设备走', /静态地址/.test(txt(w, '#net')), txt(w, '#net'));
+    ok('下拉框仍归用户', $(w, '#amode').value === 'client');
   }
 
   console.log('\n--- 掩码交给设备判 ---');
@@ -1580,9 +1670,10 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
+    $(w, '#amode').value = 'static'; w.amodesw();
     $(w, '#nip').value = '192.168.9.1';
     $(w, '#nmask').value = '255.255.0.0';
-    w.asknetset();
+    w.applyaddr();
     ok('页面这关先过', on(w, '#mask') && /255\.255\.0\.0/.test(txt(w, '#abody')),
        txt(w, '#abody'));
     $(w, '#yes').click();
@@ -1590,16 +1681,25 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('设备收下了 255.255.0.0',
        /设备已移至 192\.168\.9\.1/.test(txt(w, '#offt')), txt(w, '#offt'));
 
+    /* 回话形状：ok <模式> <地址> <掩码> <saved|ram>，客户端档地址位是 - */
     let r = null;
-    w.get('/netset?ip=192.168.1.5&mask=255.255.255.0&save=1', (st, t) => { r = t });
-    await sleep(500);
-    ok('保存到闪存的回话不一样', r === 'ok 192.168.1.5 255.255.255.0 saved', r);
-    w.get('/netset?ip=192.168.1.5&mask=255.255.255.0&save=0', (st, t) => { r = t });
-    await sleep(500);
-    ok('不保存就是 ram', r === 'ok 192.168.1.5 255.255.255.0 ram', r);
-    w.get('/netset?ip=1.2.3&mask=255.255.255.0&save=0', (st, t) => { r = t });
-    await sleep(500);
-    ok('地址不合法直接回 bad ip', r === 'bad ip', r);
+    const ask = async (u) => { r = null; w.get(u, (st, t) => { r = t });
+                               await sleep(500); return r };
+    ok('保存到闪存的回话不一样',
+       await ask('/netmode?mode=static&ip=192.168.1.5&mask=255.255.255.0&save=1')
+       === 'ok static 192.168.1.5 255.255.255.0 saved', r);
+    ok('不保存就是 ram',
+       await ask('/netmode?mode=static&ip=192.168.1.5&mask=255.255.255.0&save=0')
+       === 'ok static 192.168.1.5 255.255.255.0 ram', r);
+    ok('服务器档把末位改成 .1、掩码定成 /24',
+       await ask('/netmode?mode=server&ip=192.168.7.77&save=1')
+       === 'ok server 192.168.7.1 255.255.255.0 saved', r);
+    ok('客户端档不带地址',
+       await ask('/netmode?mode=client&save=0') === 'ok client - - ram', r);
+    ok('地址不合法直接回 bad ip',
+       await ask('/netmode?mode=static&ip=1.2.3&save=0') === 'bad ip', r);
+    ok('模式不认识就 bad mode',
+       await ask('/netmode?mode=bridge&save=0') === 'bad mode', r);
   }
 
   console.log('\n--- 不连续的掩码设备不收 ---');
@@ -1607,9 +1707,10 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
+    $(w, '#amode').value = 'static'; w.amodesw();
     $(w, '#nip').value = '192.168.9.1';
     $(w, '#nmask').value = '10.0.0.1';
-    w.asknetset();
+    w.applyaddr();
     ok('形状对的掩码页面拦不住', on(w, '#mask'));
     $(w, '#yes').click();
     await sleep(600);
@@ -1623,19 +1724,20 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const w = await boot();
     $(w, '.nav[data-p=p5]').click();
     await sleep(600);
+    $(w, '#amode').value = 'static'; w.amodesw();
     $(w, '#nip').value = '192.168.9.1';
     ok('回车不再弹那个空的写入确认框', w.ask() === false &&
        !/未选择任何文件/.test(txt(w, '#abody')), txt(w, '#abody'));
     ok('回车就是「应用」', on(w, '#mask') &&
        /192\.168\.9\.1/.test(txt(w, '#abody')), txt(w, '#abody'));
-    ok('标题是改地址不是设备详情', txt(w, '#atitle') === '改地址',
-       txt(w, '#atitle'));
+    ok('标题是改网络模式不是设备详情',
+       txt(w, '#atitle') === '改网络模式', txt(w, '#atitle'));
     w.hide();
 
-    $(w, '#amode').value = 'dhcp'; w.amodesw();
+    $(w, '#amode').value = 'client'; w.amodesw();
     w.ask();
-    ok('自动获取时回车走要地址那条', /本页面无法预知/.test(txt(w, '#abody')),
-       txt(w, '#abody'));
+    ok('客户端档回车走的是要地址那条',
+       /本页面无法预知/.test(txt(w, '#abody')), txt(w, '#abody'));
   }
 
   console.log('\n--- 客户端 MAC 不转两遍 ---');

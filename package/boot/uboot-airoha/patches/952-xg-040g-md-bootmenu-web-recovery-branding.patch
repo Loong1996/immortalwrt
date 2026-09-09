@@ -64,13 +64,15 @@ new FIP cannot get a word in.  Telling people to "Reset all settings to
 factory defaults" works but throws out ethaddr with it, which is exactly the
 failure above.
 
-So the default environment gains an envver, and an EVT_POST_PREBOOT spy
-re-imports just the menu variables when the saved copy is behind -- after
-preboot has run, before bootdelay_process() and autoboot_command() draw the
-menu.  The list deliberately excludes everything the running system owns:
-bootdelay and bootmenu_delay (raised 0 -> 3 by _switch_to_menu), bootmenu_0
-(swapped for bootmenu_0d on init), and ethaddr, which is not in the default
-environment at all and therefore cannot be clobbered by an import.
+So the default environment gains a web_uboot_envver, and an EVT_POST_PREBOOT
+spy re-imports just the variables this build owns when the saved copy is
+behind -- after preboot has run, before bootdelay_process() and
+autoboot_command() draw the menu.  The list deliberately excludes everything
+the running system owns: bootdelay and bootmenu_delay (raised 0 -> 3 by
+_switch_to_menu), bootmenu_0 (swapped for bootmenu_0d on init), ethaddr,
+which is not in the default environment at all and therefore cannot be
+clobbered by an import, and the web_uboot_net* variables, which are the
+user's own network choice rather than anything this build ships.
 
 The same spy file also drops an ethaddr of ff:ff:ff:ff:ff:ff at
 EVT_SETTINGS_R -- after initr_env(), before initr_net(), the one window where
@@ -114,7 +116,7 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+envver=5
++web_uboot_envver=6
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0

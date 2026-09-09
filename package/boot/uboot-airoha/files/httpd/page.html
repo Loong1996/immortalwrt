@@ -285,21 +285,17 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=sp data-g=g5 id=s52>
 <div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>
 <p class=note id=portn hidden>端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。</p>
-<p class=bh>地址<small>应用后需以新地址重新打开本页面</small></p>
+<p class=bh>地址<small>三种模式互斥，应用后需以新地址重新打开本页面</small></p>
 <div class=box>
-<div class=fr><span class=fl>获取方式</span><span class=fc><select id=amode onchange=amodesw()><option value=static>静态地址</option><option value=dhcp>自动获取（DHCP）</option></select></span></div>
-<div class=fr id=arow1><span class=fl>IP<small>设备的接口地址</small></span><span class=fc><input type=text id=nip class=mono style="width:160px"><span class=fn>主机需在同一网段</span></span></div>
+<div class=fr><span class=fl>模式</span><span class=fc><select id=amode onchange=amodesw()><option value=server>DHCP 服务器 · 本机发地址</option><option value=static>静态地址</option><option value=client>DHCP 客户端 · 向上级路由要</option></select></span></div>
+<div class=fr id=arow1><span class=fl id=iplab>路由器 IP<small>本机地址，末位固定为 1</small></span><span class=fc><input type=text id=nip class=mono style="width:160px" oninput=ippv()><span class=fn id=ipfn></span></span></div>
 <div class=fr id=arow2><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono value=255.255.255.0 style="width:160px"></span></div>
-<div class="fr wide" id=arow3><span class=fl>保存到闪存<small>不保存则断电后恢复原地址；地址填错时断电是唯一退路</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
+<div class="fr wide" id=arow3><span class=fl>保存到闪存<small>不保存则只在本次开机有效</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
 </div>
-<p class=note id=nh>接入已有网络时，建议在此指定该网段内的空闲地址：地址由本方指定，应用后即可直接访问。</p>
+<p class=note id=nh></p>
 <div class=row><button type=button class="pb pri" onclick=applyaddr()>应用</button></div>
-<p class=bh>DHCP 服务<small>本机给电脑发地址，与上面的「自动获取」方向相反</small></p>
-<div class=box>
-<div class="fr wide"><span class=fl>给电脑分配地址<small>电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP</small></span><span class="fc end"><span class=fs id=dhs></span><input type=checkbox class=sw id=dhcpd onchange=setdhcpd()></span></div>
-</div>
-<p class=note id=dhsum></p>
-<p class=note>它对任何请求都应答，发出的地址固定为本网段 .100，网关指向本设备且不带 DNS。<b>接入已有网络前必须关闭</b>，否则会和该网络的路由器抢着发地址，被抢到的机器会断网。改地址与自动获取会自动关闭它。</p>
+<p class=note id=nboot></p>
+<p class=note id=dhsum hidden></p>
 </div>
 <div class=sp data-g=g5 id=s53>
 <div class=vbar id=vbar hidden></div>
@@ -418,7 +414,9 @@ var RT=0,RN=0,RATE=0;
 var DLSEQ=0,DLBAD=0,STUCK='';
 var DLT=0,DLN=0,DLRATE=0;
 var LOGN=0,LOGT=null,LOGGEN=0;
-var DHCPD_BUSY=0;
+/* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */
+var NETINIT=0;
+var NET=null,NETT=null;
 /*
  * 擦除加写入，SPI-NAND 上大致这个量级，只用于估算等待时间。设备写完会报
  * 一次实测速度，存下来给下次用 —— 同一块板子第二次起就不是拍脑袋了。
@@ -447,9 +445,10 @@ x.setAttribute('aria-selected',x==b?'true':'false')});
 $$('.sp[data-g='+g+']').forEach(function(p){
 if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});
 /* 跟随开着的时候整篇重读会和增量追加叠出重复，而且会把按钮解禁 */
-if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}}
+if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}
+if(g=='g5')netpoll(id=='s52')}
 function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}
-function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}
+function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}
 function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
 /*
  * 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；
@@ -475,6 +474,19 @@ function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
 function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
 function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}
+/*
+ * 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。
+ * 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个
+ * 口亮着不值当。所以只报地址与端口的那一半单独开在 /net，网络这一页在前台
+ * 时每 3 秒问一次，切走就停。
+ */
+function netget(){if(GONE)return;get('/net',function(st,t){var r=null;
+try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.net)return;NET=r;
+if(INFO){INFO.net=r.net;INFO.ports=r.ports}
+netfill()})}
+function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}
+if(!on)return;netget();NETT=setInterval(netget,3000)}
 function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
 var ICON_OFF='<path d="M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20"/>';
 var ICON_WR='<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/>';
@@ -535,68 +547,82 @@ $('#atitle').textContent='重启';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
-/* 静态与自动获取是同一件事的两种做法，所以共用一个「应用」 */
-function amodesw(){var d=$('#amode').value=='dhcp';
-$('#arow1').hidden=d;$('#arow2').hidden=d;$('#arow3').hidden=d;
-$('#nh').textContent=d?'地址由上级路由分配，本页面无法预知，'
-+'需在上级路由的客户端列表中按 MAC 查找。不保存：断电后仍是当前的静态地址。'
-:'接入已有网络时，建议在此指定该网段内的空闲地址：'
-+'地址由本方指定，应用后即可直接访问。'}
-function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}
-/* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */
-/* 请求在飞的时候 /info 会回来把开关写回旧值：记下前后两个状态，自己收尾 */
-function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0,prev=v?false:true;
-c.disabled=true;DHCPD_BUSY=1;$('#dhs').textContent='…';
-get('/netdhcpd?on='+v,function(st,t){c.disabled=false;DHCPD_BUSY=0;
-if(st!=200||!/^ok/.test((t||'').trim())){
-c.checked=prev;$('#dhs').textContent='设备没有接受';return}
-c.checked=!!v;$('#dhs').textContent=v?'已开启':'已关闭';
-if(INFO&&INFO.net)INFO.net.dhcpd=v})}
+/*
+ * 一个下拉框，三种模式，互斥：本机发地址 / 本机用固定地址 / 向上级路由要
+ * 地址。原来是「静态 or 自动获取」再叠一个独立的 DHCP 服务开关 —— 两个维度
+ * 四种组合，其中「自动获取 + 服务开着」是纯粹的错，只能靠代码在背后偷偷关
+ * 掉，而「关掉」这件事又存不进闪存。合成一维之后，那种组合根本表达不出来。
+ *
+ * DHCP 服务器那一档掩码固定 /24：设备发出去的地址一直是按 /24 算的
+ * （net_ip & 0xffffff00 | 100），能改掩码只会让它和实际发出去的地址对不上。
+ */
+var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};
+function amodesw(){var m=$('#amode').value;
+$('#arow1').hidden=m=='client';
+$('#arow2').hidden=m!='static';
+$('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'
+:'IP<small>设备的接口地址</small>';
+$('#nh').innerHTML=m=='server'
+?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，网关指向本设备且不带 DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'
+:m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'
+:'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';
+ippv();bootline()}
+/* 末位固定 .1 是这一档的规矩，那就当场把结果摆出来，别等按了「应用」才说 */
+function ippv(){var m=$('#amode').value,ip=$('#nip').value.trim(),f=$('#ipfn'),b;
+if(m=='client'){f.textContent='';return}
+if(m=='static'){f.textContent='主机需在同一网段';return}
+if(!IP4.test(ip)){f.textContent='填本网段内任一地址即可，如 192.168.1.1';return}
+b=ip.replace(/\.\d+$/,'');
+f.innerHTML='设备 <b>'+esc(b)+'.1</b> · 电脑 <b>'+esc(b)+'.100</b>'}
+/* 闪存里存着的那一套；从没存过就是出厂默认 */
+function bootdesc(){var v=INFO&&INFO.net&&INFO.net.saved;
+if(!v)return 'DHCP 服务器 192.168.1.1 / 255.255.255.0（出厂默认）';
+return MODES[v.mode]+(v.mode=='client'?'':' '+v.ip
++(v.mode=='static'?' / '+v.mask:''))}
+function bootline(){$('#nboot').innerHTML='<b>下次开机：'+esc(bootdesc())
++'</b>。勾上「保存到闪存」才会把当前这一套写进去替换它；不勾就只管本次开机。'}
 var IP4=/^(\d{1,3}\.){3}\d{1,3}$/;
-function asknetset(){var ip=$('#nip').value.trim(),
-mk=$('#nmask').value.trim()||'255.255.255.0',
-sv=$('#nsave').checked;
-$('#atitle').textContent='改地址';
+function applyaddr(){var m=$('#amode').value,ip=$('#nip').value.trim(),
+mk=m=='server'?'255.255.255.0':($('#nmask').value.trim()||'255.255.255.0'),
+sv=$('#nsave').checked,h;
+if(m!='client'){
 if(!IP4.test(ip)){$('#nh').textContent='IP 不是一个合法的地址';return}
-if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}
-$('#abody').innerHTML='<div class=r><span>新地址</span><span class=v>'+esc(ip)+' / '+esc(mk)+'</span></div>'+
-'<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>'+
-'<div class=w>主机需在同一网段，否则无法访问</div>'+
-(sv?'<div class=w><b>保存到闪存</b>：地址填错时断电也无法恢复</div>'
-:'<div class=w>不保存，断电后恢复原地址</div>')+
-($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'
-+'避免和这个网络里的路由器抢着发地址</div>':'')+
-(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'
-+'：改完之后拿不到新地址，需手动把本机配成 '
-+esc(ip.replace(/\.\d+$/,'.x'))+' 的一个地址；'
-+'若是把设备接进已有网络，改用该网络里的机器访问即可</div>':'');
-var y=$('#yes');y.hidden=false;y.textContent='改地址';
-YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}
-function donetset(ip,mk,sv){
-get('/netset?ip='+encodeURIComponent(ip)+'&mask='+encodeURIComponent(mk)
-+'&save='+(sv?1:0),function(st,t){
+if(m=='server')ip=ip.replace(/\.\d+$/,'.1');
+else if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}}
+$('#atitle').textContent='改网络模式';
+h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'
++(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)
+ +(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');
+if(m=='server')h+='<div class=w>本机开始发地址：电脑将拿到 <b>'
+ +esc(ip.replace(/\.\d+$/,'.100'))+'</b></div>';
+if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';
+if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'
+ +'请在上级路由的客户端列表中按 MAC 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'
+ +'<div class=w>本机<b>不再发地址</b>；未取得租约时退回当前地址</div>';
+if(m!='client')h+='<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>';
+h+=sv?'<div class=w><b>保存到闪存</b>：下次开机就用这一套。地址填错时断电也无法恢复</div>'
+:'<div class=w>不保存：只管本次开机，下次开机回到 <b>'+esc(bootdesc())+'</b></div>';
+if(INFO&&INFO.net&&INFO.net.ack&&m!='server')h+='<div class=w><b>本机用的是设备发的地址</b>'
++'：本机这个地址马上就没人续租了，'+(m=='static'?'需手动把本机配成 '
++esc(ip.replace(/\.\d+$/,'.x'))+' 的一个地址':'请改用上级路由那个网络里的机器')+'</div>';
+$('#abody').innerHTML=h;
+var y=$('#yes');y.hidden=false;y.textContent='应用';
+YES=function(){donetmode(m,ip,mk,sv)};$('#mask').setAttribute('data-on','')}
+function donetmode(m,ip,mk,sv){
+get('/netmode?mode='+m+(m=='client'?'':'&ip='+encodeURIComponent(ip)
++'&mask='+encodeURIComponent(mk))+'&save='+(sv?1:0),function(st,t){
 if(st!=200||!/^ok /.test((t||'').trim())){
 $('#nh').textContent='设备没有接受：'+((t||'').trim()||st);return}
-hbstop();gone('设备已移至 '+ip,
-'本页面连接的是旧地址，不会自动恢复。请以 <b>http://'+esc(ip)+'/</b> 重新打开。'
-+(sv?'':'断电后恢复原地址。'),'http://'+ip+'/')})}
-function askdhcp(){$('#atitle').textContent='DHCP 获取地址';
-$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>dhcp</span></div>'+
-'<div class=w><b>地址由上级路由分配，本页面无法预知。</b>请在上级路由的客户端列表中按 MAC 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'+
-'<div class=w>未取得租约时退回当前地址</div>'+
-'<div class=w>不保存，断电后恢复原地址</div>'+
-($('#dhcpd').checked?'<div class=w>同时关闭 DHCP 服务，'
-+'这个网络里已经有路由器在发地址了</div>':'')+
-(INFO&&INFO.net&&INFO.net.ack?'<div class=w><b>本机用的是设备发的地址</b>'
-+'：之后从本机访问不到设备，请改用上级路由那个网络里的机器</div>':'');
-var y=$('#yes');y.hidden=false;y.textContent='获取';YES=dodhcp;
-$('#mask').setAttribute('data-on','')}
-function dodhcp(){get('/netdhcp',function(){});hbstop();
-gone('正在获取地址',
+hbstop();
+if(m=='client')gone('正在获取地址',
 '获取成功后设备位于新地址，请在上级路由的客户端列表中按 <b>'
-+esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约或断电后均恢复原地址。','')}
++esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约时退回原地址。'
++(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'');
+else gone('设备已移至 '+ip,
+'本页面连接的是旧地址，不会自动恢复。请以 <b>http://'+esc(ip)+'/</b> 重新打开。'
++(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'http://'+ip+'/')})}
 /* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */
-function gone(title,body,url){GONE=1;
+function gone(title,body,url){GONE=1;netpoll(0);
 $('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';
 $('#offt').textContent=title;
 $('#offb').innerHTML='<div class=w style="color:inherit">'+body+'</div>'
@@ -610,7 +636,7 @@ var y=$('#yes');y.hidden=false;y.textContent='启动系统';YES=doboot;$('#mask'
 function doboot(){get('/boot',function(){});expect('boot')}
 /* 一次性的，所以「设置」之后按钮不该还写着「设置」 */
 function bootonce(){var b=$('#bob');b.disabled=true;
-get('/bootonce',function(st,t){b.disabled=false;
+get('/bootonce',function(st,t){b.disabled=false;CHK=null;ENV=null;
 t=(t||'').trim();
 if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}
 /* saveenv 失败时只在内存里生效，断电即失效 —— 按钮不能跟着说「已设置」 */
@@ -692,7 +718,8 @@ if(l===0){$('#dlh').textContent='长度为 0';return}
 if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}
 if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}
 sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+' 起的区段',l)}
-var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|envver|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|httpd_|ubi_)/;
+/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */
+var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|web_uboot_|envver|httpd_|ubi_)/;
 function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
 if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}
 if(!r||!r.env){$('#envt').innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
@@ -738,19 +765,24 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default
 var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on','')}
 /* 自己的位置：#envh 归 envfill() 管，紧接着的 getenv() 会把它写掉 */
 function envdef(){$('#envdh').textContent='正在恢复…';
-get('/envreset',function(st,t){if(st==200){$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
+get('/envreset',function(st,t){if(st==200){CHK=null;$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
 else $('#envdh').textContent='恢复失败（'+st+'）'})}
 /*
  * 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是
  * 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口
  * 那几行是直接读 PHY 寄存器来的；读不到的口不列。
  */
-function netfill(){var t=$('#net'),n=INFO&&INFO.net,h='';
+function netfill(){var t=$('#net'),n=(NET&&NET.net)||(INFO&&INFO.net),
+ports=(NET&&NET.ports)||(INFO&&INFO.ports)||[],h='',m;
 if(!n){t.innerHTML='<tr><td class=empty>读不到网络信息</td></tr>';return}
+m=n.mode||'server';
+h+='<tr><td>模式</td><td>'+(MODES[m]||m)+(n.ram?'<span class=tag>未保存</span>':'')+'</td></tr>';
 h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)
 +(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';
 if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';
 h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
+/* 发地址这本账只有在真的在发的时候才有意义 */
+$('#dhsum').hidden=m!='server';
 $('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
 +(n.client?'，最近一次分配给 '+n.client:'')
 +'。当前打开本页面的主机用的就是设备发的地址。'
@@ -758,17 +790,19 @@ $('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
 +'当前主机用的是手动配置的 IP。'
 :'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';
 /* 端口那几个数是设备给的，先当数字看待再拼进 HTML */
-(INFO.ports||[]).forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;
+ports.forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;
 h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+pn+'</td>'
 +'<td'+(p.link?'':' class=s1')+'>'+(p.link?
 (sp?sp>=1000?(sp/1000)+' Gb/s':sp+' Mb/s':'已连接')
 +(sp?fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
 t.innerHTML=h;
-$('#portn').hidden=!(INFO.ports&&INFO.ports.length);
-/* 开关正在等设备回话时别插队，等它自己收尾 */
-if(!DHCPD_BUSY){$('#dhcpd').checked=!!n.dhcpd;$('#dhs').textContent=''}
+$('#portn').hidden=!ports.length;
+/* 表单只在第一次照着设备填，之后是用户在编辑它，三秒一次的轮询别去动 */
+if(!NETINIT){NETINIT=1;$('#amode').value=m;
 if(!$('#nip').value)$('#nip').value=n.ip||'';
-if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}
+if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask;
+amodesw()}
+else bootline()}
 /*
  * 卷占用条：每段的宽度是那个卷的预留容量，按卷 ID 排。UBI 把 LEB 映射到
  * 任意 PEB，还会因磨损均衡把它们搬走，所以这张图说的是「分掉了多少」，
@@ -1078,6 +1112,12 @@ btn=$('button[type=submit]',p),h='';
 if(!WR||WR.fin)return;
 WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;
 HBOFF=0;busy(0);
+/*
+ * 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、
+ * ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。
+ * 作废掉，切过去时自然会重跑；关掉这个框时 rhide() 那边同样会重读 /info。
+ */
+CHK=null;
 prog.className='prog ok';bar.className='pbar';bar.style.width='100%';
 $('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';
 btn.disabled=false;btn.textContent=SENT.btxt;clear(p);
@@ -1099,7 +1139,7 @@ h='<tr><td>写入</td><td>'+sz(+m[1])+'（'+m[1]+' 字节）</td></tr>'+
 '<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+
 '<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'}
 else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';
-$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
+CHK=null;$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
 function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}
 document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
 bind();info();hbstart();

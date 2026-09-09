@@ -36,16 +36,20 @@ Four ways in, none of which needs a serial console:
     and erasing it becomes what it should have been all along: something the
     user asks for on the page, with the images to put back already uploaded.
 
-Two helper scripts back the httpd upload form:
+Two helper scripts back the httpd upload form.  They carry the web_uboot_
+prefix every variable this feature introduces carries, so that a glance at
+the environment says which entries came from here and which are the board's
+own -- the page borrows ubi_write_production rather than duplicating it, and
+that one keeps its name because it is not ours.
 
-  - httpd_write_bl2 writes the preloader at offset 0x800, which is where the
-    BootROM looks for the FIP.  mtd_write_bl2 expects the caller to have
+  - web_uboot_write_bl2 writes the preloader at offset 0x800, which is where
+    the BootROM looks for the FIP.  mtd_write_bl2 expects the caller to have
     prepended 0x800 blank bytes in RAM; httpd flashes the uploaded part
     where it landed, so it asks mtd to do the skipping instead.
 
-  - httpd_format_ubi is ubi_format without the trailing reset, so the same
-    session can go on to write the fip and fit volumes it just made room
-    for.
+  - web_uboot_format_ubi is ubi_format without the trailing reset, so the
+    same session can go on to write the fip and fit volumes it just made
+    room for.
 
 TFTP is deliberately kept: bootmenu entries 1 and 3 still use it, which is
 what serial users and scripted flows want.  Automatic path is the browser,
@@ -73,11 +77,11 @@ manual path stays TFTP.
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
  mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
-+httpd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
++web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
  ubi_create_board_data=ubi check bosa || ubi create bosa 0x40000 || run ubi_format ; ubi check ri || ubi create ri 0x40000 || run ubi_format
  ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
  ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
-+httpd_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
++web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
  ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
  ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
  ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
