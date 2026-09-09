@@ -164,6 +164,16 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .kv td.cmd{color:var(--c2);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
 .row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}
 .log{margin:0;padding:.7rem .9rem;max-height:min(360px,60vh);overflow:auto;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.88em;line-height:1.4;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
+.vbar{display:flex;height:24px;border-radius:6px;overflow:hidden;border:1px solid var(--sep);background:var(--card);margin:0 0 .5rem}
+.vbar i{display:block;min-width:2px;position:relative}
+.vbar i.re::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(45deg,rgba(255,255,255,.5) 0 3px,transparent 3px 7px)}
+.vbar i.free{background:var(--fill)}
+.vbar i.rsv{background:var(--c3)}
+.vleg{display:flex;flex-wrap:wrap;gap:.2rem .85rem;margin:0 0 .3rem;color:var(--c2);font-size:.92em}
+.vleg span{display:flex;align-items:center;gap:.35rem;white-space:nowrap}
+.vleg em{width:9px;height:9px;border-radius:2px;font-style:normal;flex:none;position:relative}
+.vleg em.re::after{content:"";position:absolute;inset:0;border-radius:2px;background:repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,transparent 2px 4px)}
+.vleg em.free{background:var(--fill);box-shadow:inset 0 0 0 1px var(--sep)}
 @media (max-width:860px){.fr{grid-template-columns:1fr}input[type=text]{max-width:100%}.kv td:first-child{width:auto}}
 @media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--sep)}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.ban{margin:1rem 1rem 0}.pane{padding:1rem}}
 </style>
@@ -293,6 +303,8 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <p class=note>它对任何请求都应答，发出的地址固定为本网段 .100，网关指向本设备且不带 DNS。<b>接入已有网络前必须关闭</b>，否则会和该网络的路由器抢着发地址，被抢到的机器会断网。改地址与自动获取会自动关闭它。</p>
 </div>
 <div class=sp data-g=g5 id=s53>
+<div class=vbar id=vbar hidden></div>
+<div class=vleg id=vleg hidden></div>
 <p class=note id=ubih></p>
 <div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>
 </div>
@@ -739,6 +751,47 @@ $('#portn').hidden=!(INFO.ports&&INFO.ports.length);
 if(!DHCPD_BUSY){$('#dhcpd').checked=!!n.dhcpd;$('#dhs').textContent=''}
 if(!$('#nip').value)$('#nip').value=n.ip||'';
 if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}
+/*
+ * 卷占用条：每段的宽度是那个卷的预留容量，按卷 ID 排。UBI 把 LEB 映射到
+ * 任意 PEB，还会因磨损均衡把它们搬走，所以这张图说的是「分掉了多少」，
+ * 不是「在哪儿」—— 注释写在图下面那行字里，免得有人当成物理布局。
+ *
+ * 斜纹的两个卷是写入固件时先删掉再重建的，它们的容量算在可写空间里；
+ * 这正是体检「可写空间」那一行的加法。
+ */
+var VCOL={fip:'#5e5ce6',fit:'#0a84ff',rootfs_data:'#30d158',
+ubootenv:'#8e8e93',ubootenv2:'#8e8e93',ri:'#ff9f0a',bosa:'#af52de'};
+var VPOOL=['#00b4a0','#a2845e','#ff453a','#64748b'];
+var VRECL={fit:1,rootfs_data:1};
+function ubibar(){var b=$('#vbar'),g=$('#vleg'),ub=INFO&&INFO.ubi,
+tot,vols,sum=0,room=0,h='',l='',av,rest;
+if(!ub||!ub.pebs||!ub.leb){b.hidden=true;g.hidden=true;$('#ubih').textContent='';return}
+tot=ub.leb*ub.pebs;
+vols=(ub.vols||[]).slice().sort(function(x,y){return (x.i|0)-(y.i|0)});
+vols.forEach(function(v,k){var c=VCOL[v.n]||VPOOL[k%VPOOL.length],
+r=VRECL[v.n]?' re':'',z=v.s|0;
+sum+=z;if(VRECL[v.n])room+=z;
+h+='<i class="'+r+'" style="flex:'+z+' 0 0;background:'+c
++'" title="'+esc(v.n)+' '+sz(z)+'"></i>';
+l+='<span><em class="'+r+'" style="background:'+c+'"></em>'+esc(v.n)+' '+sz(z)
++(VRECL[v.n]?' · 写入时腾出':'')+'</span>'});
+rest=tot-sum;if(rest<0)rest=0;
+/* 老设备的 /info 没有 avail，那就并成一段，别假装分得清 */
+av=ub.avail==null?null:(ub.avail|0)*ub.leb;
+if(av==null||av>rest){
+h+='<i class=free style="flex:'+rest+' 0 0" title="空闲与预留 '+sz(rest)+'"></i>';
+l+='<span><em class=free></em>空闲与 UBI 预留 '+sz(rest)+'</span>'}
+else{room+=av;
+h+='<i class=free style="flex:'+av+' 0 0" title="空闲 '+sz(av)+'"></i>'
++'<i class=rsv style="flex:'+(rest-av)+' 0 0" title="UBI 预留 '+sz(rest-av)+'"></i>';
+l+='<span><em class=free></em>空闲 '+sz(av)+'</span>'
++'<span><em style="background:var(--c3)"></em>UBI 预留 '+sz(rest-av)+'</span>'}
+b.innerHTML=h;g.innerHTML=l;b.hidden=false;g.hidden=false;
+$('#ubih').textContent='逻辑擦除块 '+sz(ub.leb)+' × '+ub.pebs
++'。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置'
+/* 体检「可写空间」那行取整到 MiB，这里照做，免得两处差 0.7 */
++(av==null?'':'。刷机可用 '+Math.floor(room/1048576)+' MiB：当前空闲 '
++sz(av)+'，加上写入时会腾出的 fit 与 rootfs_data')}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
@@ -747,8 +800,8 @@ $('#logtab').hidden=!INFO.log;
 if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});
 dlfill();
 FV=INFO.fv||[];fvrows();
-if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';$('#ubih').textContent='';return}
-$('#ubih').textContent='逻辑擦除块 '+sz(INFO.ubi.leb)+' × '+INFO.ubi.pebs;
+if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}
+ubibar();
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
 (INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
 function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */

@@ -76,8 +76,10 @@ function stayUpload(w) {
                           /^(ri|bosa)/.test(rows[1].cells[0].textContent),
        rows.map(r => r.cells[0].textContent).join(','));
     ok('出厂卷带标记', !!rows[0].querySelector('.tag') && !rows[2].querySelector('.tag'));
-    ok('大小取已用而非预留',
-       rows.find(r => /^fit/.test(r.cells[0].textContent)).cells[2].textContent === '12.4 MiB');
+    /* dynamic 卷的 used_bytes 恒等于预留，只有 static 的 fip 分得出来 */
+    ok('static 卷的大小取已用而非预留',
+       rows.find(r => /^fip/.test(r.cells[0].textContent)).cells[2].textContent === '318 KiB',
+       rows.find(r => /^fip/.test(r.cells[0].textContent)).cells[2].textContent);
 
     let url = null;
     w.sink = (u, what, n) => { url = u; };
@@ -242,7 +244,7 @@ function stayUpload(w) {
     const w = await boot();
     $(w, '.nav[data-p=p8]').click();
     await sleep(2200);
-    ok('体检跑完且没弹框', !on(w, '#off') && /15 项正常/.test(txt(w, '#chkh')));
+    ok('体检跑完且没弹框', !on(w, '#off') && /16 项正常/.test(txt(w, '#chkh')));
   }
 
   console.log('\n--- 重启 (p12) ---');
@@ -310,7 +312,8 @@ function stayUpload(w) {
     ok('传完出现一行记录', w.document.querySelectorAll('#dll tr').length === 1);
     const row = $(w, '#dll tr');
     ok('记录带文件名', /\.bin$/.test(row.cells[0].textContent), row.cells[0].textContent);
-    ok('记录带长度', row.cells[1].textContent === '256 KiB', row.cells[1].textContent);
+    /* dynamic 卷没有「内容多长」这回事，整卷都得下 */
+    ok('记录带长度', row.cells[1].textContent === '372 KiB', row.cells[1].textContent);
     ok('记录带 crc32', /^[0-9a-f]+$/.test(row.cells[2].textContent), row.cells[2].textContent);
     ok('说清这个数怎么用', /本地文件核对/.test(txt(w, '#dllh')));
     ok('说清长度不受限', /不限长度/.test(txt(w, '#p10')));
@@ -1167,6 +1170,44 @@ function stayUpload(w) {
        !!$(w, '.tb svg') && txt(w, '.tb').trim() === '', txt(w, '.tb'));
   }
 
+  console.log('\n--- UBI 卷占用条 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(600);
+    const segs = [...w.document.querySelectorAll('#vbar i')];
+    ok('七个卷加空闲加预留，九段', segs.length === 9, segs.length);
+    /* UBI 按 LEB 取整，`ubi create fip 0x100000` 落到 9 个 LEB */
+    ok('fip 报的是取整后的 1.1 MiB', segs[0].title === 'fip 1.1 MiB',
+       segs[0].title);
+    ok('会被腾出的两个卷打了斜纹',
+       w.document.querySelectorAll('#vbar i.re').length === 2);
+    ok('斜纹的正是 fit 与 rootfs_data',
+       [...w.document.querySelectorAll('#vbar i.re')]
+         .map(i => i.title.split(' ')[0]).sort().join(',') === 'fit,rootfs_data',
+       [...w.document.querySelectorAll('#vbar i.re')].map(i => i.title).join('|'));
+    ok('图例每段都有', w.document.querySelectorAll('#vleg span').length === 9,
+       w.document.querySelectorAll('#vleg span').length);
+    ok('点破了这不是物理布局', /不表示物理位置/.test(txt(w, '#ubih')));
+    ok('刷机可用与体检那行对得上', /刷机可用 240 MiB/.test(txt(w, '#ubih')),
+       txt(w, '#ubih'));
+
+    /* 老设备的 /info 没有 avail：并成一段，不假装分得清 */
+    const ubi = JSON.parse(JSON.stringify(w.INFO.ubi));
+    delete ubi.avail;
+    w.INFO.ubi = ubi;
+    w.ubibar();
+    ok('没有 avail 时并成一段',
+       w.document.querySelectorAll('#vbar i').length === 8 &&
+       /空闲与 UBI 预留/.test(txt(w, '#vleg')), txt(w, '#vleg'));
+    ok('那时不报刷机可用', !/刷机可用/.test(txt(w, '#ubih')), txt(w, '#ubih'));
+
+    w.INFO.ubi = null;
+    w.ubibar();
+    ok('没有 UBI 就整条收起来',
+       $(w, '#vbar').hidden && $(w, '#vleg').hidden && !txt(w, '#ubih'));
+  }
+
   console.log('\n--- 胶囊分段 ---');
   {
     const w = await boot();
@@ -1260,12 +1301,12 @@ function stayUpload(w) {
     await sleep(2200);
     const heads = [...w.document.querySelectorAll('#chk th.g')].map(t => t.textContent);
     ok('五组标题都在', heads.join(',') === '闪存,引导,UBI,环境,出厂数据', heads.join(','));
-    ok('十六项都在',
-       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 16);
+    ok('十七项都在',
+       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 17);
     ok('envver 报出来了', /envver/.test(txt(w, '#chk')));
     ok('固件版本报出来了', /2026-09-05 17:01/.test(txt(w, '#chk')));
     ok('两份环境对比过', /与 ubootenv 一致/.test(txt(w, '#chk')));
-    ok('汇总仍然正确', /1 项注意 · 15 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
+    ok('汇总仍然正确', /1 项注意 · 16 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
   }
 
   console.log('\n--- 卷名当数据看，不当代码看 ---');
