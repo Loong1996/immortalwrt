@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,6811 @@
+@@ -0,0 +1,6940 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -288,6 +288,7 @@ new file mode 100644
 +#define CONN_NETDHCP		((void *)19)
 +#define CONN_DHCPD		((void *)20)
 +#define CONN_WR			((void *)21)
++#define CONN_WRBUSY		((void *)22)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -1024,6 +1025,15 @@ new file mode 100644
 +		"FO)info();if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!E"
 +		"NV)getenv()}\n"
 +	"function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}\n"
++	"/*\n"
++	"* 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；\n"
++	"* 现在它一边写一边服务，侧栏里的改地址、恢复默认环境变量、重启这几项点下去\n"
++	"* 是在写到一半的闪存上动手。设备那边各自回 503 挡了一道，这里是别让人碰到。\n"
++	"* 光有 pointer-events 不够：键盘 Tab 过去按回车照样走得通。\n"
++	"*/\n"
++	"function busy(on){var a=$('#app');\n"
++	"if(on)a.setAttribute('data-busy','');else a.removeAttribute('data-busy');\n"
++	"$$('.nav').forEach(function(b){b.disabled=!!on})}\n"
 +	"function files(p){return $$('input[type=file]',p).filter(function(i){return"
 +		" i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files["
 +		"0]}})}\n"
@@ -1643,8 +1653,8 @@ new file mode 100644
 +	"rt:Date.now(),rn:0,rate:0,fin:0};\n"
 +	"clearInterval(WRT);WRT=setInterval(wrclock,1000);\n"
 +	"RT=Date.now();RN=0;RATE=0;\n"
-+	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中"
-+		"…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
++	"HBOFF=1;busy(1);btn.disabled=true;btn.textContent=p.id=='p4'?'写入中…':'上传中…';prog.hidden=false;pro"
++		"g.className='prog';bar.className='pbar';bar.style.width='0';\n"
 +	"x.upload.onprogress=function(e){if(!e.lengthComputable)return;var"
 +		" done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;"
 +		"if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}\n"
@@ -1670,10 +1680,9 @@ new file mode 100644
 +	"x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}\n"
 +	"x.open('POST','/');x.send(fd)}\n"
 +	"function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval("
-+		"WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;$('#app').removeAttribute('data-"
-+		"busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='1"
-+		"00%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textCon"
-+		"tent=SENT.btxt;\n"
++		"WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog"
++		" bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textC"
++		"ontent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;\n"
 +	"/* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */\n"
 +	"if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中"
 +		"断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}\n"
@@ -1686,7 +1695,7 @@ new file mode 100644
 +	"clearInterval(WRT);WRT=null;if(WR)WR.fin=1;\n"
 +	"$('#steps').innerHTML='<li>'+plan().join('</li><li>')+'</li>';\n"
 +	"$('#ban').setAttribute('hidden','');\n"
-+	"$('#app').removeAttribute('data-busy');expect('boot');show('p7');return}\n"
++	"busy(0);expect('boot');show('p7');return}\n"
 +	"/* 200 只是「收下了」；闪存这才开始动，进度得去问 */\n"
 +	"wrpoll()}\n"
 +	"/*\n"
@@ -1750,7 +1759,7 @@ new file mode 100644
 +	"btn=$('button[type=submit]',p),h='';\n"
 +	"if(!WR||WR.fin)return;\n"
 +	"WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;\n"
-+	"HBOFF=0;$('#app').removeAttribute('data-busy');\n"
++	"HBOFF=0;busy(0);\n"
 +	"prog.className='prog ok';bar.className='pbar';bar.style.width='100%';\n"
 +	"$('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';\n"
 +	"btn.disabled=false;btn.textContent=SENT.btxt;clear(p);\n"
@@ -1874,13 +1883,13 @@ new file mode 100644
 + * only ever say "uploaded" -- never "written", never "and it reads back
 + * the same", and never "do you want to reboot?".
 + *
-+ * Now do_httpd() takes one step per pass and goes back into net_loop()
-+ * in between, so the page can ask how far it got, and the board stays up
-+ * at the end instead of resetting itself.  What drives the passes is the
-+ * LED tick: it already runs off net_loop()'s timeout, so it is the one
-+ * clock that keeps going whether or not a browser is still listening.
-+ * Nothing here waits on the page -- close the tab mid-write and the
-+ * write still finishes.
++ * Now the write is a state machine taking one step per pass of
++ * httpd_tick(), net_loop()'s timeout handler, so the page can ask how far
++ * it got and the board stays up at the end instead of resetting itself.
++ * That handler is the one clock that keeps going whether or not a browser
++ * is still listening -- close the tab mid-write and the write still
++ * finishes.  It also means the whole write happens inside the one
++ * net_loop() the upload arrived on; see httpd_tick() for why that matters.
 + *
 + * Progress is plain text the page reads with GET /wr?from=, same shape
 + * as /log?from=.  Writing a volume reports nothing in between: it runs
@@ -1893,9 +1902,22 @@ new file mode 100644
 +#define VF_CHUNK	4096		/* one read at a time */
 +#define VF_STEP		(1UL << 20)	/* ...and this much per pass */
 +
++/* Announced by a step that wants another pass; see httpd_flash_step(). */
++#define FLASH_MORE	0
++#define FLASH_DONE	1
++#define FLASH_FAIL	(-1)
++
 +static char		wr_log[WR_LOG_SZ];
 +static int		wr_used;
 +static int		flash_running;
++/*
++ * httpd_tick() drives the write, and sits four thousand lines above
++ * httpd_flash_step() in a file that carries no forward declarations.  A
++ * pointer armed by do_httpd(), where both are in scope, closes that gap.
++ */
++static int		(*flash_stepper)(void);
++static int		flash_in_step;	/* no stepping from inside a step */
++static int		flash_result;	/* what the last step returned */
 +static int		flash_stage;
 +static int		flash_i;
 +static int		flash_said;
@@ -2042,7 +2064,6 @@ new file mode 100644
 +	"green:usb-1", "green:usb-2",
 +};
 +
-+#define LED_TICK_MS	120
 +#define LED_CHASE_US	120000
 +
 +static int led_pos;
@@ -2073,7 +2094,8 @@ new file mode 100644
 +		led_one(i, state);
 +}
 +
-+static void led_paint(void)
++/* One frame of the chase.  Called from the tick, so it stays cheap. */
++static void httpd_led_paint(void)
 +{
 +	unsigned int i;
 +
@@ -2083,39 +2105,14 @@ new file mode 100644
 +	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
 +}
 +
-+/* Re-arms itself: net_loop() clears the handler before calling it. */
-+static void httpd_led_tick(void)
-+{
-+	led_paint();
-+	/*
-+	 * While a write is stepping this is also its clock: net_loop() has
-+	 * to come back so do_httpd() can take the next step, and it must do
-+	 * that whether or not a browser is still there to poll.
-+	 *
-+	 * Only from the timer, which is why painting is split out: the first
-+	 * paint of each pass comes from httpd_led_start(), before net_loop()
-+	 * has served a single packet.  Ending the pass there would spin
-+	 * through the whole write without ever answering the page.
-+	 */
-+	if (flash_running)
-+		net_set_state(NETLOOP_SUCCESS);
-+	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
-+}
-+
-+static void httpd_led_start(void)
++static void httpd_led_arm(void)
 +{
 +	led_probe();
-+	/* A write comes back through here every step; restarting the chase
-+	 * each time would leave the panel twitching on one LED. */
-+	if (!flash_running)
-+		led_pos = 0;
-+	led_paint();
-+	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
++	led_pos = 0;
 +}
 +
-+static void httpd_led_stop(void)
++static void httpd_led_off(void)
 +{
-+	net_set_timeout_handler(0, NULL);
 +	led_all(LEDST_OFF);
 +}
 +
@@ -2146,12 +2143,13 @@ new file mode 100644
 +static void httpd_chase_start(void)
 +{
 +	/*
-+	 * Deliberately not stopping the net_loop() chase the way the blink it
-+	 * replaced had to: these two take turns rather than fight, since both
-+	 * walk the same led_pos and only one of them runs at a time -- during
-+	 * a write the timeout handler is not running, which is the gap this
-+	 * fills.  Stopping it would also stop the clock that brings
-+	 * do_httpd() back for the next step.
++	 * Deliberately not stopping the httpd_tick() chase the way the blink
++	 * it replaced had to: these two take turns rather than fight, since
++	 * both walk the same led_pos and only one of them runs at a time.
++	 * The gap this fills is a single step -- a volume write is
++	 * synchronous, so nothing else runs for the ten seconds it takes, and
++	 * the panel would sit frozen on one LED.  Stopping the tick would
++	 * also stop the clock that takes the step after this one.
 +	 */
 +	led_probe();
 +	cyclic_register(&led_cyclic, httpd_chase, LED_CHASE_US, "httpd-flash");
@@ -2162,11 +2160,78 @@ new file mode 100644
 +	cyclic_unregister(&led_cyclic);
 +}
 +#else
-+static inline void httpd_led_start(void) { }
-+static inline void httpd_led_stop(void) { }
++static inline void httpd_led_paint(void) { }
++static inline void httpd_led_arm(void) { }
++static inline void httpd_led_off(void) { }
 +static inline void httpd_chase_start(void) { }
 +static inline void httpd_chase_stop(void) { }
 +#endif
++
++/*
++ * ---- the tick ------------------------------------------------------
++ *
++ * net_loop()'s timeout handler, re-arming itself every pass because
++ * net_loop() clears the handler before calling it.  Two jobs: walk the
++ * panel chase, and -- while a write is under way -- take its next step.
++ *
++ * Stepping from here rather than from do_httpd() is the whole point.
++ * Leaving net_loop() after every step and coming back was the older
++ * shape, and net_loop() opens with an unconditional eth_halt() +
++ * eth_init(): twenty-odd stop/starts per write, each throwing away
++ * whatever the driver had queued.  A timeout handler is how every other
++ * protocol in this stack drives a state machine, and NETLOOP_SUCCESS
++ * means "this protocol is finished", not "come back for more".  So a
++ * write now runs inside the very net_loop() its upload arrived on, and
++ * that loop is left exactly once, when the last step is done.
++ *
++ * flash_in_step guards the one way this could recurse: a step runs the
++ * board's own env recipe through run_command(), and an environment
++ * somebody edited could put a network command in it, which would re-enter
++ * net_loop() and land back here.  The chase still walks; nothing steps
++ * twice.
++ *
++ * Defined outside the LED block on purpose.  It used to be the LED tick,
++ * so a build without CONFIG_LED had no timeout handler at all -- and once
++ * the write started stepping off that handler, such a build would have
++ * taken one step and then served the page forever with a half-written
++ * flash.  The panel is the optional half, not the clock.
++ */
++#define HTTPD_TICK_MS	120
++
++static void httpd_tick(void)
++{
++	httpd_led_paint();
++
++	if (flash_pending && flash_stepper && !flash_in_step) {
++		int r;
++
++		flash_in_step = 1;
++		r = flash_stepper();
++		flash_in_step = 0;
++
++		/* Done or failed: hand the verdict to do_httpd() and let it
++		 * out of the loop to clean up. */
++		if (r != FLASH_MORE) {
++			flash_result = r;
++			net_set_state(NETLOOP_SUCCESS);
++		}
++	}
++
++	net_set_timeout_handler(HTTPD_TICK_MS, httpd_tick);
++}
++
++static void httpd_tick_start(void)
++{
++	httpd_led_arm();
++	httpd_led_paint();
++	net_set_timeout_handler(HTTPD_TICK_MS, httpd_tick);
++}
++
++static void httpd_tick_stop(void)
++{
++	net_set_timeout_handler(0, NULL);
++	httpd_led_off();
++}
 +
 +/*
 + * Minimal DHCP server.  It keeps three numbers -- how many offers, how
@@ -4785,6 +4850,17 @@ new file mode 100644
 +	"Connection: close\r\n"
 +	"\r\n另一个备份正在传输，请等待传输完成后重试\n";
 +
++/*
++ * Reachable only because 0.3.0 keeps serving while it writes.  Everything
++ * answered with this either writes the environment volume underneath a UBI
++ * write or moves the address out from under the page watching that write.
++ */
++static const char resp_wrbusy[] =
++	"HTTP/1.0 503 Service Unavailable\r\n"
++	"Content-Type: text/plain; charset=utf-8\r\n"
++	"Connection: close\r\n"
++	"\r\n正在写入闪存，这一项要等写完再改\n";
++
 +/* A download nothing is pulling on any more; see DUMP_IDLE_MS. */
 +static int dump_stale(void)
 +{
@@ -5699,6 +5775,33 @@ new file mode 100644
 +			tcp->priv = cls;
 +			up_owner = NULL;	/* release the staging area */
 +
++			/*
++			 * Only reachable since 0.3.0: the server used to be
++			 * silent from the answer to the reset, so nothing could
++			 * arrive mid-write.  Two kinds are refused here.
++			 *
++			 * The first four write the environment volume
++			 * underneath a UBI write, move the address out from
++			 * under the page that is watching the write, or -- in
++			 * the case of /envreset, which runs "env default -a" --
++			 * both at once.
++			 *
++			 * The last two end net_loop(), and the write now lives
++			 * inside it: leaving early would strand a half-written
++			 * flash.  Refusing rather than deferring is also the
++			 * honest answer -- the page is about to offer the
++			 * reboot itself, with the read-back result next to it.
++			 */
++			if (flash_running &&
++			    (cls == CONN_ENVRESET || cls == CONN_BOOTONCE ||
++			     cls == CONN_NETSET || cls == CONN_NETDHCP ||
++			     cls == CONN_DHCPD || cls == CONN_REBOOT ||
++			     cls == CONN_BOOT)) {
++				tcp->priv = CONN_WRBUSY;
++
++				return;
++			}
++
 +			/* Built now, while the request is still at up_base. */
 +			if (cls == CONN_INFO)
 +				info_len = httpd_info();
@@ -5820,6 +5923,8 @@ new file mode 100644
 +		s = resp_reboot;
 +	} else if (tcp->priv == CONN_REBOOT) {
 +		s = resp_reboot;
++	} else if (tcp->priv == CONN_WRBUSY) {
++		s = resp_wrbusy;
 +	} else if (tcp->priv == CONN_DUMPBUSY) {
 +		s = resp_dumpbusy;
 +	} else if (tcp->priv == CONN_POSTBUSY) {
@@ -5961,11 +6066,20 @@ new file mode 100644
 +		return;
 +
 +	if (up_ready) {
-+		if (part_find(FIELD_TRYBOOT))
++		if (part_find(FIELD_TRYBOOT)) {
 +			tryboot_pending = 1;
-+		else
++			net_set_state(NETLOOP_SUCCESS);
++		} else {
++			/*
++			 * No NETLOOP_SUCCESS here: httpd_tick() takes the steps
++			 * from inside this very net_loop().  Both flags are set
++			 * together so that everything guarded on flash_running
++			 * is guarded from this instant, not from whenever the
++			 * first step happens to run.
++			 */
 +			flash_pending = 1;
-+		net_set_state(NETLOOP_SUCCESS);
++			flash_running = 1;
++		}
 +	} else {
 +		/* Let the user retry after a failed upload. */
 +		printf("httpd: upload failed, ready for another attempt\n");
@@ -6092,16 +6206,19 @@ new file mode 100644
 +void httpd_start_server(void)
 +{
 +	/*
-+	 * net_loop() calls this on every entry, and a write in progress comes
-+	 * back through here between every step -- so the state it is writing
-+	 * from (the parts, the stage, the base address) must survive.  Only
-+	 * the handlers below need re-arming each time round.
++	 * net_loop() calls this on every entry, and it wipes the state a write
++	 * works from (the parts, the stage, the base address).  A write no
++	 * longer leaves net_loop() between its steps, so nothing should come
++	 * back through here while one is running -- but an env recipe someone
++	 * edited could call a network command and do exactly that, and losing
++	 * the upload halfway through writing it is not an acceptable way to
++	 * find out.  Re-arm the handlers and leave the rest alone.
 +	 */
 +	if (flash_running) {
 +		memset(net_server_ethaddr, 0, 6);
 +		tcp_stream_set_on_create_handler(httpd_on_create);
 +		net_set_udp_handler(httpd_dhcp_rx);
-+		httpd_led_start();
++		httpd_tick_start();
 +
 +		return;
 +	}
@@ -6138,7 +6255,7 @@ new file mode 100644
 +	memset(net_server_ethaddr, 0, 6);
 +	tcp_stream_set_on_create_handler(httpd_on_create);
 +	net_set_udp_handler(httpd_dhcp_rx);
-+	httpd_led_start();
++	httpd_tick_start();
 +
 +	printf("Airoha Web U-Boot " WEB_VERSION " by " AUTHOR "\n");
 +	printf("Project " PROJECT_URL "\n");
@@ -6353,10 +6470,6 @@ new file mode 100644
 + * The bootloader is written before the firmware so that a migration which
 + * dies halfway still leaves a board that can be recovered over the network.
 + */
-+#define FLASH_MORE	0
-+#define FLASH_DONE	1
-+#define FLASH_FAIL	(-1)
-+
 +#define VF_NONE		0
 +#define VF_VOL		1
 +#define VF_BL2		2
@@ -6461,7 +6574,6 @@ new file mode 100644
 +	case FS_START:
 +		wr_reset();
 +		flash_stay = 1;
-+		flash_running = 1;
 +		flash_said = 0;
 +		flash_i = 0;
 +		flash_wrote = 0;
@@ -6818,6 +6930,13 @@ new file mode 100644
 +	bootonce_disarm();
 +
 +	/*
++	 * Armed here because this is the first place where both httpd_tick(),
++	 * which drives the write, and httpd_flash_step(), which is the write,
++	 * are in scope.  This file has no forward declarations.
++	 */
++	flash_stepper = httpd_flash_step;
++
++	/*
 +	 * Looping here rather than letting the caller re-enter keeps "stay up"
 +	 * behaving the same on both ways in: boot_httpd_forever would come
 +	 * back on its own, but check_buttons would fall through to the boot
@@ -6828,10 +6947,10 @@ new file mode 100644
 +
 +		err = net_loop(HTTPD);
 +
-+		/* Not between the steps of a write: that timeout is the clock
-+		 * bringing us back for the next one. */
++		/* Left with a write still marked running: the last step has
++		 * finished and the chase belongs to the cleanup below. */
 +		if (!flash_running)
-+			httpd_led_stop();
++			httpd_tick_stop();
 +
 +		if (err < 0) {
 +			printf("httpd error: %d\n", err);
@@ -6840,22 +6959,31 @@ new file mode 100644
 +
 +		/*
 +		 * Before everything else, so that a /reboot or /boot that
-+		 * turned up mid-write waits for the write instead of
-+		 * cutting it in half.  Its flag keeps until the steps run
-+		 * out, and then it is acted on the way it always was.
++		 * turned up mid-write is acted on after the write rather
++		 * than instead of it.
 +		 */
 +		if (flash_pending) {
 +			/*
-+			 * One step per pass, back into net_loop() in between,
-+			 * so the page can ask how far it got while it happens.
++			 * The steps ran inside net_loop(), off httpd_tick();
++			 * getting here at all means the last one returned
++			 * something other than FLASH_MORE.  Only the cleanup
++			 * is left.
 +			 */
-+			int r = httpd_flash_step();
++			int r = flash_result;
 +
++			/*
++			 * Something ended net_loop() with steps still to take.
++			 * Nothing should be able to -- every endpoint that sets
++			 * NETLOOP_SUCCESS is refused while a write runs -- but
++			 * a half-written flash is not what a mistake made later
++			 * in this file should cost.  Go back in and finish.
++			 */
 +			if (r == FLASH_MORE)
 +				continue;
 +
 +			flash_pending = 0;
 +			flash_running = 0;
++			flash_result = FLASH_MORE;
 +			flash_stage = FS_START;
 +			httpd_chase_stop();
 +			env_set_hex("loadaddr", up_base);
@@ -6921,13 +7049,13 @@ new file mode 100644
 +
 +
 +		/*
-+		 * Last of the deferred actions, and that ordering is the whole
-+		 * point: an address change loops back into net_loop(),
-+		 * which calls httpd_start_server(), and that clears
-+		 * flash_pending.  Taken first it would swallow a write the page
-+		 * had already been told was accepted.  Nothing is lost the
-+		 * other way round -- the change is still pending once the flash
-+		 * is done with.
++		 * Last of the deferred actions.  /netset and /netdhcp are
++		 * refused outright while a write is running, so this can no
++		 * longer be pending alongside one -- but the ordering stays,
++		 * because an address change loops back into net_loop(), which
++		 * calls httpd_start_server(), and that clears flash_pending.
++		 * One line moved above this one and a write the page had been
++		 * told was accepted would vanish.
 +		 *
 +		 * Not a return either: what follows a returning httpd depends
 +		 * on how recovery was entered.  boot_httpd_forever loops and
@@ -6942,9 +7070,10 @@ new file mode 100644
 +		else if (!staying)
 +			return CMD_RET_SUCCESS;
 +
-+		/* Stopped above, and net_loop() does not bring it back; the
-+		 * page tells the user to wait for the panel to go normal. */
-+		httpd_led_start();
++		/* Stopped above, or handed to the cyclic chase for the write
++		 * that just ended; either way net_loop() does not bring it
++		 * back on its own. */
++		httpd_tick_start();
 +	}
 +
 +	printf("httpd: flashing done, rebooting\n");

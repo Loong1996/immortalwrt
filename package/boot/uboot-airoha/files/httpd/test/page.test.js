@@ -51,6 +51,7 @@ async function boot() {
 const $ = (w, s) => w.document.querySelector(s);
 const txt = (w, s) => ($(w, s) || {}).textContent || '';
 const on = (w, s) => $(w, s).hasAttribute('data-on');
+const navs = (w) => Array.from(w.document.querySelectorAll('.nav'));
 function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(); }
 
 (async () => {
@@ -268,6 +269,10 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
       value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
     w.send();
     ok('上传期间不发心跳', w.HBOFF === 1);
+    /* 写入期间设备还在服务，侧栏里改地址、恢复默认、重启都会动到写了一半
+       的闪存。灰掉不够，键盘 Tab 过去按回车照样能走 —— 得真禁掉。 */
+    ok('写入期间侧栏按钮真被禁用',
+       navs(w).length > 0 && navs(w).every(b => b.disabled));
 
     await sleep(3000);
     ok('报出正在写哪一步', /写入 固件…/.test(txt(w, '#p1 .pwhat')),
@@ -289,6 +294,7 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        /立即重启/.test(txt(w, '#rmask .btns')), txt(w, '#rmask .btns'));
     ok('不再自己跳完成页', !on(w, '#p7'));
     ok('侧栏解锁了', !$(w, '#app').hasAttribute('data-busy'));
+    ok('侧栏按钮跟着解禁', navs(w).every(b => !b.disabled));
     ok('心跳回来了', w.HB === 1, String(w.HB));
     ok('实测速度记下来给下次估算', +w.localStorage.getItem('xgwrspd') > 0,
        w.localStorage.getItem('xgwrspd'));

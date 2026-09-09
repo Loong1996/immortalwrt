@@ -451,6 +451,15 @@ if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}}
 function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}
 function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}
 function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
+/*
+ * 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；
+ * 现在它一边写一边服务，侧栏里的改地址、恢复默认环境变量、重启这几项点下去
+ * 是在写到一半的闪存上动手。设备那边各自回 503 挡了一道，这里是别让人碰到。
+ * 光有 pointer-events 不够：键盘 Tab 过去按回车照样走得通。
+ */
+function busy(on){var a=$('#app');
+if(on)a.setAttribute('data-busy','');else a.removeAttribute('data-busy');
+$$('.nav').forEach(function(b){b.disabled=!!on})}
 function files(p){return $$('input[type=file]',p).filter(function(i){return i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files[0]}})}
 function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}
 function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):'未选择文件'}
@@ -973,7 +982,7 @@ WR={n:0,off:0,k:0,txt:'',rows:[],ver:null,secs:0,left:0,
 rt:Date.now(),rn:0,rate:0,fin:0};
 clearInterval(WRT);WRT=setInterval(wrclock,1000);
 RT=Date.now();RN=0;RATE=0;
-HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';
+HBOFF=1;busy(1);btn.disabled=true;btn.textContent=p.id=='p4'?'写入中…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';
 x.upload.onprogress=function(e){if(!e.lengthComputable)return;var done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}
 bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正在写入 ':'正在上传 ')+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' · '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);
 /* 速率按最近 1.5 秒算，瞬时值抖得没法看 */
@@ -992,7 +1001,7 @@ x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
 if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);
 x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}
 x.open('POST','/');x.send(fd)}
-function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;$('#app').removeAttribute('data-busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
+function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
 /* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
 if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}
 function done(resp){var p=SENT.p;
@@ -1004,7 +1013,7 @@ if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked){HBOFF=0;
 clearInterval(WRT);WRT=null;if(WR)WR.fin=1;
 $('#steps').innerHTML='<li>'+plan().join('</li><li>')+'</li>';
 $('#ban').setAttribute('hidden','');
-$('#app').removeAttribute('data-busy');expect('boot');show('p7');return}
+busy(0);expect('boot');show('p7');return}
 /* 200 只是「收下了」；闪存这才开始动，进度得去问 */
 wrpoll()}
 /*
@@ -1068,7 +1077,7 @@ function wrfin(){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),
 btn=$('button[type=submit]',p),h='';
 if(!WR||WR.fin)return;
 WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;
-HBOFF=0;$('#app').removeAttribute('data-busy');
+HBOFF=0;busy(0);
 prog.className='prog ok';bar.className='pbar';bar.style.width='100%';
 $('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';
 btn.disabled=false;btn.textContent=SENT.btxt;clear(p);
