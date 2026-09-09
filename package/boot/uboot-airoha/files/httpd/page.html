@@ -220,9 +220,10 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 <p class=bh>首次迁移</p>
 <div class=box>
-<div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失</small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
+<div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
 </div>
 <p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一且不可再生，请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
+<p class=note><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>
 <p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
@@ -996,7 +997,7 @@ y.textContent='启动它'}
 $('#atitle').textContent=$('h1',p).textContent;
 if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
-if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
+if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
 if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');
 /* 写完不再自动重启，所以这不再是拦下的理由，只是别急着重启 */
 if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip)W.push('闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');

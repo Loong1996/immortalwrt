@@ -790,6 +790,61 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        typeof $(w, '#p1 .drop').ondrop === 'function');
   }
 
+  console.log('\n--- 重建 UBI 要 BL2 和 U-Boot 一起传 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p2]').click();
+    await sleep(300);
+    const pick = (name, fn, n) => {
+      const i = $(w, '#p2 input[name=' + name + ']');
+      Object.defineProperty(i, 'files',
+        { value: [new w.File([new Uint8Array(n)], fn)], configurable: true });
+      i.onchange();
+    };
+    const drop = name => {
+      const i = $(w, '#p2 input[name=' + name + ']');
+      Object.defineProperty(i, 'files', { value: [], configurable: true });
+    };
+    const errs = () => [...w.document.querySelectorAll('#abody .e')]
+      .map(e => e.textContent).join(' | ');
+
+    ok('说明里就写着要一起传', /必须同时上传 BL2 与 U-Boot/.test(txt(w, '#p2')));
+
+    /*
+     * 重建从 0x20000 起擦，而原厂 bootloader 分区是 0x0-0x80000 —— 后半截连同
+     * 原厂 BL2 要加载的下一级一起没了。只写 FIP 的话，重启是原厂 BL2 起来、找
+     * 不到下一级，我们的 FIP 又躺在它不认识的 UBI 卷里，只能拆串口。
+     */
+    $(w, '#p2 [name=format]').checked = true;
+    pick('fip', 'x-bl31-uboot.fip', 325632);
+    w.ask();
+    ok('只带 U-Boot 就拦下来', /没有选择 BL2/.test(errs()), errs());
+    ok('说清后果是拆串口', /串口/.test(errs()));
+    ok('拦下来就不给「仍要写入」', $(w, '#yes').hidden);
+    w.hide();
+
+    pick('bl2', 'x-preloader.bin', 120832);
+    w.ask();
+    ok('两个都带就放行', !/没有选择 BL2/.test(errs()) &&
+       !/没有选择 U-Boot/.test(errs()), errs());
+    ok('放行才有「仍要写入」', !$(w, '#yes').hidden);
+    w.hide();
+
+    /* 反过来也要拦：只带 BL2 不带 FIP，重建之后没有 U-Boot 可启动 */
+    drop('fip');
+    w.ask();
+    ok('只带 BL2 也拦', /没有选择 U-Boot 文件/.test(errs()), errs());
+    w.hide();
+
+    /* 不重建就只是日常升级引导器，单独换 U-Boot 是正常用法 */
+    $(w, '#p2 [name=format]').checked = false;
+    pick('fip', 'x-bl31-uboot.fip', 325632);
+    drop('bl2');
+    w.ask();
+    ok('不重建时单独换 U-Boot 照旧放行', !/没有选择 BL2/.test(errs()), errs());
+    ok('并且给得出「仍要写入」', !$(w, '#yes').hidden);
+  }
+
   console.log('\n--- 引导菜单预览 ---');
   {
     const w = await boot();
