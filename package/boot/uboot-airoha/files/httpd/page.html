@@ -251,6 +251,14 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <p class=bh>网络<small>连不上设备时先看这里</small></p>
 <div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>
 <p class=note id=portn hidden>端口号按交换机内部顺序排，不一定等于机壳上的丝印。没有回应的端口不列出。</p>
+<p class=bh>改地址<small>改完要用新地址重新打开这个页面</small></p>
+<div class=box>
+<div class=fr><span class=fl>IP<small>设备自己的地址</small></span><span class=fc><input type=text id=nip class=mono style="width:160px"><span class=fn>电脑要在同一网段</span></span></div>
+<div class=fr><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono value=255.255.255.0 style="width:160px"></span></div>
+<div class="fr wide"><span class=fl>保存到闪存<small>不保存的话断电就回到原来的地址。填错了地址，断电是唯一的退路</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
+</div>
+<p class=note id=nh>把设备放进已有网络里，最稳的做法是在这里填一个那个网段里的空闲地址 —— 地址是你自己定的，改完就知道去哪找它。</p>
+<div class=row><button type=button class=pb onclick=askdhcp()>向上级路由要地址</button><button type=button class="pb pri" onclick=asknetset()>应用</button></div>
 <p class=bh>UBI 卷<small id=ubih></small></p>
 <div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>
 </div>
@@ -275,7 +283,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=box><table class=kv id=bmenu><tr><td>正在读取…</td></tr></table></div>
 <p class=bh>恢复默认环境</p>
 <div class=box>
-<div class="fr wide"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的 bootcmd、引导菜单与网络设置并保存</small></span><span class="fc end"><button type=button class="pb red" onclick=askenvdef()>恢复默认</button></span></div>
+<div class="fr wide"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的 bootcmd、引导菜单与网络设置并保存</small></span><span class="fc end"><span class=fs id=envdh></span><button type=button class="pb red" onclick=askenvdef()>恢复默认</button></span></div>
 </div>
 <p class=note>出厂 MAC 位于 ri 卷，<b>不受影响</b>；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。</p>
 </div>
@@ -431,6 +439,47 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span
 '<div class=w>闪存内容不受影响</div>';
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
 function doreboot(){get('/reboot',function(){});expect('reboot')}
+var IP4=/^(\d{1,3}\.){3}\d{1,3}$/;
+function asknetset(){var ip=$('#nip').value.trim(),
+mk=$('#nmask').value.trim()||'255.255.255.0',
+sv=$('#nsave').checked;
+$('#atitle').textContent='改地址';
+if(!IP4.test(ip)){$('#nh').textContent='IP 不是一个合法的地址';return}
+if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}
+$('#abody').innerHTML='<div class=r><span>新地址</span><span class=v>'+esc(ip)+' / '+esc(mk)+'</span></div>'+
+'<div class=w>改完这个页面就断了，要用 http://'+esc(ip)+'/ 重新打开</div>'+
+'<div class=w>电脑也得在同一网段，否则谁都找不到它</div>'+
+(sv?'<div class=w><b>会保存到闪存</b>：填错了地址，断电也回不去</div>'
+:'<div class=w>不保存，断电就回到原来的地址</div>');
+var y=$('#yes');y.hidden=false;y.textContent='改地址';
+YES=function(){donetset(ip,mk,sv)};$('#mask').setAttribute('data-on','')}
+function donetset(ip,mk,sv){
+get('/netset?ip='+encodeURIComponent(ip)+'&mask='+encodeURIComponent(mk)
++'&save='+(sv?1:0),function(st,t){
+if(st!=200||!/^ok /.test((t||'').trim())){
+$('#nh').textContent='设备没有接受：'+((t||'').trim()||st);return}
+hbstop();gone('设备已移到 '+ip,
+'这个页面连的是旧地址，不会自己回来。用 <b>http://'+esc(ip)+'/</b> 重新打开。'
++(sv?'':'断电会回到原来的地址。'),'http://'+ip+'/')})}
+function askdhcp(){$('#atitle').textContent='向上级路由要地址';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>dhcp</span></div>'+
+'<div class=w><b>拿到的地址是路由器给的，这个页面事先不知道是多少。</b>要去上级路由的客户端列表里按 MAC 找：'+esc((INFO&&INFO.mac)||'')+'</div>'+
+'<div class=w>要不到地址会退回现在这个地址</div>'+
+'<div class=w>不保存，断电就回到原来的地址</div>';
+var y=$('#yes');y.hidden=false;y.textContent='去要';YES=dodhcp;
+$('#mask').setAttribute('data-on','')}
+function dodhcp(){get('/netdhcp',function(){});hbstop();
+gone('设备正在要地址',
+'拿到之后它就在新地址上了。去上级路由的客户端列表里找 <b>'
++esc((INFO&&INFO.mac)||'')+'</b>。要不到会退回原来的地址，断电也会回到原来的地址。','')}
+/* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */
+function gone(title,body,url){
+$('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';
+$('#offt').textContent=title;
+$('#offb').innerHTML='<div class=w style="color:inherit">'+body+'</div>'
++(url?'<div class=hint>10 秒后自动跳过去。</div>':'');
+$('#offr').hidden=true;$('#off').setAttribute('data-on','');
+if(url)setTimeout(function(){location.href=url},10000)}
 function askboot(){$('#atitle').textContent='启动系统';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+
 '<div class=w>闪存内容不受影响；启动不起来会回到本页面</div>';
@@ -552,9 +601,10 @@ $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default
 '<div class=w>自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值</div>'+
 '<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启生效</div>';
 var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on','')}
-function envdef(){$('#envh').textContent='正在恢复…';
-get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
-else $('#envh').textContent='恢复失败（'+st+'）'})}
+/* 自己的位置：#envh 归 envfill() 管，紧接着的 getenv() 会把它写掉 */
+function envdef(){$('#envdh').textContent='正在恢复…';
+get('/envreset',function(st,t){if(st==200){$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
+else $('#envdh').textContent='恢复失败（'+st+'）'})}
 /*
  * 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是
  * 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口
@@ -578,7 +628,9 @@ h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+p.p+'</td>'
 (p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')
 +(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
 t.innerHTML=h;
-$('#portn').hidden=!(INFO.ports&&INFO.ports.length)}
+$('#portn').hidden=!(INFO.ports&&INFO.ports.length);
+if(!$('#nip').value)$('#nip').value=n.ip||'';
+if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;

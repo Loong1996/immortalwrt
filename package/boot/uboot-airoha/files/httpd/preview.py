@@ -202,6 +202,9 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
+ if(u.indexOf('/netset')==0){var g=/ip=([0-9.]+)/.exec(u);
+  return g?'ok '+g[1]+' 255.255.255.0 ram':'bad ip'}
+ if(u=='/netdhcp')return 'ok dhcp';
  if(u=='/bootonce')return S.dev=='noubi'?'armed, but saving failed':'armed and saved';
  if(u=='/boot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'ok'}
  if(u=='/reboot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'OK'}
