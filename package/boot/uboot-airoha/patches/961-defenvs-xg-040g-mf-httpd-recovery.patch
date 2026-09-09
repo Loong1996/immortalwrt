@@ -70,6 +70,6 @@ not from the menu.
  _init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv ; run ubi_create_board_data
 -_firstboot=setenv _firstboot ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
 +_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run _no_ubi ; run ethaddr_factory ; run _switch_to_menu ; run _init_env ; run boot_first
-+_no_ubi=echo ; echo This flash carries no usable UBI. Leaving it alone. ; echo Web recovery starts in 3s at http://$ipaddr - press a key for the menu ; setenv bootmenu_0 "Start web recovery server at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
++_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "Web recovery starts in 3s at http://$ipaddr - press a key for the menu" ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run boot_httpd_forever" ; bootmenu 3 ; run boot_httpd_forever
  _switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
  _bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"
