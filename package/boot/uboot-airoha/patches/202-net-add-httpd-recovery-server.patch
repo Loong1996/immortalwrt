@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,5680 @@
+@@ -0,0 +1,6091 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -957,11 +957,12 @@ new file mode 100644
 +	"</div>\n"
 +	"<script>\n"
 +	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
-+	"var HB=0,HBT=null,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0;\n"
++	"var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;\n"
 +	"var RT=0,RN=0,RATE=0;\n"
 +	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
 +	"var DLT=0,DLN=0,DLRATE=0;\n"
-+	"var LOGN=0,LOGT=null;\n"
++	"var LOGN=0,LOGT=null,LOGGEN=0;\n"
++	"var DHCPD_BUSY=0;\n"
 +	"/* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */\n"
 +	"var WRSPD=1400000;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
@@ -978,7 +979,7 @@ new file mode 100644
 +	"var m=Math.floor(s/60);if(m<60)return m+' 分 '+(s%60)+' 秒';\n"
 +	"return Math.floor(m/60)+' 小时 '+(m%60)+' 分'}\n"
 +	"function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\"/g,'&quot;"
-+		"')}\n"
++		"').replace(/'/g,'&#39;')}\n"
 +	"function pane(){return $('.pane[data-on]')}\n"
 +	"function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else"
 +		" p.removeAttribute('data-on')})}\n"
@@ -989,7 +990,8 @@ new file mode 100644
 +	"x.setAttribute('aria-selected',x==b?'true':'false')});\n"
 +	"$$('.sp[data-g='+g+']').forEach(function(p){\n"
 +	"if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});\n"
-+	"if(g=='g8'){if(id=='s83')getlog();else logstop()}}\n"
++	"/* 跟随开着的时候整篇重读会和增量追加叠出重复，而且会把按钮解禁 */\n"
++	"if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}}\n"
 +	"function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}\n"
 +	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
 +		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
@@ -1036,11 +1038,12 @@ new file mode 100644
 +	"function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;\n"
 +	"d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}\n"
 +	"function hbstart(){HB=1;ping()}\n"
-+	"function hbstop(){HB=0;clearTimeout(HBT);HBT=null}\n"
++	"/* 代数：停一次就换一代，飞行中的那次 ping 回来时对不上，直接丢掉 */\n"
++	"function hbstop(){HB=0;HBGEN++;clearTimeout(HBT);HBT=null}\n"
 +	"function hbnext(){if(!HB)return;clearTimeout(HBT);HBT=setTimeout(ping,LIVE?3000:2000)}\n"
 +	"function ping(){if(!HB)return;if(HBOFF){hbnext();return}\n"
-+	"var x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;seen(o,u);hbnext()}"
-+		";\n"
++	"var g=HBGEN,x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;if(g!=HBGEN"
++		")return;seen(o,u);hbnext()};\n"
 +	"x.timeout=2500;\n"
 +	"x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}\n"
 +	"if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}\n"
@@ -1062,7 +1065,8 @@ new file mode 100644
 +	"function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}\n"
 +	"/* 已知会静默，但用户自己发起的：只变点，不弹框 */\n"
 +	"function silent(){SILENT=1;MISS=0}\n"
-+	"function offline(why){var i,t,b,r=0;\n"
++	"/* 设备已经移走了，通用的「断开」框只会盖掉那条指引 */\n"
++	"function offline(why){if(GONE)return;var i,t,b,r=0;\n"
 +	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}\n"
 +	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}\n"
 +	"else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动；引导失败将回到本页面。'}\n"
@@ -1075,8 +1079,9 @@ new file mode 100644
 +	"function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');\n"
 +	"if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';\n"
 +	"$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}\n"
-+	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);pi"
-+		"ng()}\n"
++	"/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */\n"
++	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if"
++		"(!HB)HB=1;ping()}\n"
 +	"function askreboot(){$('#atitle').textContent='重启';\n"
 +	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+\n"
 +	"'<div class=w>闪存内容不受影响</div>';\n"
@@ -1092,12 +1097,13 @@ new file mode 100644
 +	"+'地址由本方指定，应用后即可直接访问。'}\n"
 +	"function applyaddr(){if($('#amode').value=='dhcp')askdhcp();else asknetset()}\n"
 +	"/* 只改内存里的状态；跟着地址一起存盘由设备侧决定 */\n"
-+	"function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0;\n"
-+	"c.disabled=true;$('#dhs').textContent='…';\n"
-+	"get('/netdhcpd?on='+v,function(st,t){c.disabled=false;\n"
++	"/* 请求在飞的时候 /info 会回来把开关写回旧值：记下前后两个状态，自己收尾 */\n"
++	"function setdhcpd(){var c=$('#dhcpd'),v=c.checked?1:0,prev=v?false:true;\n"
++	"c.disabled=true;DHCPD_BUSY=1;$('#dhs').textContent='…';\n"
++	"get('/netdhcpd?on='+v,function(st,t){c.disabled=false;DHCPD_BUSY=0;\n"
 +	"if(st!=200||!/^ok/.test((t||'').trim())){\n"
-+	"c.checked=!v;$('#dhs').textContent='设备没有接受';return}\n"
-+	"$('#dhs').textContent=v?'已开启':'已关闭';\n"
++	"c.checked=prev;$('#dhs').textContent='设备没有接受';return}\n"
++	"c.checked=!!v;$('#dhs').textContent=v?'已开启':'已关闭';\n"
 +	"if(INFO&&INFO.net)INFO.net.dhcpd=v})}\n"
 +	"var IP4=/^(\\d{1,3}\\.){3}\\d{1,3}$/;\n"
 +	"function asknetset(){var ip=$('#nip').value.trim(),\n"
@@ -1145,7 +1151,7 @@ new file mode 100644
 +	"'获取成功后设备位于新地址，请在上级路由的客户端列表中按 <b>'\n"
 +	"+esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约或断电后均恢复原地址。','')}\n"
 +	"/* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */\n"
-+	"function gone(title,body,url){\n"
++	"function gone(title,body,url){GONE=1;\n"
 +	"$('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';\n"
 +	"$('#offt').textContent=title;\n"
 +	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+body+'</div>'\n"
@@ -1176,10 +1182,15 @@ new file mode 100644
 +	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
 +	"(INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return"
 +		" x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;\n"
-+	"h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+v.t+'</td><td"
++	"h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+esc(v.t)+'</td><td"
 +		" class=n>'+sz(n)+'</td><td class=b><button type=button class=\"pb dlb\""
-+		" onclick=\"dlvol(\\''+esc(v.n)+'\\')\">下载</button></td></tr>'});\n"
-+	"t.innerHTML=h}\n"
++		" data-v=\"'+esc(v.n)+'\">下载</button></td></tr>'});\n"
++	"t.innerHTML=h;dlbind(t)}\n"
++	"/* 卷名是设备给的字符串：只进 data 属性，绝不进 JS 代码里 */\n"
++	"function dlbind(t){if(t.__b)return;t.__b=1;\n"
++	"t.addEventListener('click',function(e){var b=e.target;\n"
++	"while(b&&b!=t){if(b.getAttribute&&/(^| )dlb( |$)/.test(b.className||'')){\n"
++	"dlvol(b.getAttribute('data-v'));return}b=b.parentNode}})}\n"
 +	"/* 单独一层，好让预览把真正的下载换掉而不动上面的逻辑 */\n"
 +	"function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src=u}\n"
 +	"/* 真下载会被浏览器接走，iframe 不触发 load；只有错误页会 —— 那就是信号 */\n"
@@ -1221,7 +1232,7 @@ new file mode 100644
 +	"$('.pct',pg).textContent=''}\n"
 +	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 +	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
-+	"function dlrow(r){var t=$('#dll'),h=r.holes||0;\n"
++	"function dlrow(r){var t=$('#dll'),h=r.holes|0;\n"
 +	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
 +		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 +	"$('#dllh').hidden=false;\n"
@@ -1304,20 +1315,21 @@ new file mode 100644
 +	"if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';\n"
 +	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
 +	"$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'\n"
-+	"+(n.client?'，最近一次分配给 '+esc(n.client):'')\n"
++	"+(n.client?'，最近一次分配给 '+n.client:'')\n"
 +	"+'。当前打开本页面的主机用的就是设备发的地址。'\n"
 +	":n.offer?'已发出 '+n.offer+' 次地址，均未被接受；'\n"
 +	"+'当前主机用的是手动配置的 IP。'\n"
 +	":'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';\n"
-+	"(INFO.ports||[]).forEach(function(p){\n"
-+	"h+='<tr><td><span class=\"dot s'+(p.link?0:1)+'\"></span>端口 '+p.p+'</td>'\n"
++	"/* 端口那几个数是设备给的，先当数字看待再拼进 HTML */\n"
++	"(INFO.ports||[]).forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;\n"
++	"h+='<tr><td><span class=\"dot s'+(p.link?0:1)+'\"></span>端口 '+pn+'</td>'\n"
 +	"+'<td'+(p.link?'':' class=s1')+'>'+(p.link?\n"
-+	"(p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')\n"
-+	"+(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
++	"(sp?sp>=1000?(sp/1000)+' Gb/s':sp+' Mb/s':'已连接')\n"
++	"+(sp?fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});\n"
 +	"t.innerHTML=h;\n"
 +	"$('#portn').hidden=!(INFO.ports&&INFO.ports.length);\n"
-+	"$('#dhcpd').checked=!!n.dhcpd;\n"
-+	"$('#dhs').textContent='';\n"
++	"/* 开关正在等设备回话时别插队，等它自己收尾 */\n"
++	"if(!DHCPD_BUSY){$('#dhcpd').checked=!!n.dhcpd;$('#dhs').textContent=''}\n"
 +	"if(!$('#nip').value)$('#nip').value=n.ip||'';\n"
 +	"if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask}\n"
 +	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<"
@@ -1340,28 +1352,31 @@ new file mode 100644
 +	"h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
 +	"(INFO.ubi.vols||[]).slice().sort(function(a,b){return"
 +		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
-+		" class=n>'+(v.i==null?'':v.i)+'</td><td>'+esc(v.n)+'</td><td>'+v.t+'</td><td"
++		" class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td"
 +		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
 +	"function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.in"
 +		"nerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt"
 +		"){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t"
 +		".innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.inner"
-+		"HTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}CHK=r.items;var"
-+		" h='',c=[0,0,0],g='';r.items.forEach(function(i){c[i.s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th"
-+		" class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
-+		" s'+i.s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+i.s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;"
-+		"$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 ·"
-+		" '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}\n"
++		"HTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class"
++		" 之前先当整数看待并夹在 0..2 */\n"
++	"CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var"
++		" s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g"
++		" colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
++		" s'+s+'\"></span>'+esc(i.n)+'</td><td class=\"s'+s+'\">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#"
++		"chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+'"
++		" 项正常':'全部 '+c[0]+' 项正常'})}\n"
 +	"/*\n"
 +	"* 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码\n"
 +	"* 后的字符串、数不出字节数，所以偏移得由设备说。\n"
 +	"*/\n"
-+	"function logfollow(){clearTimeout(LOGT);LOGT=null;\n"
++	"/* 关一次就换一代：2 秒窗里关了又开，旧链的响应回来时对不上代数，就此断掉 */\n"
++	"function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;\n"
 +	"var on=$('#logf').checked;$('#logb').disabled=on;\n"
 +	"if(!on)return;\n"
 +	"LOGN=0;$('#log').textContent='';logtick()}\n"
-+	"function logtick(){if(!$('#logf').checked)return;\n"
-+	"get('/log?from='+LOGN,function(st,t){if(!$('#logf').checked)return;\n"
++	"function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;\n"
++	"get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;\n"
 +	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
 +	"if(i>0){var o=parseInt(t.slice(0,i),10);\n"
 +	"if(o>=LOGN){LOGN=o;\n"
@@ -1385,7 +1400,8 @@ new file mode 100644
 +	"$('#scanh').textContent='';scanstep()}\n"
 +	"function scanstep(){var s=SCAN;if(!s||s.stop)return;silent();\n"
 +	"get('/scan?off=0x'+s.off.toString(16),function(st,t){\n"
-+	"if(!SCAN||SCAN.stop)return;\n"
++	"/* 认自己这一轮：停掉后立刻重扫，旧响应不能往新的那份里加 */\n"
++	"if(SCAN!==s||s.stop)return;\n"
 +	"var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 +	"if(st!=200||!r||r.err!==undefined){\n"
 +	"SCAN=null;$('#scanb').textContent='重新扫描';\n"
@@ -1426,9 +1442,9 @@ new file mode 100644
 +	"$('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'\n"
 +	":s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}\n"
 +	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;\n"
-+	"if(l.textContent=='未读取')l.textContent='正在读取…';get('/log',function(st,txt){b.disabled=false;b.tex"
-+		"tContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,''"
-+		"):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
++	"if(l.textContent=='未读取')l.textContent='正在读取…';get('/log',function(st,txt){b.disabled=$('#logf')."
++		"checked;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').rep"
++		"lace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
 +	"function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.styl"
 +		"e.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.ex"
 +		"ecCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator."
@@ -1495,6 +1511,8 @@ new file mode 100644
 +		" 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip"
 +		" 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}\n"
 +	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
++	"/* 设备详情里唯一能敲回车的是 IP 与掩码：回车就是「应用」，不是弹写入确认 */\n"
++	"if(p.id=='p5'){applyaddr();return false}\n"
 +	"if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;\n"
 +	"YES=null;y.textContent='仍要写入';\n"
 +	"var tb0=$('[name=tryboot]',p);\n"
@@ -1597,7 +1615,11 @@ new file mode 100644
 +	":'设备正在写入，完成后自动重启。本页面可以关闭。';\n"
 +	"$('#p7 .fin b').textContent=tb?'起不来怎么办':'通过设备指示灯判断进度';\n"
 +	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
-+		"en','');hbstop();show('p7')}\n"
++		"en','');\n"
++	"/* 试运行不写闪存：起不来就退回本页面，所以心跳留着 —— 和「直接启动系统」同一条路，\n"
++	"设备一回来自己刷新；写入那条路才是真的没有下文了 */\n"
++	"if(tb){$('#app').removeAttribute('data-busy');expect('boot')}else hbstop();\n"
++	"show('p7')}\n"
 +	"/* 设备回的是 \"ok N bytes crc32 xxxxxxxx skipped M\" */\n"
 +	"function stdone(t){STUCK='';var m=/ok (\\d+) bytes crc32 ([0-9a-f]+) skipped"
 +		" (-?\\d+)/.exec(t||''),h='',k;\n"
@@ -1630,6 +1652,27 @@ new file mode 100644
 +/* 400 with the reason as the body, which the page shows verbatim. */
 +static char resp_reject[512];
 +
++/*
++ * ---- static response buffers ---------------------------------------------
++ *
++ * Every GET endpoint below builds its whole answer once, when the request is
++ * classified, into a static buffer of its own -- info_buf, check_buf,
++ * scan_buf, log_buf, ping_buf, env_buf, netset_buf, dumpinfo_buf -- and then
++ * hands tx() a pointer into that buffer for as long as the connection lives.
++ *
++ * That is sound only because of two properties of the U-Boot TCP stack.
++ * net/tcp.c holds exactly one "static struct tcp_stream tcp_stream" and
++ * refuses a new SYN while the old stream is not CLOSED, so two connections
++ * are never alive at the same time; and a buffer is not rebuilt until the
++ * next request is classified, by which time the previous answer has been
++ * acknowledged in full -- on_snd_una_update() is what closes the stream.
++ *
++ * So if that stack ever grows a second stream, this is the first thing that
++ * breaks, and it breaks quietly: one request would be served the tail of
++ * another's reply.  Each endpoint would then need its buffer per stream,
++ * hung off tcp->priv rather than off the file.
++ */
++
 +/* GET /info: JSON built per request, at most this long. */
 +static char info_buf[4096];
 +
@@ -1660,9 +1703,14 @@ new file mode 100644
 + */
 +static int	tryboot_pending;
 +
-+/* One uploaded form field whose payload is non-empty. */
++/*
++ * One uploaded form field whose payload is non-empty.  The name buffer has to
++ * hold the longest field this file looks for, which is FIELD_FVOL_PREFIX plus
++ * a full-length UBI volume name: anything shorter would cut the name silently
++ * and fvol_find() would then never match the volume the user picked.
++ */
 +struct up_part {
-+	char	name[40];
++	char	name[sizeof(FIELD_FVOL_PREFIX) + UBIVOL_NAME_MAX];
 +	ulong	addr;
 +	u32	size;
 +};
@@ -1850,6 +1898,12 @@ new file mode 100644
 +	led_all(led_blink_on ? LEDST_ON : LEDST_OFF);
 +}
 +
++/*
++ * Both are safe to call twice: cyclic_register() unregisters first and
++ * cyclic_unregister() checks the node is on the list (common/cyclic.c),
++ * which matters now that on_closed can stop a blink that already
++ * stopped itself.
++ */
 +static void httpd_blink_start(void)
 +{
 +	led_blink_on = 0;
@@ -1943,6 +1997,7 @@ new file mode 100644
 +
 +	for (i = 0; i + 1 < max;) {
 +		u8 tag = m->opts[i];
++		u8 olen = m->opts[i + 1];
 +
 +		if (tag == 0) {			/* pad */
 +			i++;
@@ -1950,9 +2005,19 @@ new file mode 100644
 +		}
 +		if (tag == 255)			/* end */
 +			break;
-+		if (tag == 53)
++		/*
++		 * Option 53 carries exactly one byte.  Both tests matter on a
++		 * malformed packet: a truncated option would read the value
++		 * from past the end of what arrived, and a wrong length means
++		 * this is not the option it claims to be.
++		 */
++		if (tag == 53) {
++			if (olen != 1 || i + 2 >= max)
++				return 0;
++
 +			return m->opts[i + 2];
-+		i += 2 + m->opts[i + 1];
++		}
++		i += 2 + olen;
 +	}
 +
 +	return 0;
@@ -2098,14 +2163,22 @@ new file mode 100644
 +/*
 + * ---- JSON ----------------------------------------------------------------
 + *
-+ * The three GET endpoints build their reply in a static buffer each; this
-+ * is the little writer they share.  Overflow is not an error at write time:
-+ * the buffer is simply cut and the fact reported once at the end.
++ * The GET endpoints build their reply in a static buffer each; this is the
++ * little writer they share.  Running out of room is not handled at each
++ * write -- it is only flagged, and jb_done() turns the flag into an error
++ * reply, because half a JSON document is worth less than none.
 + */
++#define JSON_HDR(status)						\
++	"HTTP/1.0 " status "\r\n"					\
++	"Content-Type: application/json; charset=utf-8\r\n"		\
++	"Connection: close\r\n"						\
++	"\r\n"
++
 +struct jbuf {
 +	char	*b;
 +	int	max;
 +	int	n;
++	int	overflow;	/* the buffer filled up; see jb_done() */
 +};
 +
 +static void jb_init(struct jbuf *j, char *b, int max)
@@ -2113,18 +2186,30 @@ new file mode 100644
 +	j->b = b;
 +	j->max = max;
 +	j->n = 0;
++	j->overflow = 0;
 +	b[0] = '\0';
 +}
 +
++/*
++ * U-Boot's vsnprintf() returns what it actually wrote, not what it would
++ * have written if there had been room (lib/vsprintf.c), so the C99 way of
++ * spotting truncation -- return value against space left -- never reports
++ * anything here.  What can be seen is the buffer running full: a write that
++ * ends on the last usable byte had nowhere left to go.  An exact fit counts
++ * as an overflow too, which costs only a reply that was already sitting on
++ * the very edge of its buffer.
++ */
 +static void jb_printf(struct jbuf *j, const char *fmt, ...)
 +{
 +	va_list ap;
 +
-+	if (j->n >= j->max)
++	if (j->overflow)
 +		return;
 +	va_start(ap, fmt);
 +	j->n += vsnprintf(j->b + j->n, j->max - j->n, fmt, ap);
 +	va_end(ap);
++	if (j->n >= j->max - 1)
++		j->overflow = 1;
 +}
 +
 +/* A JSON string: quotes and backslashes escaped, control bytes blanked. */
@@ -2133,8 +2218,10 @@ new file mode 100644
 +	char *b = j->b;
 +	int n = j->n, max = j->max;
 +
++	if (j->overflow)
++		return;
 +	if (max - n < 3) {
-+		j->n = max;
++		j->overflow = 1;
 +		return;
 +	}
 +	b[n++] = '"';
@@ -2143,26 +2230,33 @@ new file mode 100644
 +			b[n++] = '\\';
 +		b[n++] = ((unsigned char)*s < 0x20) ? ' ' : *s;
 +	}
++	/* Stopped on the end of the buffer, not on the end of the string. */
++	if (*s)
++		j->overflow = 1;
 +	b[n++] = '"';
 +	b[n] = '\0';
 +	j->n = n;
 +}
 +
++/*
++ * A cut reply is not a shorter reply, it is invalid JSON: the page's
++ * JSON.parse() throws and it shows nothing at all, with no hint as to why.
++ * So a buffer that filled up is thrown away and replaced by a short,
++ * well-formed 500, which the page already has an error path for.  The
++ * console line is what says which buffer needs to grow.
++ */
 +static int jb_done(struct jbuf *j, const char *what)
 +{
-+	if (j->n >= j->max) {
-+		printf("httpd: %s truncated at %d bytes\n", what, j->n);
-+		j->n = j->max - 1;
++	if (j->overflow) {
++		printf("httpd: %s did not fit in its %d byte buffer\n",
++		       what, j->max);
++		j->n = snprintf(j->b, j->max,
++				JSON_HDR("500 Internal Server Error")
++				"{\"err\":\"reply too large\"}");
 +	}
 +
 +	return j->n;
 +}
-+
-+#define JSON_HDR(status)						\
-+	"HTTP/1.0 " status "\r\n"					\
-+	"Content-Type: application/json; charset=utf-8\r\n"		\
-+	"Connection: close\r\n"						\
-+	"\r\n"
 +
 +/* A volume by name on an attached device, or NULL. */
 +static struct ubi_volume *ubi_vol_find(struct ubi_device *ubi, const char *name)
@@ -3511,8 +3605,8 @@ new file mode 100644
 + *
 + * /bootonce arranges for the next boot to stop here instead.  It is one
 + * shot and undoes itself: httpd_boot_once is cleared and the old bootcmd
-+ * put back the moment the server next starts, so a user who sets it and
-+ * then walks away still gets a normal boot the time after.
++ * put back the next time the httpd command is entered at all, so a user who
++ * sets it and then walks away still gets a normal boot the time after.
 + *
 + * The replacement bootcmd keeps the original after it rather than
 + * replacing it outright:
@@ -3595,6 +3689,17 @@ new file mode 100644
 +static char netset_buf[256];
 +static int netset_len;
 +static int netchange_pending;	/* 1 = static, 2 = dhcp */
++/*
++ * Parsed and held, but not yet acted on.  netchange_pending is raised only
++ * once the answer has been acknowledged, the way /netdhcp already does it.
++ * Raising it while the request was being parsed left it set for an answer
++ * that may never have arrived, and the next exit from net_loop() -- an
++ * acknowledged flash, say -- would be taken for the address change: the
++ * address would move, do_httpd() would loop, httpd_start_server() would
++ * clear flash_pending, and the write the page had already been told was
++ * accepted would be dropped without a word.
++ */
++static int netset_armed;
 +static char netset_ip[20];
 +static char netset_mask[20];
 +static int netset_save;
@@ -3612,7 +3717,13 @@ new file mode 100644
 +		char *e;
 +
 +		v[i] = simple_strtoul(p, &e, 10);
-+		if (e == p || v[i] > 255)
++		/*
++		 * simple_strtoul() wraps silently on overflow, so a long
++		 * enough run of digits comes back as any value at all --
++		 * "4294967296" as 0.  An octet is at most three digits, so
++		 * the length is capped before the value is even looked at.
++		 */
++		if (e == p || e - p > 3 || v[i] > 255)
 +			return 0;
 +		if (i < 3 && *e != '.')
 +			return 0;
@@ -3627,6 +3738,40 @@ new file mode 100644
 +		out->s_addr = htonl(a);
 +
 +	return 1;
++}
++
++/*
++ * A netmask, which ip_ok() cannot judge -- it turns down 255.255.255.0 for
++ * the leading 255 and waves through 10.0.0.1, which is not a mask at all.
++ * What makes a mask is a run of ones followed by a run of zeros, so ~m + 1
++ * is the lowest set bit of m and a mask is exactly the value for which that
++ * bit falls outside ~m.  All zeros and all ones are excluded separately:
++ * neither leaves a subnet the device could be addressed on.
++ */
++static int mask_ok(const char *s)
++{
++	unsigned long v[4];
++	const char *p = s;
++	u32 m;
++	int i;
++
++	for (i = 0; i < 4; i++) {
++		char *e;
++
++		v[i] = simple_strtoul(p, &e, 10);
++		if (e == p || e - p > 3 || v[i] > 255)
++			return 0;
++		if (i < 3 && *e != '.')
++			return 0;
++		if (i == 3 && *e)
++			return 0;
++		p = e + 1;
++	}
++	m = (v[0] << 24) | (v[1] << 16) | (v[2] << 8) | v[3];
++	if (!m || m == 0xffffffff)
++		return 0;
++
++	return ((~m + 1) & ~m) == 0;
 +}
 +
 +static int netset_reply(const char *fmt, ...)
@@ -3651,12 +3796,12 @@ new file mode 100644
 +{
 +	char ip[20], mask[20], sv[8];
 +
-+	netchange_pending = 0;
++	netset_armed = 0;
 +
 +	if (!qs_get(netset_qs, "ip", ip, sizeof(ip)) || !ip_ok(ip, NULL))
 +		return netset_reply("bad ip");
 +	if (qs_get(netset_qs, "mask", mask, sizeof(mask))) {
-+		if (!ip_ok(mask, NULL) && strcmp(mask, "255.255.255.0"))
++		if (!mask_ok(mask))
 +			return netset_reply("bad mask");
 +	} else {
 +		strlcpy(mask, "255.255.255.0", sizeof(mask));
@@ -3665,7 +3810,7 @@ new file mode 100644
 +	strlcpy(netset_ip, ip, sizeof(netset_ip));
 +	strlcpy(netset_mask, mask, sizeof(netset_mask));
 +	netset_save = qs_get(netset_qs, "save", sv, sizeof(sv)) && sv[0] == '1';
-+	netchange_pending = 1;
++	netset_armed = 1;
 +
 +	return netset_reply("ok %s %s %s", netset_ip, netset_mask,
 +			    netset_save ? "saved" : "ram");
@@ -3690,9 +3835,11 @@ new file mode 100644
 +/* Apply what /netset or /netdhcp asked for, once the answer is out. */
 +static void netchange_apply(void)
 +{
-+	char back[20];
++	char back[20], bootfile[256];
++	int bf_stash;
 +	const char *cur;
 +	int mode = netchange_pending;
++	int dhcpd_was_on = dhcpd_on;
 +
 +	netchange_pending = 0;
 +	if (!mode)
@@ -3702,7 +3849,9 @@ new file mode 100644
 +	 * Either way the device is being pointed at a network somebody else
 +	 * runs, and our server would only fight that network's router over
 +	 * the same addresses.  Written to the environment too, so a saved
-+	 * address does not bring it back at the next power-up.
++	 * address does not bring it back at the next power-up -- for /netset
++	 * that rides along with the address if "save" was ticked, for
++	 * /netdhcp it is saved on its own just below.
 +	 */
 +	dhcpd_on = 0;
 +	env_set(ENV_DHCPD, "0");
@@ -3718,24 +3867,63 @@ new file mode 100644
 +		return;
 +	}
 +
++	/*
++	 * Saved here, before anything else is touched, because this is the
++	 * one thing that has to outlive the reboot: not the address the
++	 * router is about to hand out -- that comes from a lease and will be
++	 * asked for again -- but the decision to stop serving DHCP on a
++	 * network that already has a server.
++	 *
++	 * saveenv writes the whole environment, not one variable, so this
++	 * also commits whatever else this boot changed in RAM -- an address
++	 * set through /netset without the save box, say.  Rare enough to
++	 * accept over a rogue DHCP server coming back at the next power
++	 * cycle; skipped entirely when the flag was already off.
++	 */
++	if (dhcpd_was_on && run_command("saveenv", 0))
++		printf("httpd: could not save; the DHCP server comes back at "
++		       "the next reboot\n");
++
 +	cur = env_get("ipaddr");
 +	strlcpy(back, cur ? cur : "", sizeof(back));
++	cur = env_get("bootfile");
++	bf_stash = !cur || strlen(cur) < sizeof(bootfile);
++	if (bf_stash)
++		strlcpy(bootfile, cur ? cur : "", sizeof(bootfile));
 +
-+	/* An empty bootfile keeps net_loop(DHCP) from going on to tftp. */
-+	env_set("bootfile", NULL);
++	/*
++	 * An empty bootfile keeps net_loop(DHCP) from going on to tftp.  A
++	 * name too long to stash is left alone: a tftp timeout is cheaper
++	 * than writing a truncated name back afterwards.
++	 */
++	if (bf_stash)
++		env_set("bootfile", NULL);
 +	printf("httpd: asking the upstream router for an address\n");
 +	if (net_loop(DHCP) < 0) {
 +		printf("httpd: no lease; staying at %s\n", back);
 +		if (back[0])
 +			env_set("ipaddr", back);
-+
-+		return;
++	} else {
++		printf("httpd: now at %pI4 -- look for %pM on the router\n",
++		       &net_ip, net_ethaddr);
 +	}
-+	printf("httpd: now at %pI4 -- look for %pM on the router\n",
-+	       &net_ip, net_ethaddr);
++
++	/*
++	 * Put it back whichever way that went: emptying bootfile is a local
++	 * trick to stop net_loop(DHCP) short of a tftp transfer, not
++	 * something the user asked for, and leaving it empty would break the
++	 * next tftpboot for no visible reason.
++	 */
++	if (bf_stash)
++		env_set("bootfile", bootfile[0] ? bootfile : NULL);
 +}
 +
-+/* Undo /bootonce.  Called once, as early as the server runs. */
++/*
++ * Undo /bootonce.  Called once from do_httpd(), before the loop -- not from
++ * httpd_start_server(), which net_loop(HTTPD) runs on every entry: a user
++ * who arms /bootonce and then changes the address or does a "stay up" flash
++ * would have had it disarmed under them on the way back in.
++ */
 +static void bootonce_disarm(void)
 +{
 +	const char *saved = env_get(ENV_SAVED);
@@ -3795,8 +3983,21 @@ new file mode 100644
 +	hdr[n] = '\0';
 +
 +	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
-+	if (hdr_end < 0)
++	if (hdr_end < 0) {
++		/*
++		 * Only the first HDRBUF_SZ - 1 bytes are ever searched, so
++		 * once that much has arrived with no blank line in it the end
++		 * of the headers is never going to be found.  Saying so beats
++		 * returning "not yet" forever, which left the browser waiting
++		 * on an answer that could not come and the staging area held
++		 * until the stream timed out.
++		 */
++		if (n >= HDRBUF_SZ - 1)
++			httpd_reject("request headers are longer than the %d "
++				     "bytes this server reads", HDRBUF_SZ - 1);
++
 +		return;			/* headers not complete yet */
++	}
 +	hdr_end += 4;
 +
 +	p = strstr(hdr, "Content-Length:");
@@ -3814,7 +4015,8 @@ new file mode 100644
 +	while (*p == ' ' || *p == '\t')
 +		p++;
 +	clen = simple_strtoul(p, NULL, 10);
-+	if (!clen || clen > upload_max()) {
++	/* Headers sit in the same region, so they count against the room. */
++	if (!clen || (u64)hdr_end + (u64)clen > (u64)upload_max()) {
 +		httpd_reject("upload is %lu bytes, at most %lu fit in RAM",
 +			     clen, upload_max());
 +		return;
@@ -4022,7 +4224,22 @@ new file mode 100644
 +	 * ends in a reset that BL2 has to boot from -- which takes a fip
 +	 * volume, or a FIP in this upload, or no reset at all.
 +	 */
-+	if (part_find(FIELD_STOCK) || part_find(FIELD_FORMAT))
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (part_find(FIELD_STOCK))
++		return 0;
++#else
++	/*
++	 * Without the whole-flash restore compiled in, httpd_flash() ignores
++	 * a "stock" field entirely.  Letting one through here would skip
++	 * every check below it and then quietly do nothing at all, which
++	 * reads to the user as a successful restore.
++	 */
++	if (part_find(FIELD_STOCK)) {
++		httpd_reject("this build has no whole-flash restore");
++		return -1;
++	}
++#endif
++	if (part_find(FIELD_FORMAT))
 +		return 0;
 +
 +	needs_ubi = part_find(FIELD_FIP) || part_find(FIELD_FIT) ||
@@ -4930,6 +5147,8 @@ new file mode 100644
 +
 +static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 +{
++	ulong max;
++
 +#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
 +	if (tcp->priv == CONN_STOCK)
 +		return st_rx(rx_offs, buf, len);
@@ -4949,6 +5168,39 @@ new file mode 100644
 +			return 0;
 +		up_owner = tcp;
 +	} else if (up_owner != tcp) {
++		/*
++		 * Somebody else's bytes.  0 is "not accepted, send it again",
++		 * which is the truth: swallowing them instead told the peer
++		 * the request had been read when it had gone nowhere, so a
++		 * /ping issued while an upload runs would never be answered
++		 * and the page would call the board dead mid-transfer.
++		 */
++		return 0;
++	}
++
++	/*
++	 * Already refused.  The 400 is written and waiting; the rest of the
++	 * body is taken off the wire and dropped so the browser can finish
++	 * sending and get to reading the answer.
++	 */
++	if (up_failed)
++		return len;
++
++	/*
++	 * The staging area runs from up_base to up_base + upload_max(), and
++	 * nothing above that is ours -- U-Boot's own code, heap and stack
++	 * start there.  httpd_parse() checks Content-Length against the same
++	 * ceiling, but that is a number the client supplied: it can lie, and
++	 * it does not exist at all until the headers are in, while these
++	 * bytes are being copied from the first segment onwards.  Computed in
++	 * 64 bits because rx_offs + len is exactly where a 32-bit sum would
++	 * wrap and land back inside the region.
++	 */
++	max = upload_max();
++	if ((u64)rx_offs + (u64)len > (u64)max) {
++		httpd_reject("upload runs past the %lu bytes of RAM there is "
++			     "room for", max);
++
 +		return len;
 +	}
 +
@@ -5104,9 +5356,20 @@ new file mode 100644
 +				info_len = httpd_info();
 +			else if (cls == CONN_CHECK)
 +				check_len = httpd_check();
-+			else if (cls == CONN_SCAN)
++			else if (cls == CONN_SCAN) {
++				/*
++				 * Same as CONN_DUMP below: a download nobody
++				 * is pulling on any more must not make /scan
++				 * answer 503 for the rest of the session.
++				 */
++				if (dump_stale()) {
++					printf("httpd: the download in "
++					       "flight went quiet, "
++					       "dropping it\n");
++					dump_busy = 0;
++				}
 +				scan_len = httpd_scan();
-+			else if (cls == CONN_LOG)
++			} else if (cls == CONN_LOG)
 +				log_len = httpd_log();
 +			else if (cls == CONN_PING)
 +				ping_len = httpd_ping();
@@ -5133,8 +5396,7 @@ new file mode 100644
 +					tcp->priv = CONN_DUMPBUSY;
 +				else
 +					httpd_dump();
-+			}
-+			else if (cls == CONN_GET)
++			} else if (cls == CONN_GET)
 +				/*
 +				 * A page load means whatever download was in
 +				 * flight is gone with the old document; without
@@ -5332,8 +5594,12 @@ new file mode 100644
 +	}
 +
 +	if (tcp->priv == CONN_NETSET) {
-+		if (netchange_pending)
++		/* Only now is the answer really out; see netset_armed. */
++		if (netset_armed) {
++			netset_armed = 0;
++			netchange_pending = 1;
 +			net_set_state(NETLOOP_SUCCESS);
++		}
 +
 +		return;
 +	}
@@ -5360,6 +5626,102 @@ new file mode 100644
 +	}
 +}
 +
++/*
++ * The stack destroys a stream on RST, on running out of retransmit attempts
++ * and after rx_inactiv_timeout (30 s) without a packet, and calls this from
++ * tcp_stream_destroy() just before wiping it.  Nothing else in this file
++ * hears about any of that.
++ *
++ * It matters because the upload state is claimed by one stream and released
++ * by the response to it: a browser that dies mid-upload -- tab closed, cable
++ * out, laptop asleep -- left up_active set and up_owner pointing at a stream
++ * that no longer exists, and from then on every attempt was turned away with
++ * "one upload at a time" until the board was power-cycled.  Which is the one
++ * thing a recovery tool must not ask for.
++ */
++static void httpd_on_closed(struct tcp_stream *tcp)
++{
++#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
++	if (tcp->priv == CONN_STOCK) {
++		/*
++		 * Finished, but the 200 was never acknowledged -- the browser
++		 * crashed or the cable came out right after the last byte.
++		 * The reboot is normally queued from on_snd_una_update(), so
++		 * without this the board would sit here forever, up_active
++		 * set, refusing everything, with a bootloader that has already
++		 * been overwritten underneath it.  Nothing left to serve; go.
++		 */
++		if (st_ok) {
++			printf("httpd: /stock done but the answer was never "
++			       "acknowledged; rebooting anyway\n");
++			reboot_pending = 1;
++			net_set_state(NETLOOP_SUCCESS);
++
++			return;
++		}
++		/* on_snd_una_update() already cleaned up after a refusal the
++		 * browser did receive; not ours to undo. */
++		if (!up_active)
++			return;
++
++		if (st_started)
++			printf("httpd: /stock connection lost after %u bytes "
++			       "were written -- the flash is inconsistent and "
++			       "will not boot until a restore is repeated to "
++			       "the end\n", st_done);
++
++		httpd_blink_stop();
++		st_hdr_end = st_body = st_done = st_crc = 0;
++		st_nskip = st_started = st_failed = st_ok = 0;
++		st_resp_len = 0;
++		up_active = 0;
++		up_owner = NULL;
++		printf("httpd: upload connection lost, ready for another "
++		       "attempt\n");
++
++		return;
++	}
++#endif
++
++	if (tcp != up_owner)
++		return;
++
++	/*
++	 * A finished upload closes through here too -- the 200 is delivered,
++	 * on_snd_una_update() queues the work and calls tcp_stream_close().
++	 * Undoing the state then would throw away the very thing the page has
++	 * already been told is under way, so those two are the signal that
++	 * this close is the ordinary end of a job rather than a lost one.
++	 */
++	if (flash_pending || tryboot_pending)
++		return;
++
++	/*
++	 * Released first and unconditionally: up_owner is what httpd_rx()
++	 * matches every segment against, so a dead stream left in it would
++	 * make the server answer 0 -- "send it again" -- to every byte of
++	 * every connection after this one.
++	 */
++	up_owner = NULL;
++
++	/*
++	 * A connection that died before it was even classified held nothing
++	 * but that claim.  Most of those are a browser probing the port;
++	 * there is no upload to report as lost.
++	 */
++	if (!up_active)
++		return;
++
++	up_active = 0;
++	up_parsed = 0;
++	up_failed = 0;
++	up_ready = 0;
++	up_body = 0;
++	up_total = 0;
++	up_bound_len = 0;
++	printf("httpd: upload connection lost, ready for another attempt\n");
++}
++
 +static int httpd_on_create(struct tcp_stream *tcp)
 +{
 +	if (tcp->lport != HTTPD_PORT)
@@ -5368,6 +5730,7 @@ new file mode 100644
 +	tcp->priv = CONN_UNKNOWN;
 +	tcp->rx = httpd_rx;
 +	tcp->tx = httpd_tx;
++	tcp->on_closed = httpd_on_closed;
 +	tcp->on_rcv_nxt_update = httpd_on_rcv_nxt_update;
 +	tcp->on_snd_una_update = httpd_on_snd_una_update;
 +
@@ -5390,7 +5753,13 @@ new file mode 100644
 +	reboot_pending = 0;
 +	boot_pending = 0;
 +	tryboot_pending = 0;
-+	bootonce_disarm();
++	/*
++	 * Both cleared here rather than only in netchange_apply(): a /netset
++	 * whose answer was never acknowledged must not still be armed when
++	 * the server comes back up.
++	 */
++	netchange_pending = 0;
++	netset_armed = 0;
 +	dhcpd_on = env_get_ulong(ENV_DHCPD, 10, 1) ? 1 : 0;
 +	dump_busy = 0;
 +	dump_len = 0;
@@ -5466,7 +5835,13 @@ new file mode 100644
 + */
 +static int flash_vol(ulong addr, const char *name, u32 size, int create)
 +{
-+	char cmd[160];
++	/*
++	 * The create command names the volume twice, and a UBI name runs to
++	 * UBIVOL_NAME_MAX - 1 characters: at 160 the command was silently cut
++	 * short by snprintf() and "ubi create" would have been handed a
++	 * half-written size.
++	 */
++	char cmd[192];
 +
 +	if (create) {
 +		snprintf(cmd, sizeof(cmd),
@@ -5674,7 +6049,17 @@ new file mode 100644
 +		if (ubifile) {
 +			char name[UBIVOL_NAME_MAX];
 +
-+			part_text(FIELD_UBIVOL_NAME, name, sizeof(name));
++			/*
++			 * httpd_validate() already refused an upload without
++			 * it, but on NULL the buffer is left uninitialised --
++			 * which would be a stack string going into a
++			 * run_command().
++			 */
++			if (!part_text(FIELD_UBIVOL_NAME, name, sizeof(name))) {
++				printf("httpd: the UBI volume name is missing "
++				       "or too long\n");
++				goto out;
++			}
 +			if (flash_vol(part_align(ubifile), name,
 +				      ubifile->size, 1))
 +				goto out;
@@ -5724,12 +6109,22 @@ new file mode 100644
 +	int err;
 +
 +	/*
++	 * Once per command, not once per net_loop(): the loop below re-enters
++	 * net_loop() after an address change or a "stay up" flash, and
++	 * disarming from httpd_start_server() would have pulled the rug out
++	 * from under a /bootonce the user had just set.
++	 */
++	bootonce_disarm();
++
++	/*
 +	 * Looping here rather than letting the caller re-enter keeps "stay up"
 +	 * behaving the same on both ways in: boot_httpd_forever would come
 +	 * back on its own, but check_buttons would fall through to the boot
 +	 * command instead.
 +	 */
 +	for (;;) {
++		int staying = 0;
++
 +		err = net_loop(HTTPD);
 +
 +		httpd_led_stop();
@@ -5744,22 +6139,6 @@ new file mode 100644
 +			run_command("reset", 0);
 +
 +			return CMD_RET_SUCCESS;
-+		}
-+
-+		/*
-+		 * Not a return: what follows a returning httpd depends on how
-+		 * recovery was entered.  boot_httpd_forever loops and would
-+		 * come back, but check_buttons falls through to the boot
-+		 * command, bootonce runs the saved bootcmd, and the bootmenu
-+		 * entry lands on an askenv prompt that nobody without a serial
-+		 * cable can answer.  Changing an address must not depend on any
-+		 * of that; net_loop() re-reads ipaddr on the way back in.
-+		 */
-+		if (netchange_pending) {
-+			netchange_apply();
-+			httpd_led_start();
-+
-+			continue;
 +		}
 +
 +		if (boot_pending) {
@@ -5779,7 +6158,13 @@ new file mode 100644
 +			tryboot_pending = 0;
 +			if (!fit)
 +				return CMD_RET_SUCCESS;
-+			snprintf(cmd, sizeof(cmd), "bootm 0x%lx", fit->addr);
++			/*
++			 * The same alignment every flash path gets: libfdt
++			 * wants the FIT on an 8-byte boundary and a multipart
++			 * part lands wherever the form data put it.
++			 */
++			snprintf(cmd, sizeof(cmd), "bootm 0x%lx",
++				 part_align(fit));
 +			printf("httpd: booting the upload from memory, "
 +			       "flash untouched: %s\n", cmd);
 +			run_command(cmd, 0);
@@ -5789,28 +6174,54 @@ new file mode 100644
 +			return CMD_RET_SUCCESS;
 +		}
 +
-+		if (!flash_pending)
-+			return CMD_RET_SUCCESS;
++		if (flash_pending) {
++			flash_pending = 0;
++			if (httpd_flash()) {
++				/*
++				 * Deliberately no reset, so the user can retry
++				 * without touching the power:
++				 * boot_httpd_forever re-enters httpd, the
++				 * bootmenu entry returns to the menu.  The
++				 * page has already reported
++				 * success by now (the 200 went out before the
++				 * write), so this failure shows only on the
++				 * console -- which is why httpd_validate()
++				 * refuses in advance everything that can be
++				 * known to fail.
++				 */
++				return CMD_RET_FAILURE;
++			}
 +
-+		flash_pending = 0;
-+		if (httpd_flash()) {
-+			/*
-+			 * Deliberately no reset, so the user can retry
-+			 * without touching the power: boot_httpd_forever
-+			 * re-enters httpd, the bootmenu entry returns to the
-+			 * menu.  The page has already reported success by
-+			 * now (the 200 went out before the write), so this
-+			 * failure shows only on the console -- which is why
-+			 * httpd_validate() refuses in advance everything
-+			 * that can be known to fail.
-+			 */
-+			return CMD_RET_FAILURE;
++			if (!flash_stay)
++				break;
++
++			printf("httpd: done, staying up -- reload the page "
++			       "for more\n");
++			staying = 1;
 +		}
 +
-+		if (!flash_stay)
-+			break;
++		/*
++		 * Last of the deferred actions, and that ordering is the whole
++		 * point: an address change loops back into net_loop(),
++		 * which calls httpd_start_server(), and that clears
++		 * flash_pending.  Taken first it would swallow a write the page
++		 * had already been told was accepted.  Nothing is lost the
++		 * other way round -- the change is still pending once the flash
++		 * is done with.
++		 *
++		 * Not a return either: what follows a returning httpd depends
++		 * on how recovery was entered.  boot_httpd_forever loops and
++		 * would come back, but check_buttons falls through to the boot
++		 * command, bootonce runs the saved bootcmd, and the bootmenu
++		 * entry lands on an askenv prompt that nobody without a serial
++		 * cable can answer.  Changing an address must not depend on any
++		 * of that; net_loop() re-reads ipaddr on the way back in.
++		 */
++		if (netchange_pending)
++			netchange_apply();
++		else if (!staying)
++			return CMD_RET_SUCCESS;
 +
-+		printf("httpd: done, staying up -- reload the page for more\n");
 +		/* Stopped above, and net_loop() does not bring it back; the
 +		 * page tells the user to wait for the panel to go normal. */
 +		httpd_led_start();

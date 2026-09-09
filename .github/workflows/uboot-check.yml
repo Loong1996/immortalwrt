@@ -304,11 +304,9 @@ jobs:
           echo "u-boot.bin   $(stat -c%s u-boot.bin) B"
           aarch64-linux-gnu-size net/httpd.o || true
 
-      # httpd.c 是这个项目自己写的，按理不该有告警。但 -Werror 会连带上游头文件
-      # 里的告警一起炸，而且这一步还没在真 runner 上验证过，所以先只报不拦；
-      # 稳定几轮之后再把 continue-on-error 去掉。
+      # httpd.c 是这个项目自己写的，不该有告警。这一步在两块板上都真过了几轮
+      # 之后才拦：从这里起 httpd.o 出一条告警就红。
       - name: Warnings(单独用 -Werror 重编 httpd.o)
-        continue-on-error: true
         run: |
           set -eu
           cd "$UB"

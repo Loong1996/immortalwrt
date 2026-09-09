@@ -177,6 +177,14 @@ if(S.dev=='noubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导
 {n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'}]);
 if(S.dev=='nofip')c.forEach(function(i){if(i.n=='fip 卷'){i.s=2;i.v='不存在。当前 U-Boot 仅存于内存，请在「引导升级」页上传 U-Boot 文件'}});
 return c}
+function ip4(s){var a=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s||''),i;
+ if(!a)return 0;
+ for(i=1;i<5;i++)if(+a[i]>255)return 0;
+ return 1}
+/* 掩码得是连成一片的前导 1：取反加一还等于取反本身的补，10.0.0.1 这种就过不去 */
+function maskok(s){var p=s.split('.'),n=0,m,i;
+ for(i=0;i<4;i++)n=n*256+(+p[i]);
+ m=~n>>>0;return ((m+1)&m)===0}
 function body(u){
  if(u=='/ping')return JSON.stringify({up:Date.now()-T0,ovf:0});
  if(u=='/dumpinfo')return JSON.stringify(
@@ -202,10 +210,17 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
- if(u.indexOf('/netdhcpd')==0){var d=/on=([01])/.exec(u);
-  if(d)D.info.net.dhcpd=+d[1];return 'ok '+(d?d[1]:'?')}
- if(u.indexOf('/netset')==0){var g=/ip=([0-9.]+)/.exec(u);
-  return g?'ok '+g[1]+' 255.255.255.0 ram':'bad ip'}
+ if(u.indexOf('/netdhcpd')==0){var d=/[?&]on=([^&]*)/.exec(u);
+  if(!d||(d[1]!='0'&&d[1]!='1'))return 'bad on';
+  D.info.net.dhcpd=+d[1];return 'ok '+d[1]}
+ if(u.indexOf('/netset')==0){
+  var g=/[?&]ip=([^&]*)/.exec(u),k=/[?&]mask=([^&]*)/.exec(u),
+      sv=/[?&]save=1(&|$)/.test(u),
+      ip=g?decodeURIComponent(g[1]):'',mk=k?decodeURIComponent(k[1]):'';
+  if(!ip4(ip))return 'bad ip';
+  if(!ip4(mk)||!maskok(mk))return 'bad mask';
+  D.info.net.ip=ip;D.info.net.mask=mk;
+  return 'ok '+ip+' '+mk+(sv?' saved':' ram')}
  if(u=='/netdhcp')return 'ok dhcp';
  if(u=='/bootonce')return S.dev=='noubi'?'armed, but saving failed':'armed and saved';
  if(u=='/boot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'ok'}
