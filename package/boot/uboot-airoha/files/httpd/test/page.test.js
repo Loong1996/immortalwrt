@@ -51,16 +51,8 @@ async function boot() {
 const $ = (w, s) => w.document.querySelector(s);
 const txt = (w, s) => ($(w, s) || {}).textContent || '';
 const on = (w, s) => $(w, s).hasAttribute('data-on');
+const navs = (w) => Array.from(w.document.querySelectorAll('.nav'));
 function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(); }
-
-function stayUpload(w) {
-  $(w, '.nav[data-p=p3]').click();
-  const f = $(w, '#p3 input[name=ubifile]');
-  Object.defineProperty(f, 'files', { value: [new w.File([new Uint8Array(1024)], 'ri.bin')] });
-  $(w, '#p3 input[name=ubivol]').value = 'ri';
-  $(w, '#p3 input[name=stay]').checked = true;
-  w.send();
-}
 
 (async () => {
   console.log('\n--- 备份下载 (p10) ---');
@@ -269,33 +261,65 @@ function stayUpload(w) {
        txt(w, '#offb').replace(/\s/g, '').length);
   }
 
-  console.log('\n--- 「写入后不重启」靠心跳回报 ---');
+  console.log('\n--- 写入过程与结果框 ---');
   {
     const w = await boot();
-    stayUpload(w);
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    w.send();
     ok('上传期间不发心跳', w.HBOFF === 1);
+    /* 写入期间设备还在服务，侧栏里改地址、恢复默认、重启都会动到写了一半
+       的闪存。灰掉不够，键盘 Tab 过去按回车照样能走 —— 得真禁掉。 */
+    ok('写入期间侧栏按钮真被禁用',
+       navs(w).length > 0 && navs(w).every(b => b.disabled));
+
     await sleep(3000);
-    ok('上传完立刻说设备在写', on(w, '#off') && /设备正在写入/.test(txt(w, '#offt')), txt(w, '#offt'));
-    ok('并且不让人点重连', $(w, '#offr').hidden);
-    ok('写入期间提醒别断电', /不要断电|请勿断电/.test(txt(w, '#offb')));
-    await sleep(9000);                       // 桩在 200 之后哑 7 秒
-    ok('设备回来覆盖层消失', !on(w, '#off'), txt(w, '#offt'));
-    ok('进度条改成写完了', /写入完成/.test(txt(w, '#p3 .pwhat')), txt(w, '#p3 .pwhat'));
-    ok('进度条转绿', $(w, '#p3 .prog').className === 'prog ok');
+    ok('报出正在写哪一步', /写入 固件…/.test(txt(w, '#p1 .pwhat')),
+       txt(w, '#p1 .pwhat'));
+    /* 写那一步在环境变量的配方里，设备报不出中间态 —— 只能给个估计 */
+    ok('写入那段只有估计', /预计/.test(txt(w, '#p1 .pct')), txt(w, '#p1 .pct'));
+
+    await sleep(3000);
+    ok('走到回读校验', /回读校验/.test(txt(w, '#p1 .pwhat')), txt(w, '#p1 .pwhat'));
+    ok('校验那段有真百分比', /%/.test(txt(w, '#p1 .pct')), txt(w, '#p1 .pct'));
+
+    await sleep(3600);
+    ok('弹出结果框', on(w, '#rmask'));
+    ok('列出写了什么，并带 crc32',
+       /固件/.test(txt(w, '#rbody')) && /crc32/.test(txt(w, '#rbody')),
+       txt(w, '#rbody').slice(0, 100));
+    ok('报了回读校验通过', /通过/.test(txt(w, '#rbody')));
+    ok('两条路都给', /留在恢复页/.test(txt(w, '#rmask .btns')) &&
+       /立即重启/.test(txt(w, '#rmask .btns')), txt(w, '#rmask .btns'));
+    ok('不再自己跳完成页', !on(w, '#p7'));
+    ok('侧栏解锁了', !$(w, '#app').hasAttribute('data-busy'));
+    ok('侧栏按钮跟着解禁', navs(w).every(b => !b.disabled));
+    ok('心跳回来了', w.HB === 1, String(w.HB));
+    ok('实测速度记下来给下次估算', +w.localStorage.getItem('xgwrspd') > 0,
+       w.localStorage.getItem('xgwrspd'));
+
+    w.rhide();
+    ok('留在恢复页就把框关掉', !on(w, '#rmask'));
+    ok('进度条停在写入完成', /写入完成/.test(txt(w, '#p1 .pwhat')) &&
+       $(w, '#p1 .prog').className === 'prog ok', txt(w, '#p1 .pwhat'));
   }
 
-  console.log('\n--- 会重启的那种提交不弹断开框 ---');
+  console.log('\n--- 写坏了不弹框 ---');
   {
     const w = await boot();
-    $(w, '.nav[data-p=p1]').click();
-    const f = $(w, '#p1 input[name=firmware]');
-    Object.defineProperty(f, 'files', { value: [new w.File([new Uint8Array(2048)], 'x.itb')] });
+    setsel(w, 'post', 'fail500');
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
     w.send();
-    await sleep(3000);
-    ok('走到上传完成页', on(w, '#p7'));
-    await sleep(5000);
-    ok('上传完成页上不弹断开框', !on(w, '#off'));
-    ok('心跳已经停了', w.HB === 0);
+    await sleep(6000);
+    ok('没有结果框', !on(w, '#rmask'));
+    ok('进度条转红', $(w, '#p1 .prog').className === 'prog bad',
+       $(w, '#p1 .prog').className);
+    ok('设备那句话带出来', /写入失败/.test(txt(w, '#p1 .pwhat')),
+       txt(w, '#p1 .pwhat'));
+    ok('按钮放回来，能重传', !$(w, '#p1 button[type=submit]').disabled);
   }
 
   console.log('\n--- 备份完之后能核对 ---');
