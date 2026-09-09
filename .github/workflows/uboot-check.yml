@@ -239,7 +239,17 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           set -eu
-          sudo apt-get -qq update
+          # runner 预装的第三方源（Chrome、Microsoft）跟这里要装的东西没有半点
+          # 关系，但只要它们的索引坏掉，apt-get update 就整个非零退出，在 set -e
+          # 下把这一步打死 —— 补丁都还没解包，两块板的交叉编译直接红。
+          # 2026-09-09 就是这么挂的：dl.google.com 的 Packages.gz 校验不上，重跑
+          # 一次仍旧。所以先把它们挪走。
+          sudo rm -f /etc/apt/sources.list.d/*google* \
+                     /etc/apt/sources.list.d/*microsoft* || true
+          # 而且不让 update 单独决定成败：真缺包的话下一条会报出确切的包名，那
+          # 才是该红的地方。
+          sudo apt-get -qq update \
+            || echo "::warning::apt-get update 有源没取到，继续尝试安装"
           sudo apt-get -yqq install --no-install-recommends \
             gcc-aarch64-linux-gnu build-essential bison flex bc \
             libssl-dev libgnutls28-dev uuid-dev zlib1g-dev \
