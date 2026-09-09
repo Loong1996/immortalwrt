@@ -34,14 +34,17 @@ MACROS = {
     "PORTAL_HOST": "loong1996.github.io/ImmortalWrt-Airoha",
 }
 
+# s = reserved_pebs * leb_size；u = used_bytes，dynamic 卷恒等于 s，
+# 只有 static 卷（这里是 fip）的 u 才是真实内容长度。
 VOLS = [
-    {"i": 0, "n": "fip", "t": "static", "s": 1015808, "u": 325632},
-    {"i": 1, "n": "fit", "t": "dynamic", "s": 13000704, "u": 12984320},
+    {"i": 0, "n": "fip", "t": "static", "s": 1142784, "u": 325632},
+    {"i": 1, "n": "fit", "t": "dynamic", "s": 13078528, "u": 13078528},
     {"i": 2, "n": "ubootenv", "t": "dynamic", "s": 126976, "u": 126976},
     {"i": 3, "n": "ubootenv2", "t": "dynamic", "s": 126976, "u": 126976},
-    {"i": 4, "n": "bosa", "t": "dynamic", "s": 380928, "u": 262144},
-    {"i": 5, "n": "ri", "t": "dynamic", "s": 380928, "u": 262144},
-    {"i": 6, "n": "rootfs_data", "t": "dynamic", "s": 242862080, "u": 0},
+    {"i": 4, "n": "bosa", "t": "dynamic", "s": 380928, "u": 380928},
+    {"i": 5, "n": "ri", "t": "dynamic", "s": 380928, "u": 380928},
+    {"i": 6, "n": "rootfs_data", "t": "dynamic", "s": 239349760,
+     "u": 239349760},
 ]
 
 INFO = {
@@ -67,7 +70,8 @@ INFO = {
     "stock": 1,
     "log": 1,
     "fv": [{"n": "ri", "s": 262144}, {"n": "bosa", "s": 262144}],
-    "ubi": {"leb": 126976, "pebs": 2046, "fip": 1, "vols": VOLS},
+    "ubi": {"leb": 126976, "pebs": 2046, "avail": 0, "fip": 1,
+            "vols": VOLS},
 }
 
 CHECK = [
@@ -77,8 +81,8 @@ CHECK = [
     ["envver", 0, "5，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
-    ["UBI", 0, "7 个卷，坏块 0 个，空闲 12 个逻辑擦除块", "UBI"],
-    ["可写空间", 0, "刷机可用 245 MiB（2028 个逻辑擦除块），其中现在空闲 1 MiB，另 244 MiB 是写入固件时会先腾出的 fit 与 rootfs_data", "UBI"],
+    ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
+    ["可写空间", 0, "刷机可用 240 MiB（1988 个逻辑擦除块）。当前空闲 0 MiB；写入固件时会先删掉 fit 与 rootfs_data，再腾出 240 MiB", "UBI"],
     ["磨损", 0, "擦写次数最大 47、平均 12", "UBI"],
     ["fip 卷", 0, "325632 字节，校验通过", "UBI"],
     ["fit 卷", 0, "FIT 镜像，12984320 字节", "UBI"],
