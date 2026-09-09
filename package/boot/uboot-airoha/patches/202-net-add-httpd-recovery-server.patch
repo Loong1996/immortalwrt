@@ -150,7 +150,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,6231 @@
+@@ -0,0 +1,6811 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -287,6 +287,7 @@ new file mode 100644
 +#define CONN_NETSET		((void *)18)
 +#define CONN_NETDHCP		((void *)19)
 +#define CONN_DHCPD		((void *)20)
++#define CONN_WR			((void *)21)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -345,7 +346,6 @@ new file mode 100644
 +#define FIELD_FVOL_PREFIX	"fvol_"
 +#define FIELD_UBIVOL_NAME	"ubivol"
 +#define FIELD_UBIVOL_FILE	"ubifile"
-+#define FIELD_STAY		"stay"
 +#define FIELD_TRYBOOT		"tryboot"
 +
 +#define MAX_PARTS		12
@@ -458,6 +458,7 @@ new file mode 100644
 +	".live{display:flex;align-items:center;color:var(--c2);font-size:.92em;white-space:nowrap}\n"
 +	".alert .mi.bad{background:var(--red)}\n"
 +	".alert .mi.info{background:var(--blue)}\n"
++	".alert .mi.ok{background:var(--grn)}\n"
 +	".alert .hint{color:var(--c2);font-size:.9em;margin-top:.7rem}\n"
 +	".nav{border:0;background:transparent;color:var(--fg);font:inherit;width:100%;text-align:left;dis"
 +		"play:flex;align-items:center;gap:.55rem;padding:.35rem .5rem;border-radius:6px;cursor:pointer}\n"
@@ -673,7 +674,7 @@ new file mode 100644
 +	"<div class=\"fr wide\"><span class=fl>只试运行，不写入<small>固件载入内存后直接引导，不写入闪存</small></span><span"
 +		" class=\"fc end\"><input type=checkbox class=sw name=tryboot value=1></span></div>\n"
 +	"</div>\n"
-+	"<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改。</p>\n"
++	"<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改；写完回读校验一遍，再由你决定是否重启。</p>\n"
 +	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -719,7 +720,7 @@ new file mode 100644
 +	"</div>\n"
 +	"<p class=note>镜像须来自本机备份，可在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。长度上限为 flash 容量"
 +		" <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于"
-+		"不一致状态，须重传至成功后方可重启</b>。写入期间指示灯保持<b>流水</b>而非其他页面的齐闪：本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>\n"
++		"不一致状态，须重传至成功后方可重启</b>。写入期间指示灯<b>流水</b>，与其他页面一致；本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>\n"
 +	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb pri\">刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
 +		" class=pwhat></span><span class=pct></span></div></div>\n"
@@ -737,10 +738,7 @@ new file mode 100644
 +	"<div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile"
 +		" data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 +	"</div>\n"
-+	"<div class=box style=\"margin-top:1rem\">\n"
-+	"<div class=\"fr wide\"><span class=fl>写入后不重启<small>连续写入多个卷时使用；完成后刷新页面继续</small></span><span"
-+		" class=\"fc end\"><input type=checkbox class=sw name=stay value=1></span></div>\n"
-+	"</div>\n"
++	"<p class=note>写完由你决定是否重启，所以可以连着写好几个卷。</p>\n"
 +	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 +		" pri\">上传并刷写</button></div>\n"
 +	"<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span"
@@ -936,12 +934,12 @@ new file mode 100644
 +	"</table></div>\n"
 +	"</div>\n"
 +	"<div class=pane id=p7>\n"
-+	"<h1>上传完成</h1><p class=sub>设备正在写入，完成后自动重启。本页面可以关闭。</p>\n"
++	"<h1>已交给设备启动</h1><p class=sub>设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。</p>\n"
 +	"<div class=fin><span class=ic><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5L20"
-+		" 7\"/></svg></span><div><b>通过设备指示灯判断进度</b>\n"
-+	"<table class=lt><tr><td>齐闪</td><td>正在写入，<b>请勿断电</b></td></tr><tr><td>熄灭</td><td>写入完成，自动重启；约 1–2"
-+		" 分钟后可重新连接</td></tr></table></div></div>\n"
-+	"<p class=bh>本次写入步骤</p>\n"
++		" 7\"/></svg></span><div><b>起不来怎么办</b>\n"
++	"<table class=lt><tr><td>断电</td><td>再上电即回到原有系统，闪存一个字节都没写</td></tr><tr><td>等待</td><td>引导失败时设备自行回到本"
++		"页面，届时自动刷新</td></tr></table></div></div>\n"
++	"<p class=bh>本次动作</p>\n"
 +	"<div class=box style=\"padding:.7rem 1rem\"><ol class=steps id=steps></ol></div>\n"
 +	"</div>\n"
 +#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
@@ -970,6 +968,13 @@ new file mode 100644
 +	"<div class=btns><button type=button class=pb onclick=hide()>取消</button><button type=button"
 +		" class=\"pb red\" id=yes onclick=go()>仍要写入</button></div>\n"
 +	"</div></div>\n"
++	"<div class=mask id=rmask><div class=alert>\n"
++	"<div class=hd><span class=\"mi ok\"><svg viewBox=\"0 0 24 24\"><path d=\"M5 12l5 5L20"
++		" 7\"/></svg></span><h2 id=rtitle>写入完毕</h2></div>\n"
++	"<div id=rbody></div>\n"
++	"<div class=btns><button type=button class=pb onclick=rhide()>留在恢复页</button><button type=button"
++		" class=\"pb red\" onclick=rboot()>立即重启</button></div>\n"
++	"</div></div>\n"
 +	"</div>\n"
 +	"<script>\n"
 +	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
@@ -979,8 +984,13 @@ new file mode 100644
 +	"var DLT=0,DLN=0,DLRATE=0;\n"
 +	"var LOGN=0,LOGT=null,LOGGEN=0;\n"
 +	"var DHCPD_BUSY=0;\n"
-+	"/* 擦除加写入，SPI-NAND 上大致这个量级；只用于估算等待时间 */\n"
++	"/*\n"
++	"* 擦除加写入，SPI-NAND 上大致这个量级，只用于估算等待时间。设备写完会报\n"
++	"* 一次实测速度，存下来给下次用 —— 同一块板子第二次起就不是拍脑袋了。\n"
++	"*/\n"
 +	"var WRSPD=1400000;\n"
++	"try{var wr0=+localStorage.getItem('xgwrspd');if(wr0>0)WRSPD=wr0}catch(e){}\n"
++	"var WR=null,WRT=null,WRP=null;\n"
 +	"function $(s,r){return (r||document).querySelector(s)}\n"
 +	"function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}\n"
 +	"function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d"
@@ -1083,10 +1093,10 @@ new file mode 100644
 +	"function silent(){SILENT=1;MISS=0}\n"
 +	"/* 设备已经移走了，通用的「断开」框只会盖掉那条指引 */\n"
 +	"function offline(why){if(GONE)return;var i,t,b,r=0;\n"
-+	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯齐闪。<b>请勿断电</b>，写入完成后自动恢复。'}\n"
++	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯流水表示设备还在工作。<b>请勿断电</b>，也不要拔网线。'}\n"
 +	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='约 1–2 分钟，恢复后自动刷新。'}\n"
 +	"else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动；引导失败将回到本页面。'}\n"
-+	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯齐闪表示正在写入，请等待完成。';r=1}\n"
++	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。';r=1}\n"
 +	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
 +	"$('#offb').innerHTML='<div class=w style=\"color:inherit\">'+b+'</div>'+\n"
 +	"(r?'<div class=hint>每 2 秒自动重试。</div>':'');\n"
@@ -1569,19 +1579,9 @@ new file mode 100644
 +	"u=URL.createObjectURL(b),a=document.createElement('a');\n"
 +	"a.href=u;a.download=name;document.body.appendChild(a);a.click();\n"
 +	"document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},1000)}catch(e){}}\n"
-+	"function plan(p,rows){var a=[],has=function(k){return rows.some(function(r){return"
-+		" r.k==k})},fmt=$('[name=format]',p),stay=$('[name=stay]',p);\n"
-+	"if(p.id=='p4'){var o=hex($('[name=stockoff]',p).value);a.push('自 flash 偏移"
-+		" 0x'+(o<0?'?':o.toString(16))+' 起逐块擦除并写入镜像，随上传同步完成');a.push('自动重启');return a}\n"
-+	"if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked)\n"
-+	"return ['将固件载入内存并直接引导',\n"
-+	"'<b>不写入闪存</b>；引导失败断电即恢复原系统'];\n"
-+	"if(p.id=='p3'){a.push('挂载 UBI');rows.forEach(function(r){if(r.k=='ubifile')a.push('创建（如不存在）并写入"
-+		" '+esc($('[name=ubivol]',p).value.trim())+' 卷');else a.push('写入 '+esc(r.l)+'"
-+		" 卷')});a.push(stay&&stay.checked?'<b>不重启</b>，恢复 HTTP 服务':'自动重启');return a}\n"
-+	"if(has('bl2'))a.push('写入 BL2 到 bl2 分区');if(fmt&&fmt.checked)a.push('重建 UBI：擦除 ubi"
-+		" 分区，<b>耗时显著长于其他步骤</b>');if(has('fip'))a.push('写入 U-Boot 到 fip"
-+		" 卷');if(has('firmware'))a.push('写入固件到 fit 卷');a.push('自动重启');return a}\n"
++	"/* 写入那几条已经由设备逐行报出来了，p7 只剩试运行走 */\n"
++	"function plan(){return ['将固件载入内存并直接引导',\n"
++	"'<b>不写入闪存</b>；引导失败断电即恢复原系统']}\n"
 +	"function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');\n"
 +	"/* 设备详情里唯一能敲回车的是 IP 与掩码：回车就是「应用」，不是弹写入确认 */\n"
 +	"if(p.id=='p5'){applyaddr();return false}\n"
@@ -1602,7 +1602,7 @@ new file mode 100644
 +	"if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return"
 +		" r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^"
 +		"[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+'"
-+		" 不存在时按文件长度创建');if($('[name=stay]',p).checked)W.push('写入后不重启；全部完成后需手动重启')}\n"
++		" 不存在时按文件长度创建')}\n"
 +	"if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return"
 +		" r.k=='fip'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
 +		" 设备将无法启动');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot"
@@ -1610,8 +1610,9 @@ new file mode 100644
 +		" 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return"
 +		" r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}\n"
 +	"if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');\n"
-+	"if((p.id=='p1'||(p.id=='p3'&&!$('[name=stay]',p).checked))&&INFO&&INFO.ubi&&!INFO.ubi.fip)E.push"
-+		"('闪存里没有 U-Boot（fip 卷），写完重启后将无法启动：请先到「引导升级」里上传 U-Boot 文件'+(p.id=='p3'?'，或勾选「写入后不重启」':''));\n"
++	"/* 写完不再自动重启，所以这不再是拦下的理由，只是别急着重启 */\n"
++	"if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip)W.push('闪存里没有 U-Boot（fip"
++		" 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');\n"
 +	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 +		" 将被清空');\n"
 +	"var utot=0;rows.forEach(function(r){utot+=r.f.size});\n"
@@ -1637,8 +1638,10 @@ new file mode 100644
 +		");\n"
 +	"$$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});\n"
 +	"rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});\n"
-+	"SENT={p:p,rows:rows,stay:!!($('[name=stay]',p)&&$('[name=stay]',p).checked),btxt:btn.textContent"
-+		"};\n"
++	"SENT={p:p,rows:rows,btxt:btn.textContent};\n"
++	"WR={n:0,off:0,k:0,txt:'',rows:[],ver:null,secs:0,left:0,\n"
++	"rt:Date.now(),rn:0,rate:0,fin:0};\n"
++	"clearInterval(WRT);WRT=setInterval(wrclock,1000);\n"
 +	"RT=Date.now();RN=0;RATE=0;\n"
 +	"HBOFF=1;$('#app').setAttribute('data-busy','');btn.disabled=true;btn.textContent=p.id=='p4'?'写入中"
 +		"…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';\n"
@@ -1666,32 +1669,102 @@ new file mode 100644
 +	"if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);\n"
 +	"x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}\n"
 +	"x.open('POST','/');x.send(fd)}\n"
-+	"function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);HBOFF=0;$('#ap"
-+		"p').removeAttribute('data-busy');prog.className='prog"
-+		" bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textC"
-+		"ontent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;\n"
++	"function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval("
++		"WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;$('#app').removeAttribute('data-"
++		"busy');prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='1"
++		"00%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textCon"
++		"tent=SENT.btxt;\n"
 +	"/* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */\n"
 +	"if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中"
 +		"断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}\n"
-+	"function done(resp){var p=SENT.p,rows=SENT.rows;HBOFF=0;\n"
-+	"/* 流式那条路拿到 200 时已经写完了，去它自己的完成页 */\n"
-+	"if(p.id=='p4'){stdone(resp);return}if(SENT.stay){var"
-+		" prog=$('.prog',p),btn=$('button[type=submit]',p);$('#app').removeAttribute('data-busy');prog.cl"
-+		"assName='prog ok';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat'"
-+		",prog).textContent='已上传 '+rows.map(function(r){return"
-+		" r.l}).join('、')+'，设备正在写入；指示灯恢复常态后可继续';$('.pct',prog).textContent='';btn.disabled=false;btn.text"
-+		"Content=SENT.btxt;clear(p);expect('write');return}\n"
-+	"var tb=$('[name=tryboot]',p)&&$('[name=tryboot]',p).checked;\n"
-+	"$('#p7 h1').textContent=tb?'已交给设备启动':'上传完成';\n"
-+	"$('#p7 .sub').textContent=tb?'设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。'\n"
-+	":'设备正在写入，完成后自动重启。本页面可以关闭。';\n"
-+	"$('#p7 .fin b').textContent=tb?'起不来怎么办':'通过设备指示灯判断进度';\n"
-+	"$('#steps').innerHTML='<li>'+plan(p,rows).join('</li><li>')+'</li>';$('#ban').setAttribute('hidd"
-+		"en','');\n"
-+	"/* 试运行不写闪存：起不来就退回本页面，所以心跳留着 —— 和「直接启动系统」同一条路，\n"
-+	"设备一回来自己刷新；写入那条路才是真的没有下文了 */\n"
-+	"if(tb){$('#app').removeAttribute('data-busy');expect('boot')}else hbstop();\n"
-+	"show('p7')}\n"
++	"function done(resp){var p=SENT.p;\n"
++	"/* 刷回原厂边收边写，拿到 200 时早写完了，去它自己的完成页 */\n"
++	"if(p.id=='p4'){HBOFF=0;stdone(resp);return}\n"
++	"if(WR&&WR.fin){HBOFF=0;return}\n"
++	"/* 试运行不落闪存，一去不回，所以它仍然是先回复后动手那条路 */\n"
++	"if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked){HBOFF=0;\n"
++	"clearInterval(WRT);WRT=null;if(WR)WR.fin=1;\n"
++	"$('#steps').innerHTML='<li>'+plan().join('</li><li>')+'</li>';\n"
++	"$('#ban').setAttribute('hidden','');\n"
++	"$('#app').removeAttribute('data-busy');expect('boot');show('p7');return}\n"
++	"/* 200 只是「收下了」；闪存这才开始动，进度得去问 */\n"
++	"wrpoll()}\n"
++	"/*\n"
++	"* 设备把写到哪了记成一小段文本，这里按 /log?from= 那套取新的部分。写一个卷\n"
++	"* 的那几秒它不应答 —— 那一步在环境变量的配方里，run_command 一进去就不回来，\n"
++	"* 网络栈也就没在跑。取不到不算事，下次再取；每一行都自带绝对值。\n"
++	"*/\n"
++	"function wrpoll(){if(!WR||WR.fin)return;\n"
++	"get('/wr?from='+WR.off,function(st,t){if(!WR||WR.fin)return;\n"
++	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
++	"if(i>0){var o=parseInt(t.slice(0,i),10);\n"
++	"if(o>=WR.off){WR.off=o;WR.txt+=t.slice(i+1);wrline(WR.txt)}}\n"
++	"if(!WR||WR.fin)return;\n"
++	"/* 十来分钟还没有下文，那就不是在写了 */\n"
++	"if(++WR.k>1200){fail('未收到设备回报，请查看「诊断」中的串口日志',500);return}\n"
++	"WRP=setTimeout(wrpoll,700)})}\n"
++	"/*\n"
++	"* 写入期间连接一直开着，设备边写边把状态一行行发过来，写完才关连接。所以这里\n"
++	"* 收到的不是一次性的回复，而是一条流：\n"
++	"*\n"
++	"*   s <文字> [字节]      步骤开始；带字节数时按上次实测速度倒计时\n"
++	"*   v <已完成> <总数>    回读校验的实时进度（那段循环是设备自己的，报得出）\n"
++	"*   r <名> <字节> <crc32>  一个部分写完了\n"
++	"*   c ok | c bad <说明>  回读校验的结论\n"
++	"*   t <字节> <秒>        本次实测写入速度，存下来给下次估算\n"
++	"*   done | f <说明>\n"
++	"*\n"
++	"* 写入本身报不出中间态 —— 那一步在环境变量的配方里，run_command 一进去就不\n"
++	"* 回来了；那是为了和串口 TFTP 刷固件走同一条脚本，值这个代价。\n"
++	"*/\n"
++	"function wrline(t){var i,l;if(!WR||WR.fin)return;\n"
++	"while((i=t.indexOf('\\n',WR.n))>=0){l=t.slice(WR.n,i).replace(/\\r$/,'');WR.n=i+1;\n"
++	"if(l)wrstep(l)}}\n"
++	"function wrstep(l){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),\n"
++	"k=l.charAt(0),a=l.slice(2).split(' '),n,d,tt,now,dt;\n"
++	"if(k=='s'){n=+a[a.length-1];WR.left=0;\n"
++	"if(n>0){a.pop();WR.left=Math.max(2,Math.round(n/WRSPD))}\n"
++	"bar.className='pbar ind';bar.style.width='100%';\n"
++	"$('.pwhat',prog).textContent=a.join(' ')+'…';\n"
++	"$('.pct',prog).textContent=WR.left?'预计 '+dur(WR.left):'';return}\n"
++	"if(k=='v'){d=+a[0];tt=+a[1];now=Date.now();dt=(now-WR.rt)/1000;WR.left=0;\n"
++	"bar.className='pbar';bar.style.width=(tt?d/tt*100:0)+'%';\n"
++	"if(dt>=1.5){WR.rate=(d-WR.rn)/dt;WR.rt=now;WR.rn=d}\n"
++	"$('.pct',prog).textContent=sz(d)+' / '+sz(tt)+' · '+(tt?(d/tt*100).toFixed(0):0)+'%'\n"
++	"+(WR.rate>0?' · '+spd(WR.rate)+' · 剩余 '+dur((tt-d)/WR.rate):'');return}\n"
++	"if(k=='r'){WR.rows.push({n:a[0],s:+a[1]||0,c:a[2]||''});return}\n"
++	"if(k=='c'){if(a[0]=='ok'){WR.ver='通过';return}\n"
++	"STUCK='<b>回读校验没通过，闪存里的内容与上传的不一致。</b>重新写入至成功之前不要重启设备。';\n"
++	"banner();fail('回读校验没通过：'+a.slice(1).join(' '),500);return}\n"
++	"if(k=='t'){n=+a[0];d=+a[1];\n"
++	"if(n>0&&d>0){WRSPD=n/d;try{localStorage.setItem('xgwrspd',String(Math.round(WRSPD)))}catch(e){}}\n"
++	"WR.secs=d;return}\n"
++	"if(k=='f'){fail(l.slice(2),500);return}\n"
++	"if(l=='done')wrfin()}\n"
++	"/* 写那一步只有估计，倒计时至少让人看出它在动 */\n"
++	"function wrclock(){if(!WR||WR.fin||!WR.left||!SENT)return;\n"
++	"WR.left--;$('.pct',$('.prog',SENT.p)).textContent=\n"
++	"WR.left>0?'预计还需 '+dur(WR.left):'即将完成…'}\n"
++	"/* 写完不再自动重启：设备停在恢复页等着，重不重启这一下由人来点 */\n"
++	"function wrfin(){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),\n"
++	"btn=$('button[type=submit]',p),h='';\n"
++	"if(!WR||WR.fin)return;\n"
++	"WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;\n"
++	"HBOFF=0;$('#app').removeAttribute('data-busy');\n"
++	"prog.className='prog ok';bar.className='pbar';bar.style.width='100%';\n"
++	"$('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';\n"
++	"btn.disabled=false;btn.textContent=SENT.btxt;clear(p);\n"
++	"WR.rows.forEach(function(r){h+='<div class=r><span>'+esc(r.n)+'</span><span class=v>'\n"
++	"+sz(r.s)+(r.c?' · crc32 '+esc(r.c):'')+'</span></div>'});\n"
++	"if(WR.ver)h+='<div class=r><span>回读校验</span><span class=v>'+esc(WR.ver)+'</span></div>';\n"
++	"if(WR.secs)h+='<div class=r><span>用时</span><span class=v>'+dur(WR.secs)+'</span></div>';\n"
++	"if(!h)h='<div class=r><span>设备已写入完成</span></div>';\n"
++	"h+='<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>';\n"
++	"if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!WR.rows.some(function(r){return r.n=='U-Boot'}))\n"
++	"h+='<div class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>';\n"
++	"$('#rbody').innerHTML=h;$('#rmask').setAttribute('data-on','')}\n"
++	"function rhide(){$('#rmask').removeAttribute('data-on');info()}\n"
++	"function rboot(){$('#rmask').removeAttribute('data-on');doreboot()}\n"
 +	"/* 设备回的是 \"ok N bytes crc32 xxxxxxxx skipped M\" */\n"
 +	"function stdone(t){STUCK='';var m=/ok (\\d+) bytes crc32 ([0-9a-f]+) skipped"
 +		" (-?\\d+)/.exec(t||''),h='',k;\n"
@@ -1792,6 +1865,76 @@ new file mode 100644
 +
 +/* Set from the form during httpd_flash(); read once it has returned. */
 +static int		flash_stay;
++
++/*
++ * ---- writing, one step at a time -----------------------------------
++ *
++ * The write used to happen after the answer had gone out and the
++ * connection had closed, and it ended in a reset.  So the page could
++ * only ever say "uploaded" -- never "written", never "and it reads back
++ * the same", and never "do you want to reboot?".
++ *
++ * Now do_httpd() takes one step per pass and goes back into net_loop()
++ * in between, so the page can ask how far it got, and the board stays up
++ * at the end instead of resetting itself.  What drives the passes is the
++ * LED tick: it already runs off net_loop()'s timeout, so it is the one
++ * clock that keeps going whether or not a browser is still listening.
++ * Nothing here waits on the page -- close the tab mid-write and the
++ * write still finishes.
++ *
++ * Progress is plain text the page reads with GET /wr?from=, same shape
++ * as /log?from=.  Writing a volume reports nothing in between: it runs
++ * the board's own env recipe through run_command(), which is the point
++ * -- the page and a serial TFTP upgrade have to write a firmware the
++ * same way, so there is no hook to report from.  Reading it back
++ * afterwards is this file's own loop, so that half does report.
++ */
++#define WR_LOG_SZ	3072
++#define VF_CHUNK	4096		/* one read at a time */
++#define VF_STEP		(1UL << 20)	/* ...and this much per pass */
++
++static char		wr_log[WR_LOG_SZ];
++static int		wr_used;
++static int		flash_running;
++static int		flash_stage;
++static int		flash_i;
++static int		flash_said;
++static ulong		flash_t0;
++static u32		flash_wrote;
++static char		wr_buf[2048];
++static char		wr_qs[48];
++static int		wr_len;
++static u8		vf_buf[VF_CHUNK];
++static ulong		vf_off;
++static ulong		vf_size;
++static ulong		vf_next;
++static u32		vf_crc;
++static u32		vf_src;
++
++static void wr_reset(void)
++{
++	wr_used = 0;
++	wr_log[0] = '\0';
++}
++
++/*
++ * Append only: the page reads from a byte offset it remembers, so what is
++ * already out there can never move.  A full buffer drops the line rather
++ * than shifting the rest -- at forty-odd short lines per write, that is a
++ * margin nothing reaches.
++ */
++static void wr_printf(const char *fmt, ...)
++{
++	va_list ap;
++
++	if (wr_used >= WR_LOG_SZ - 1)
++		return;
++
++	va_start(ap, fmt);
++	/* U-Boot's vsnprintf returns what it wrote, not what it wanted to. */
++	wr_used += vsnprintf(wr_log + wr_used, WR_LOG_SZ - wr_used, fmt, ap);
++	va_end(ap);
++}
 +
 +/*
 + * Per-unit factory data that the ubi layout keeps as UBI volumes, from
@@ -1900,10 +2043,9 @@ new file mode 100644
 +};
 +
 +#define LED_TICK_MS	120
-+#define LED_BLINK_US	250000
++#define LED_CHASE_US	120000
 +
 +static int led_pos;
-+static int led_blink_on;
 +static struct udevice *led_dev[ARRAY_SIZE(led_chase)];
 +static struct cyclic_info led_cyclic;
 +
@@ -1931,8 +2073,7 @@ new file mode 100644
 +		led_one(i, state);
 +}
 +
-+/* Re-arms itself: net_loop() clears the handler before calling it. */
-+static void httpd_led_tick(void)
++static void led_paint(void)
 +{
 +	unsigned int i;
 +
@@ -1940,14 +2081,36 @@ new file mode 100644
 +		led_one(i, i == (unsigned int)led_pos ? LEDST_ON : LEDST_OFF);
 +
 +	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
++}
++
++/* Re-arms itself: net_loop() clears the handler before calling it. */
++static void httpd_led_tick(void)
++{
++	led_paint();
++	/*
++	 * While a write is stepping this is also its clock: net_loop() has
++	 * to come back so do_httpd() can take the next step, and it must do
++	 * that whether or not a browser is still there to poll.
++	 *
++	 * Only from the timer, which is why painting is split out: the first
++	 * paint of each pass comes from httpd_led_start(), before net_loop()
++	 * has served a single packet.  Ending the pass there would spin
++	 * through the whole write without ever answering the page.
++	 */
++	if (flash_running)
++		net_set_state(NETLOOP_SUCCESS);
 +	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
 +}
 +
 +static void httpd_led_start(void)
 +{
 +	led_probe();
-+	led_pos = 0;
-+	httpd_led_tick();
++	/* A write comes back through here every step; restarting the chase
++	 * each time would leave the panel twitching on one LED. */
++	if (!flash_running)
++		led_pos = 0;
++	led_paint();
++	net_set_timeout_handler(LED_TICK_MS, httpd_led_tick);
 +}
 +
 +static void httpd_led_stop(void)
@@ -1957,52 +2120,52 @@ new file mode 100644
 +}
 +
 +/*
-+ * Flashing is synchronous, so net_loop()'s timeout handler is no longer
-+ * running and the chase above cannot drive the panel.  The SPI-NAND layer
++ * A volume write is synchronous, so net_loop()'s timeout handler is not
++ * running and the chase above would freeze mid-write.  The SPI-NAND layer
 + * calls schedule() once per written page, and that is what ticks the cyclic
-+ * framework -- so this keeps blinking even in the middle of a 235 MB write.
++ * framework -- so the same chase is driven from here instead.
++ *
++ * The same figure from the first byte to the reboot prompt, deliberately.
++ * This used to flash the whole panel at once, which said "the connection
++ * is gone, pull the cable if you like, just keep the power on" -- true
++ * back when the answer went out before the write.  It is not any more.
 + */
-+static void httpd_blink(struct cyclic_info *c)
++static void httpd_chase(struct cyclic_info *c)
 +{
 +	(void)c;
 +
-+	led_blink_on = !led_blink_on;
-+	led_all(led_blink_on ? LEDST_ON : LEDST_OFF);
++	led_one(led_pos, LEDST_OFF);
++	led_pos = (led_pos + 1) % ARRAY_SIZE(led_chase);
++	led_one(led_pos, LEDST_ON);
 +}
 +
 +/*
 + * Both are safe to call twice: cyclic_register() unregisters first and
-+ * cyclic_unregister() checks the node is on the list (common/cyclic.c),
-+ * which matters now that on_closed can stop a blink that already
-+ * stopped itself.
++ * cyclic_unregister() checks the node is on the list (common/cyclic.c).
 + */
-+static void httpd_blink_start(void)
++static void httpd_chase_start(void)
 +{
 +	/*
-+	 * Stopping the chase is part of starting the blink rather than
-+	 * something the caller has to remember.  Today's only caller flashes
-+	 * after net_loop() has returned, where do_httpd() has already stopped
-+	 * it -- but a caller that flashes from inside the loop would leave
-+	 * the timeout handler walking the panel underneath the blink, both
-+	 * patterns on the same five LEDs at once, which reads as neither.
-+	 * That is not a hypothetical: the streaming restore below did exactly
-+	 * this until it was reported.
++	 * Deliberately not stopping the net_loop() chase the way the blink it
++	 * replaced had to: these two take turns rather than fight, since both
++	 * walk the same led_pos and only one of them runs at a time -- during
++	 * a write the timeout handler is not running, which is the gap this
++	 * fills.  Stopping it would also stop the clock that brings
++	 * do_httpd() back for the next step.
 +	 */
-+	httpd_led_stop();
-+	led_blink_on = 0;
-+	cyclic_register(&led_cyclic, httpd_blink, LED_BLINK_US, "httpd-flash");
++	led_probe();
++	cyclic_register(&led_cyclic, httpd_chase, LED_CHASE_US, "httpd-flash");
 +}
 +
-+static void httpd_blink_stop(void)
++static void httpd_chase_stop(void)
 +{
 +	cyclic_unregister(&led_cyclic);
-+	led_all(LEDST_OFF);
 +}
 +#else
 +static inline void httpd_led_start(void) { }
 +static inline void httpd_led_stop(void) { }
-+static inline void httpd_blink_start(void) { }
-+static inline void httpd_blink_stop(void) { }
++static inline void httpd_chase_start(void) { }
++static inline void httpd_chase_stop(void) { }
 +#endif
 +
 +/*
@@ -3258,8 +3421,13 @@ new file mode 100644
 +
 +	jb_init(&jb, check_buf, sizeof(check_buf));
 +
-+	/* $loadaddr is the staging area of an upload in flight. */
-+	if (up_active) {
++	/*
++	 * $loadaddr is the staging area of an upload in flight; and a write
++	 * in progress means half of what this would read is on its way in.
++	 * Both were unreachable before -- nothing was served between the
++	 * answer and the reset -- and both are reachable now.
++	 */
++	if (up_active || flash_running) {
 +		jb_printf(&jb, JSON_HDR("503 Service Unavailable") "{\"busy\":1}");
 +		return jb_done(&jb, "/check");
 +	}
@@ -3377,7 +3545,7 @@ new file mode 100644
 +			  "{\"err\":\"没有找到闪存设备\"}");
 +		return jb_done(&jb, "/scan");
 +	}
-+	if (up_active || dump_busy) {
++	if (up_active || dump_busy || flash_running) {
 +		jb_printf(&jb, JSON_HDR("503 Service Unavailable")
 +			  "{\"err\":\"设备正忙，等这次传输完成后再扫描\"}");
 +		return jb_done(&jb, "/scan");
@@ -3551,6 +3719,46 @@ new file mode 100644
 +	return strlen(log_buf);
 +}
 +#endif
++
++/*
++ * ---- GET /wr?from= -------------------------------------------------------
++ *
++ * How far the write has got.  Same shape as /log?from=: first line is the
++ * new offset, then the bytes after the one asked for.  The board answers
++ * nothing at all while a volume write runs, so the page polls and simply
++ * misses a few -- every line stands on its own, and the offset it is told
++ * is the offset of what it actually got, never more.
++ */
++static int httpd_wr(void)
++{
++	static const char hdr[] =
++		"HTTP/1.0 200 OK\r\n"
++		"Content-Type: text/plain; charset=utf-8\r\n"
++		"Connection: close\r\n"
++		"\r\n";
++	char from[24];
++	int skip = 0;
++	int n, room;
++
++	if (qs_get(wr_qs, "from", from, sizeof(from)))
++		skip = (int)dectoul(from, NULL);
++	if (skip < 0 || skip > wr_used)
++		skip = wr_used;
++
++	room = wr_used - skip;
++	/* Header, the offset line and a NUL all have to fit as well. */
++	if (room > (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16)
++		room = (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16;
++
++	n = snprintf(wr_buf, sizeof(wr_buf), "%s%d\n", hdr, skip + room);
++	if (room > 0) {
++		memcpy(wr_buf + n, wr_log + skip, room);
++		n += room;
++	}
++	wr_buf[n] = '\0';
++
++	return n;
++}
 +
 +/*
 + * ---- GET /ping -----------------------------------------------------------
@@ -4257,10 +4465,9 @@ new file mode 100644
 +{
 +	static char part_name[] = UBI_PART;
 +	char buf[UBIVOL_NAME_MAX];
-+	struct ubi_device *ubi;
 +	struct up_part *p;
 +	int nvols = 0;
-+	int needs_ubi, stay, has_fip;
++	int needs_ubi;
 +	int i;
 +
 +	for (i = 0; i < up_nparts; i++) {
@@ -4376,35 +4583,24 @@ new file mode 100644
 +
 +	needs_ubi = part_find(FIELD_FIP) || part_find(FIELD_FIT) ||
 +		    part_find(FIELD_UBIVOL_FILE) || nvols;
-+	stay = part_find(FIELD_STAY) != NULL;
 +
-+	if (ubi_part(part_name, NULL)) {
-+		if (needs_ubi)
-+			httpd_reject("no usable UBI on the flash to write "
-+				     "into: tick \"rebuild UBI\" and upload "
-+				     "BL2, U-Boot and firmware together");
-+		else if (!stay)
-+			httpd_reject("no usable UBI on the flash, so nothing "
-+				     "would boot after the reset: upload BL2 "
-+				     "together with U-Boot and firmware, with "
-+				     "\"rebuild UBI\" ticked");
-+		else
-+			return 0;
++	if (ubi_part(part_name, NULL) && needs_ubi) {
++		httpd_reject("no usable UBI on the flash to write into: "
++			     "tick \"rebuild UBI\" and upload BL2, U-Boot "
++			     "and firmware together");
 +		return -1;
 +	}
 +
-+	ubi = ubi_get_device(0);
-+	has_fip = ubi && ubi_vol_find(ubi, "fip") != NULL;
-+	if (ubi)
-+		ubi_put_device(ubi);
-+
-+	if (!has_fip && !part_find(FIELD_FIP) && !stay) {
-+		httpd_reject("the flash has no U-Boot (no fip volume) and "
-+			     "this upload brings none: nothing would boot "
-+			     "after the reset. Upload the U-Boot FIP as well");
-+		return -1;
-+	}
-+
++	/*
++	 * What used to be refused here -- writing something onto a board
++	 * that would not boot afterwards -- was refused because the write
++	 * ended in a reset, so an upload the page called a success turned
++	 * into a board that never came back.  It does not reset any more:
++	 * the write finishes, the page is still connected, and it says what
++	 * is still missing before offering the reboot.  Refusing the write
++	 * outright would only stop the user from putting the first of two
++	 * files in place.
++	 */
 +	return 0;
 +}
 +
@@ -5401,6 +5597,17 @@ new file mode 100644
 +
 +		return CONN_LOG;
 +	}
++	if (plen == 3 && !memcmp(path, "/wr", 3)) {
++		int k = qlen;
++
++		if (k > (int)sizeof(wr_qs) - 1)
++			k = sizeof(wr_qs) - 1;
++		if (k > 0)
++			memcpy(wr_qs, q + 1, k);
++		wr_qs[k > 0 ? k : 0] = '\0';
++
++		return CONN_WR;
++	}
 +	if (plen == 5 && !memcmp(path, "/ping", 5))
 +		return CONN_PING;
 +	if (plen == 4 && !memcmp(path, "/env", 4))
@@ -5459,7 +5666,7 @@ new file mode 100644
 +				printf("httpd: the download in flight went quiet, dropping it\n");
 +				dump_busy = 0;
 +			}
-+			if (dump_busy) {
++			if (dump_busy || flash_running) {
 +				tcp->priv = CONN_POSTBUSY;
 +				up_owner = NULL;
 +				return;
@@ -5512,6 +5719,8 @@ new file mode 100644
 +				scan_len = httpd_scan();
 +			} else if (cls == CONN_LOG)
 +				log_len = httpd_log();
++			else if (cls == CONN_WR)
++				wr_len = httpd_wr();
 +			else if (cls == CONN_PING)
 +				ping_len = httpd_ping();
 +			else if (cls == CONN_ENV)
@@ -5533,7 +5742,7 @@ new file mode 100644
 +					printf("httpd: the download in flight went quiet, dropping it\n");
 +					dump_busy = 0;
 +				}
-+				if (dump_busy)
++				if (dump_busy || flash_running)
 +					tcp->priv = CONN_DUMPBUSY;
 +				else
 +					httpd_dump();
@@ -5588,6 +5797,9 @@ new file mode 100644
 +	} else if (tcp->priv == CONN_LOG) {
 +		*len = log_len;
 +		return log_buf;
++	} else if (tcp->priv == CONN_WR) {
++		*len = wr_len;
++		return wr_buf;
 +	} else if (tcp->priv == CONN_PING) {
 +		*len = ping_len;
 +		return ping_buf;
@@ -5879,6 +6091,21 @@ new file mode 100644
 +
 +void httpd_start_server(void)
 +{
++	/*
++	 * net_loop() calls this on every entry, and a write in progress comes
++	 * back through here between every step -- so the state it is writing
++	 * from (the parts, the stage, the base address) must survive.  Only
++	 * the handlers below need re-arming each time round.
++	 */
++	if (flash_running) {
++		memset(net_server_ethaddr, 0, 6);
++		tcp_stream_set_on_create_handler(httpd_on_create);
++		net_set_udp_handler(httpd_dhcp_rx);
++		httpd_led_start();
++
++		return;
++	}
++
 +	up_active = 0;
 +	up_owner = NULL;
 +	up_parsed = 0;
@@ -6126,121 +6353,455 @@ new file mode 100644
 + * The bootloader is written before the firmware so that a migration which
 + * dies halfway still leaves a board that can be recovered over the network.
 + */
-+static int httpd_flash(void)
++#define FLASH_MORE	0
++#define FLASH_DONE	1
++#define FLASH_FAIL	(-1)
++
++#define VF_NONE		0
++#define VF_VOL		1
++#define VF_BL2		2
++
++enum {
++	FS_START = 0,
++	FS_STOCK,
++	FS_ATTACH,
++	FS_VOLS,
++	FS_BL2,
++	FS_UBI,
++	FS_FIP,
++	FS_FIT,
++	FS_VERIFY,
++	FS_END,
++};
++
++/* What to call this part on the page.  Volume names double as their own. */
++static void flash_label(struct up_part *p, char *buf, int n)
++{
++	struct fvol *v = fvol_find(p->name);
++
++	if (!strcmp(p->name, FIELD_BL2))
++		strlcpy(buf, "BL2", n);
++	else if (!strcmp(p->name, FIELD_FIP))
++		strlcpy(buf, "U-Boot", n);
++	else if (!strcmp(p->name, FIELD_FIT))
++		strlcpy(buf, "固件", n);
++	else if (v)
++		strlcpy(buf, v->name, n);
++	else if (strcmp(p->name, FIELD_UBIVOL_FILE) ||
++		 !part_text(FIELD_UBIVOL_NAME, buf, n))
++		strlcpy(buf, p->name, n);
++}
++
++/*
++ * Where a part ended up, so it can be read back.  Text fields and switches
++ * have no target of their own and are skipped.
++ */
++static int vf_target(struct up_part *p, char *vol, int voln)
++{
++	struct fvol *v = fvol_find(p->name);
++
++	if (!strcmp(p->name, FIELD_BL2))
++		return VF_BL2;
++
++	if (!strcmp(p->name, FIELD_FIP))
++		strlcpy(vol, "fip", voln);
++	else if (!strcmp(p->name, FIELD_FIT))
++		strlcpy(vol, "fit", voln);
++	else if (v)
++		strlcpy(vol, v->name, voln);
++	else if (strcmp(p->name, FIELD_UBIVOL_FILE) ||
++		 !part_text(FIELD_UBIVOL_NAME, vol, voln))
++		return VF_NONE;
++
++	return VF_VOL;
++}
++
++/* One window of what was just written, back off the flash. */
++static int vf_read(int kind, char *vol, ulong off, ulong len)
++{
++	if (kind == VF_BL2) {
++		struct mtd_info *m = get_mtd_device_nm(BL2_PART);
++		size_t rl = 0;
++		int ret;
++
++		if (IS_ERR(m))
++			return -1;
++
++		ret = mtd_read(m, BL2_IMAGE_OFF + off, len, &rl, vf_buf);
++		put_mtd_device(m);
++
++		/* A corrected bit-flip is a read that worked. */
++		return (ret && ret != -EUCLEAN) ? -1 : 0;
++	}
++
++	return ubi_volume_read(vol, (char *)vf_buf, off, len) ? -1 : 0;
++}
++
++/*
++ * One step per call; FLASH_MORE means "come back", which do_httpd() does by
++ * way of net_loop(), so between any two steps the page gets served.
++ *
++ * Every unit of work is announced in one pass and done in the next.  That is
++ * not ceremony: the "s" line has to be on the wire before the board vanishes
++ * into a write that answers nothing for ten seconds, or the page would sit
++ * there with the previous step still on screen.
++ */
++static int httpd_flash_step(void)
 +{
 +	struct up_part *bl2 = part_find(FIELD_BL2);
 +	struct up_part *fip = part_find(FIELD_FIP);
 +	struct up_part *fit = part_find(FIELD_FIT);
 +	struct up_part *ubifile = part_find(FIELD_UBIVOL_FILE);
 +	int format = part_find(FIELD_FORMAT) != NULL;
-+	int nvols = 0;
-+	int ret = -1;
++	char name[UBIVOL_NAME_MAX];
++	char lab[UBIVOL_NAME_MAX];
 +	int i;
 +
-+	flash_stay = part_find(FIELD_STAY) != NULL;
++	switch (flash_stage) {
++	case FS_START:
++		wr_reset();
++		flash_stay = 1;
++		flash_running = 1;
++		flash_said = 0;
++		flash_i = 0;
++		flash_wrote = 0;
++		flash_t0 = get_timer(0);
++		httpd_chase_start();
++		flash_stage = FS_STOCK;
 +
-+	httpd_blink_start();
++		return FLASH_MORE;
 +
++	case FS_STOCK:
 +#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
-+	{
-+		struct up_part *stock = part_find(FIELD_STOCK);
-+
-+		if (stock) {
++		{
++			struct up_part *stock = part_find(FIELD_STOCK);
 +			char ob[24];
 +			ulong off = 0;
 +
-+			if (part_text(FIELD_STOCK_OFF, ob, sizeof(ob)))
-+				off = hextoul(ob, NULL);
++			/*
++			 * Announced and done in one pass, unlike everything
++			 * below: the page restores whole images through
++			 * POST /stock, which writes as it receives and reports
++			 * for itself.  This path is what a curl user gets.
++			 */
++			if (stock) {
++				if (part_text(FIELD_STOCK_OFF, ob, sizeof(ob)))
++					off = hextoul(ob, NULL);
 +
-+			if (flash_raw(part_align(stock), off, stock->size))
-+				goto out;
++				if (flash_raw(part_align(stock), off,
++					      stock->size)) {
++					wr_printf("f 整片写入失败，详见串口日志\n");
 +
-+			/* Whatever this U-Boot was running from may be gone. */
-+			flash_stay = 0;
-+			ret = 0;
-+			goto out;
++					return FLASH_FAIL;
++				}
++
++				/* What this U-Boot ran from may be gone. */
++				flash_stay = 0;
++				flash_stage = FS_END;
++
++				return FLASH_MORE;
++			}
 +		}
-+	}
 +#endif
++		flash_stage = FS_ATTACH;
 +
-+	/*
-+	 * UBI volumes: the factory data ones from the config, then any named
-+	 * one -- all in one attach, all in one sitting.  Sizes were checked
-+	 * before the upload was accepted.
-+	 */
-+	for (i = 0; i < up_nparts; i++)
-+		if (fvol_find(up_parts[i].name))
-+			nvols++;
++		return FLASH_MORE;
 +
-+	if (nvols || ubifile) {
++	case FS_ATTACH: {
++		int nvols = 0;
++
++		for (i = 0; i < up_nparts; i++)
++			if (fvol_find(up_parts[i].name))
++				nvols++;
++
++		if (!nvols && !ubifile) {
++			flash_stage = FS_BL2;
++
++			return FLASH_MORE;
++		}
++
++		/*
++		 * Volumes: the factory-data ones from the config, then any
++		 * named one -- all in one attach, all in one sitting.  Sizes
++		 * were checked before the upload was accepted.
++		 */
 +		if (run_command(CMD_ATTACH_UBI, 0)) {
 +			printf("httpd: attaching UBI FAILED\n");
-+			goto out;
++			wr_printf("f 挂载 UBI 失败，详见串口日志\n");
++
++			return FLASH_FAIL;
 +		}
++		flash_stage = FS_VOLS;
 +
-+		for (i = 0; i < up_nparts; i++) {
-+			struct fvol *v = fvol_find(up_parts[i].name);
++		return FLASH_MORE;
++	}
 +
-+			if (v && flash_vol(part_align(&up_parts[i]), v->name,
-+					   up_parts[i].size, 0))
-+				goto out;
++	case FS_VOLS:
++		while (flash_i < up_nparts) {
++			struct up_part *p = &up_parts[flash_i];
++			struct fvol *v = fvol_find(p->name);
++
++			if (!v) {
++				flash_i++;
++				continue;
++			}
++			if (!flash_said) {
++				wr_printf("s 写入 %s %u\n", v->name, p->size);
++				flash_said = 1;
++
++				return FLASH_MORE;
++			}
++			flash_said = 0;
++			if (flash_vol(part_align(p), v->name, p->size, 0)) {
++				wr_printf("f 写入 %s 卷失败，详见串口日志\n",
++					  v->name);
++
++				return FLASH_FAIL;
++			}
++			flash_wrote += p->size;
++			wr_printf("r %s %u %08x\n", v->name, p->size,
++				  crc32(0, (const u8 *)part_align(p), p->size));
++			flash_i++;
++
++			return FLASH_MORE;
 +		}
 +
 +		if (ubifile) {
-+			char name[UBIVOL_NAME_MAX];
-+
 +			/*
-+			 * httpd_validate() already refused an upload without
-+			 * it, but on NULL the buffer is left uninitialised --
-+			 * which would be a stack string going into a
-+			 * run_command().
++			 * httpd_validate() already refused an upload without it,
++			 * but on NULL the buffer is left uninitialised -- which
++			 * would be a stack string going into a run_command().
 +			 */
 +			if (!part_text(FIELD_UBIVOL_NAME, name, sizeof(name))) {
-+				printf("httpd: the UBI volume name is missing "
-+				       "or too long\n");
-+				goto out;
++				printf("httpd: the UBI volume name is missing or "
++				       "too long\n");
++				wr_printf("f 卷名缺失或过长\n");
++
++				return FLASH_FAIL;
 +			}
-+			if (flash_vol(part_align(ubifile), name,
-+				      ubifile->size, 1))
-+				goto out;
++			if (!flash_said) {
++				wr_printf("s 写入 %s %u\n", name, ubifile->size);
++				flash_said = 1;
++
++				return FLASH_MORE;
++			}
++			flash_said = 0;
++			if (flash_vol(part_align(ubifile), name, ubifile->size,
++				      1)) {
++				wr_printf("f 写入 %s 卷失败，详见串口日志\n", name);
++
++				return FLASH_FAIL;
++			}
++			flash_wrote += ubifile->size;
++			wr_printf("r %s %u %08x\n", name, ubifile->size,
++				  crc32(0, (const u8 *)part_align(ubifile),
++					ubifile->size));
 +		}
++		flash_i = 0;
++		flash_stage = FS_VERIFY;
 +
-+		ret = 0;
-+		goto out;
-+	}
++		return FLASH_MORE;
 +
-+	if (bl2 && flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2))
-+		goto out;
++	case FS_BL2:
++		if (!bl2) {
++			flash_stage = FS_UBI;
 +
-+	if (fip || fit) {
-+		int err;
++			return FLASH_MORE;
++		}
++		if (!flash_said) {
++			wr_printf("s 写入 BL2 %u\n", bl2->size);
++			flash_said = 1;
 +
++			return FLASH_MORE;
++		}
++		flash_said = 0;
++		if (flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2)) {
++			wr_printf("f 写入 BL2 失败，详见串口日志\n");
++
++			return FLASH_FAIL;
++		}
++		flash_wrote += bl2->size;
++		wr_printf("r BL2 %u %08x\n", bl2->size,
++			  crc32(0, (const u8 *)part_align(bl2), bl2->size));
++		flash_stage = FS_UBI;
++
++		return FLASH_MORE;
++
++	case FS_UBI:
++		if (!fip && !fit) {
++			flash_i = 0;
++			flash_stage = FS_VERIFY;
++
++			return FLASH_MORE;
++		}
++		if (format && !flash_said) {
++			/* The one step with no length to go by; it erases the
++			 * whole partition and takes as long as it takes. */
++			wr_printf("s 重建 UBI\n");
++			flash_said = 1;
++
++			return FLASH_MORE;
++		}
++		flash_said = 0;
 +		if (format) {
 +			printf("httpd: rebuilding UBI\n");
-+			err = run_step(ENV_FORMAT_UBI, DEF_FORMAT_UBI);
++			if (run_step(ENV_FORMAT_UBI, DEF_FORMAT_UBI)) {
++				printf("httpd: attaching UBI FAILED\n");
++				wr_printf("f 重建 UBI 失败，详见串口日志\n");
++
++				return FLASH_FAIL;
++			}
 +		} else {
 +			printf("httpd: %s\n", CMD_ATTACH_UBI);
-+			err = run_command(CMD_ATTACH_UBI, 0);
++			if (run_command(CMD_ATTACH_UBI, 0)) {
++				printf("httpd: attaching UBI FAILED\n");
++				wr_printf("f 挂载 UBI 失败，详见串口日志\n");
++
++				return FLASH_FAIL;
++			}
++		}
++		flash_stage = FS_FIP;
++
++		return FLASH_MORE;
++
++	case FS_FIP:
++		if (!fip) {
++			flash_stage = FS_FIT;
++
++			return FLASH_MORE;
++		}
++		if (!flash_said) {
++			wr_printf("s 写入 U-Boot %u\n", fip->size);
++			flash_said = 1;
++
++			return FLASH_MORE;
++		}
++		flash_said = 0;
++		if (flash_part("U-Boot FIP", fip, ENV_WRITE_FIP, DEF_WRITE_FIP)) {
++			wr_printf("f 写入 U-Boot 失败，详见串口日志\n");
++
++			return FLASH_FAIL;
++		}
++		flash_wrote += fip->size;
++		wr_printf("r U-Boot %u %08x\n", fip->size,
++			  crc32(0, (const u8 *)part_align(fip), fip->size));
++		flash_stage = FS_FIT;
++
++		return FLASH_MORE;
++
++	case FS_FIT:
++		if (!fit) {
++			flash_i = 0;
++			flash_stage = FS_VERIFY;
++
++			return FLASH_MORE;
++		}
++		if (!flash_said) {
++			wr_printf("s 写入 固件 %u\n", fit->size);
++			flash_said = 1;
++
++			return FLASH_MORE;
++		}
++		flash_said = 0;
++		if (flash_part("firmware", fit, ENV_WRITE_FIT, DEF_WRITE_FIT)) {
++			wr_printf("f 写入固件失败，详见串口日志\n");
++
++			return FLASH_FAIL;
++		}
++		flash_wrote += fit->size;
++		wr_printf("r 固件 %u %08x\n", fit->size,
++			  crc32(0, (const u8 *)part_align(fit), fit->size));
++		flash_i = 0;
++		flash_stage = FS_VERIFY;
++
++		return FLASH_MORE;
++
++	/*
++	 * Reading it back is this file's own loop, so unlike the writes above
++	 * it can stop in the middle and report -- which is why the progress
++	 * bar on the page only means something during this half.
++	 */
++	case FS_VERIFY:
++		while (flash_i < up_nparts) {
++			struct up_part *p = &up_parts[flash_i];
++			int kind = vf_target(p, name, sizeof(name));
++			ulong end;
++
++			if (kind == VF_NONE || !p->size) {
++				flash_i++;
++				continue;
++			}
++			flash_label(p, lab, sizeof(lab));
++			if (!flash_said) {
++				wr_printf("s 回读校验 %s %u\n", lab, p->size);
++				flash_said = 1;
++				vf_off = 0;
++				vf_next = 0;
++				vf_size = p->size;
++				vf_crc = 0;
++				vf_src = crc32(0, (const u8 *)part_align(p),
++					       p->size);
++
++				return FLASH_MORE;
++			}
++
++			end = vf_off + VF_STEP;
++			if (end > vf_size)
++				end = vf_size;
++			while (vf_off < end) {
++				ulong n = end - vf_off;
++
++				if (n > VF_CHUNK)
++					n = VF_CHUNK;
++				if (vf_read(kind, name, vf_off, n)) {
++					wr_printf("c bad 读不回 %s\n", lab);
++
++					return FLASH_FAIL;
++				}
++				vf_crc = crc32(vf_crc, vf_buf, n);
++				vf_off += n;
++			}
++
++			if (vf_off < vf_size) {
++				/* At most twenty lines per part, however big it
++				 * is: the log is a fixed buffer. */
++				if (vf_off >= vf_next) {
++					vf_next = vf_off + vf_size / 20 + 1;
++					wr_printf("v %lu %lu\n", vf_off, vf_size);
++				}
++
++				return FLASH_MORE;
++			}
++
++			wr_printf("v %lu %lu\n", vf_size, vf_size);
++			if (vf_crc != vf_src) {
++				wr_printf("c bad %s 读回来的内容与上传的不一致\n",
++					  lab);
++
++				return FLASH_FAIL;
++			}
++			flash_said = 0;
++			flash_i++;
++
++			return FLASH_MORE;
 +		}
 +
-+		if (err) {
-+			printf("httpd: attaching UBI FAILED\n");
-+			goto out;
-+		}
++		wr_printf("c ok\n");
++		flash_stage = FS_END;
++
++		return FLASH_MORE;
++
++	case FS_END: {
++		ulong secs = (get_timer(flash_t0) + 500) / 1000;
++
++		/* The page keeps this and estimates the next write with it. */
++		wr_printf("t %u %lu\n", flash_wrote, secs ? secs : 1);
++		wr_printf("done\n");
++		break;
++	}
 +	}
 +
-+	if (fip && flash_part("U-Boot FIP", fip, ENV_WRITE_FIP, DEF_WRITE_FIP))
-+		goto out;
-+
-+	if (fit && flash_part("firmware", fit, ENV_WRITE_FIT, DEF_WRITE_FIT))
-+		goto out;
-+
-+	ret = 0;
-+out:
-+	httpd_blink_stop();
-+	env_set_hex("loadaddr", up_base);
-+
-+	return ret;
++	return FLASH_DONE;
 +}
 +
 +static int do_httpd(struct cmd_tbl *cmdtp, int flag, int argc,
@@ -6267,11 +6828,55 @@ new file mode 100644
 +
 +		err = net_loop(HTTPD);
 +
-+		httpd_led_stop();
++		/* Not between the steps of a write: that timeout is the clock
++		 * bringing us back for the next one. */
++		if (!flash_running)
++			httpd_led_stop();
 +
 +		if (err < 0) {
 +			printf("httpd error: %d\n", err);
 +			return CMD_RET_FAILURE;
++		}
++
++		/*
++		 * Before everything else, so that a /reboot or /boot that
++		 * turned up mid-write waits for the write instead of
++		 * cutting it in half.  Its flag keeps until the steps run
++		 * out, and then it is acted on the way it always was.
++		 */
++		if (flash_pending) {
++			/*
++			 * One step per pass, back into net_loop() in between,
++			 * so the page can ask how far it got while it happens.
++			 */
++			int r = httpd_flash_step();
++
++			if (r == FLASH_MORE)
++				continue;
++
++			flash_pending = 0;
++			flash_running = 0;
++			flash_stage = FS_START;
++			httpd_chase_stop();
++			env_set_hex("loadaddr", up_base);
++
++			if (r == FLASH_FAIL)
++				printf("httpd: writing FAILED\n");
++			else if (!flash_stay)
++				break;
++			else
++				printf("httpd: written; the page decides about "
++				       "the reboot\n");
++
++			/*
++			 * Staying up either way, and that is the change.  A
++			 * write no longer ends in a reset the user did not ask
++			 * for: on success the page offers the reboot and says
++			 * what landed, and on failure it is still connected to
++			 * be told -- which used to be visible on the serial
++			 * console and nowhere else.
++			 */
++			staying = 1;
 +		}
 +
 +		if (reboot_pending) {
@@ -6314,31 +6919,6 @@ new file mode 100644
 +			return CMD_RET_SUCCESS;
 +		}
 +
-+		if (flash_pending) {
-+			flash_pending = 0;
-+			if (httpd_flash()) {
-+				/*
-+				 * Deliberately no reset, so the user can retry
-+				 * without touching the power:
-+				 * boot_httpd_forever re-enters httpd, the
-+				 * bootmenu entry returns to the menu.  The
-+				 * page has already reported
-+				 * success by now (the 200 went out before the
-+				 * write), so this failure shows only on the
-+				 * console -- which is why httpd_validate()
-+				 * refuses in advance everything that can be
-+				 * known to fail.
-+				 */
-+				return CMD_RET_FAILURE;
-+			}
-+
-+			if (!flash_stay)
-+				break;
-+
-+			printf("httpd: done, staying up -- reload the page "
-+			       "for more\n");
-+			staying = 1;
-+		}
 +
 +		/*
 +		 * Last of the deferred actions, and that ordering is the whole

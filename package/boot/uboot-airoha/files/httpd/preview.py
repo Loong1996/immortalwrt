@@ -207,6 +207,9 @@ function body(u){
    else if(x>=0xe000000&&((x/blk)%37)==0)ecc++}
   return JSON.stringify({off:b,size:sz,blk:blk,done:b>=sz?1:0,
    bad:bad.length,ecc:ecc,fail:fail.length,badlist:bad,faillist:fail})}
+ if(u.indexOf('/wr')==0){var wf=/from=(\d+)/.exec(u);
+  wf=wf?+wf[1]:0;if(wf>WRLOG.length)wf=WRLOG.length;
+  return String(WRLOG.length)+'\n'+WRLOG.slice(wf)}
  if(u=='/log')return S.dev=='nolog'?null:D.log+LOGX;
  /* ?from= 只回新的那一段，第一行是新偏移 —— 和设备一样 */
  if(u.indexOf('/log?from=')==0){if(S.dev=='nolog')return null;
@@ -241,24 +244,56 @@ x.send=function(fd){
   setTimeout(function(){if(t==null){x.status=404;x.responseText='';x.onerror?x.onerror():x.onload&&x.onload()}
    else{x.status=200;x.responseText=t;x.onload&&x.onload()}},x.u=='/check'?1500:x.u=='/ping'?60:300);return}
  /* p4 发的是裸 File，不是 FormData —— 那条路没有表单可遍历 */
- var tot=0,n=0,stay=false;try{tot=fd.size||0}catch(e){}
- if(!tot)try{fd.forEach(function(v){if(v&&v.size)tot+=v.size})}catch(e){}
+ var tot=0,n=0,st=!!(x.u&&x.u.indexOf('/stock')==0),parts=[],tryb=false,fmt=false;
+ try{tot=fd.size||0}catch(e){}
+ if(!tot)try{fd.forEach(function(v,k){if(v&&v.size){tot+=v.size;parts.push({k:k,n:v.size})}})}catch(e){}
  if(!tot)tot=1;
- try{stay=fd.get('stay')=='1'}catch(e){}
+ try{tryb=fd.get('tryboot')=='1';fmt=fd.get('format')=='1'}catch(e){}
  var tick=setInterval(function(){n+=Math.max(tot/40,65536);if(n>=tot){n=tot;clearInterval(tick);x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot});x.upload.onload&&x.upload.onload();
   setTimeout(function(){if(S.post=='drop'){x.onerror&&x.onerror();return}
-   if(S.post=='fail500'){x.status=500;
-    x.responseText=x.u&&x.u.indexOf('/stock')==0?
-     '写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电':
-     '写入失败，详见串口日志'}
-   else if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well'}
-   else{x.status=200;
-    x.responseText=x.u&&x.u.indexOf('/stock')==0?
-     'ok '+tot+' bytes crc32 '+((0x3f2a91c4+tot)>>>0).toString(16)+
-     ' skipped 0':'OK';
-    fall(stay?7000:60000)}
-   x.onload&&x.onload()},1200);return}
+   if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well';x.onload&&x.onload();return}
+   /* 刷回原厂仍是一次性回复：它边收边写，200 到手时早写完了 */
+   if(st){if(S.post=='fail500'){x.status=500;
+     x.responseText='写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电'}
+    else{x.status=200;
+     x.responseText='ok '+tot+' bytes crc32 '+((0x3f2a91c4+tot)>>>0).toString(16)+' skipped 0';
+     fall(60000)}
+    x.onload&&x.onload();return}
+   /* 试运行一去不回，所以它还是先回复后动手 */
+   if(tryb){x.status=200;x.responseText='OK';fall(9000);x.onload&&x.onload();return}
+   x.status=200;x.responseText='OK';x.onload&&x.onload();
+   WRLOG='';wrrun(wrlines(parts,fmt),0);return},1200);return}
   x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot})},80)}}
+/*
+ * A1 的行协议。写那一步报不出中间态（配方在 run_command 里），所以只有一句
+ * 「正在写…」；回读校验是设备自己的循环，一段一段报得出来。
+ */
+var VNAME={bl2:'BL2',fip:'U-Boot',firmware:'固件',ubifile:'卷'};
+function wrlines(parts,fmt){var L=[],tot=0;
+ if(fmt)L.push(['s 擦除 UBI 分区',2600]);
+ parts.forEach(function(p){var nm=VNAME[p.k]||(p.k.indexOf('fvol_')==0?p.k.slice(5):p.k);
+  tot+=p.n;
+  L.push(['s 写入 '+nm+' '+p.n,Math.max(800,Math.min(7000,p.n/1400000*1000))]);
+  L.push(['r '+nm+' '+p.n+' '+((0x3f2a91c4+p.n)>>>0).toString(16),250])});
+ if(S.post=='fail500'){L=L.slice(0,fmt?2:1);
+  L.push(['f 写入失败（-5）。闪存内容不完整，重新写入至成功之前不要重启',0]);
+  return L}
+ L.push(['s 回读校验 '+tot,500]);
+ for(var i=1;i<=5;i++)L.push(['v '+Math.round(tot*i/5)+' '+tot,520]);
+ L.push(['c ok',250]);
+ L.push(['t '+tot+' '+Math.max(0.1,tot/1400000).toFixed(1),120]);
+ L.push(['done',0]);
+ return L}
+/*
+ * 写那一步真设备是不应答的（run_command 里出不来），所以在轮到 r 行之前
+ * 让假设备也闭嘴同样长的时间 —— 页面要面对的正是这个。
+ */
+var WRLOG='';
+function wrrun(L,i){if(i>=L.length)return;
+ var d=L[i][1];
+ WRLOG+=L[i][0]+'\n';
+ if(L[i+1]&&L[i+1][0].charAt(0)=='r')fall(d);
+ setTimeout(function(){wrrun(L,i+1)},d)}
 window.XMLHttpRequest=XHR;
 document.addEventListener('DOMContentLoaded',function(){
  var b=document.createElement('div');
