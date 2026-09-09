@@ -245,6 +245,9 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=pane id=p5>
 <h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>
 <div class=box><table class=kv id=dev><tr><td colspan=2 class=c2>正在读取…</td></tr></table></div>
+<p class=bh>网络<small>连不上设备时先看这里</small></p>
+<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>
+<p class=note id=portn hidden>端口号按交换机内部顺序排，不一定等于机壳上的丝印。没有回应的端口不列出。</p>
 <p class=bh>UBI 卷<small id=ubih></small></p>
 <div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>
 </div>
@@ -253,6 +256,11 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <h1>健康检查</h1><p class=sub>检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。</p>
 <div class=box><table class=kv id=chk><tr><td colspan=2>未执行检查</td></tr></table></div>
 <div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb onclick=check()>开始检查</button><button type=button class=pb onclick=diag(this)>复制诊断信息</button><button type=button class=pb onclick=diagfile(this)>下载诊断包</button></div>
+<p class=bh>全片扫描<small>把每一页读一遍。上面那些检查只看关键位置，颗粒在退化只有整片读一遍才看得出来</small></p>
+<div class=box><table class=kv id=scan><tr><td>未扫描</td></tr></table></div>
+<p class=note>只读，不改动闪存。分段进行，每段之间页面还是活的；整片需要几分钟，其间设备响应会变慢。</p>
+<div class=prog id=scanprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+<div class=row><span class=st id=scanh></span><button type=button class=pb id=scanb onclick=scanrun()>开始扫描</button></div>
 </div>
 
 <div class=pane id=p11>
@@ -522,7 +530,31 @@ var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask'
 function envdef(){$('#envh').textContent='正在恢复…';
 get('/envreset',function(st,t){if(st==200){$('#envh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
 else $('#envh').textContent='恢复失败（'+st+'）'})}
-function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
+/*
+ * 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是
+ * 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口
+ * 那几行是直接读 PHY 寄存器来的；读不到的口不列。
+ */
+function netfill(){var t=$('#net'),n=INFO&&INFO.net,h='';
+if(!n){t.innerHTML='<tr><td>读不到网络信息</td></tr>';return}
+h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)
++(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';
+if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';
+h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
+h+='<tr><td>DHCP</td><td>'+(n.ack?'已发出 '+n.ack+' 个地址'
++(n.client?'，最近一次给了 '+esc(n.client):'')+'。你现在用的地址是设备发的'
+:n.offer?'发出过 '+n.offer+' 次地址但没有被接受；'
++'你现在用的是自己配置的 IP'
+:'没有发出过地址。你现在用的是自己配置的 IP，'
++'换台电脑时记得也要手动配')+'</td></tr>';
+(INFO.ports||[]).forEach(function(p){
+h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+p.p+'</td>'
++'<td'+(p.link?'':' class=s1')+'>'+(p.link?
+(p.speed?p.speed>=1000?(p.speed/1000)+' Gb/s':p.speed+' Mb/s':'已连接')
++(p.speed?p.fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
+t.innerHTML=h;
+$('#portn').hidden=!(INFO.ports&&INFO.ports.length)}
+function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
 if(INFO.uboot)$('#based').textContent=INFO.uboot;
@@ -551,6 +583,63 @@ if(o>=LOGN){LOGN=o;
 var add=t.slice(i+1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,'');
 if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}
 LOGT=setTimeout(logtick,2000)})}
+/*
+ * 全片扫描：设备一段一段读，一次答一段。中间页面是活的，所以进度条能走、
+ * 心跳还在，随时可以停。累计的数在这边加，设备那边不留状态。
+ */
+var SCAN=null;
+function scanrun(){var b=$('#scanb'),pg=$('#scanprog');
+if(SCAN){SCAN.stop=1;SCAN=null;b.textContent='重新扫描';
+pg.className='prog bad';$('.pwhat',pg).textContent='已停止';
+$('#scanh').textContent='已停止，结果只覆盖已扫过的部分';return}
+SCAN={off:0,size:0,blk:0,bad:0,ecc:0,fail:0,badl:[],faill:[],
+      t0:Date.now(),rt:Date.now(),rn:0,rate:0,stop:0};
+b.textContent='停止';pg.hidden=false;pg.className='prog';
+$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='0';
+$('.pwhat',pg).textContent='正在扫描';$('.pct',pg).textContent='';
+$('#scanh').textContent='';scanstep()}
+function scanstep(){var s=SCAN;if(!s||s.stop)return;silent();
+get('/scan?off=0x'+s.off.toString(16),function(st,t){
+if(!SCAN||SCAN.stop)return;
+var r=null;try{r=JSON.parse(t)}catch(e){}
+if(st!=200||!r||r.err!==undefined){
+SCAN=null;$('#scanb').textContent='重新扫描';
+var pg=$('#scanprog');pg.className='prog bad';
+$('.pwhat',pg).textContent=(r&&r.err)||('扫描没能进行（'+st+'）');
+return}
+s.size=r.size;s.blk=r.blk;s.off=r.off;
+s.bad+=r.bad;s.ecc+=r.ecc;s.fail+=r.fail;
+(r.badlist||[]).forEach(function(x){if(s.badl.length<32)s.badl.push(x)});
+(r.faillist||[]).forEach(function(x){if(s.faill.length<32)s.faill.push(x)});
+scanshow(s,r.done);
+if(r.done){SCAN=null;$('#scanb').textContent='重新扫描';return}
+scanstep()})}
+function hx(n){return '0x'+n.toString(16)}
+function scanshow(s,done){var pg=$('#scanprog'),p=s.size?s.off/s.size:0,
+now=Date.now(),dt=(now-s.rt)/1000,h='';
+if(dt>=1.5){s.rate=(s.off-s.rn)/dt;s.rt=now;s.rn=s.off}
+$('.pbar',pg).style.width=(p*100)+'%';
+$('.pct',pg).textContent=sz(s.off)+' / '+sz(s.size)+' · '
++(p*100).toFixed(0)+'%'
++(!done&&s.rate>0?' · '+spd(s.rate)+' · 剩余 '+dur((s.size-s.off)/s.rate):'');
+if(done){pg.className='prog'+(s.fail?' bad':' ok');
+$('.pwhat',pg).textContent=s.fail?'扫描完成，有读不出来的页':'扫描完成'}
+h+='<tr><td>已扫描</td><td>'+sz(s.off)+(s.size?' / '+sz(s.size):'')
++'（擦除块 '+sz(s.blk||0)+'）</td></tr>';
+h+='<tr><td><span class="dot s'+(s.bad?1:0)+'"></span>坏块</td>'
++'<td class=s'+(s.bad?1:0)+'>'+(s.bad?s.bad+' 个：'+s.badl.map(hx).join('、')
++(s.bad>s.badl.length?' …':''):'无')+'</td></tr>';
+h+='<tr><td><span class="dot s'+(s.ecc?1:0)+'"></span>ECC 纠错</td>'
++'<td class=s'+(s.ecc?1:0)+'>'+(s.ecc?s.ecc+' 页读出来时被纠正过。'
++'偶尔几页正常；成片出现说明颗粒在退化，尽早把数据备出来'
+:'无')+'</td></tr>';
+h+='<tr><td><span class="dot s'+(s.fail?2:0)+'"></span>读失败</td>'
++'<td class=s'+(s.fail?2:0)+'>'+(s.fail?s.fail+' 页：'+s.faill.map(hx).join('、')
++(s.fail>s.faill.length?' …':'')+'。ECC 纠不回来，这些位置的数据已经丢了'
+:'无')+'</td></tr>';
+$('#scan').innerHTML=h;
+$('#scanh').textContent=done?(s.fail?'扫描完成，有 '+s.fail+' 页读不出来'
+:s.bad||s.ecc?'扫描完成，见上表':'扫描完成，整片都读得回来'):''}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;get('/log',function(st,txt){b.disabled=false;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
@@ -561,12 +650,16 @@ s.push('== 设备 ==');
 if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});
 if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}
 else s.push('(/info 读取失败)');
+s.push('');s.push('== 网络 ==');
+s.push($('#net').textContent.replace(/\s+/g,' ').trim()||'(未读取)');
 s.push('');s.push('== 健康检查 ==');
 if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});
 else s.push('(未运行)');
 s.push('');s.push('== 环境变量 ==');
 if(ENV)ENV.env.forEach(function(e){s.push(e.k+'='+e.v)});
 else s.push('(未读取)');
+s.push('');s.push('== 全片扫描 ==');
+s.push($('#scan').textContent.replace(/\s+/g,' ').trim()||'(未扫描)');
 s.push('');s.push('== 串口日志 ==');
 s.push($('#log').textContent);
 return s.join('\n')}
