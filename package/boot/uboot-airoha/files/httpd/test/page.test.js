@@ -248,7 +248,7 @@ function stayUpload(w) {
     $(w, '.nav[data-p=p12]').click();
     ok('点进去切到 p12', on(w, '#p12'));
     ok('说清闪存不受影响', /不改动闪存/.test(txt(w, '#p12')));
-    ok('重启页不啰嗦', txt(w, '#p12').replace(/\s/g, '').length < 100,
+    ok('重启页不啰嗦', txt(w, '#p12').replace(/\s/g, '').length < 300,
        txt(w, '#p12').replace(/\s/g, '').length);
 
     $(w, '#p12 button.red').click();
@@ -755,6 +755,83 @@ function stayUpload(w) {
     ok('按钮恢复原样', /下载诊断包/.test(b.textContent) && !b.disabled,
        b.textContent);
     ok('顺手把环境变量也读回来了', !!w.ENV);
+  }
+
+  console.log('\n--- 试运行固件，不写闪存 ---');
+  {
+    const w = await boot();
+    const i = $(w, '#p1 input[name=firmware]');
+    const f = new w.File([new Uint8Array(1024)], 'x.itb');
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    $(w, '#p1 input[name=tryboot]').checked = true;
+
+    w.ask();
+    ok('确认框的主按钮改口', txt(w, '#yes') === '启动它', txt(w, '#yes'));
+    ok('说清闪存不写', /闪存不写/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('没把它说成写入', !/仍要写入/.test(txt(w, '#yes')));
+    w.hide();
+
+    /* 试运行只收固件本身 */
+    const i2 = $(w, '#p1 input[name=firmware]');
+    void i2;
+    $(w, '#p1 input[name=tryboot]').checked = false;
+    w.ask();
+    ok('不勾就还是写入', txt(w, '#yes') === '仍要写入', txt(w, '#yes'));
+    w.hide();
+
+    $(w, '#p1 input[name=tryboot]').checked = true;
+    w.send();
+    await sleep(3500);
+    ok('走到完成页', on(w, '#p7'));
+    ok('标题不说上传完成', txt(w, '#p7 h1') === '已交给设备启动',
+       txt(w, '#p7 h1'));
+    ok('说清闪存没动', /闪存没有改动/.test(txt(w, '#p7 .sub')),
+       txt(w, '#p7 .sub'));
+    const steps = txt(w, '#steps');
+    ok('步骤是启动不是写入', /直接启动它/.test(steps) && !/写入固件/.test(steps),
+       steps);
+    ok('说清起不来怎么办', /断电/.test(steps), steps);
+  }
+
+  console.log('\n--- 直接启动系统 / 下次开机进恢复页 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p12]').click();
+    ok('重启还在', /立即重启/.test(txt(w, '#p12')));
+    ok('多了直接启动', /启动系统/.test(txt(w, '#p12')));
+    ok('多了下次开机进恢复页', /下次开机进恢复页/.test(txt(w, '#p12')));
+
+    w.askboot();
+    ok('要确认', on(w, '#mask') && /run bootcmd/.test(txt(w, '#abody')));
+    ok('说清闪存不受影响', /闪存内容不受影响/.test(txt(w, '#abody')));
+    ok('主按钮是启动系统', txt(w, '#yes') === '启动系统');
+    $(w, '#yes').click();
+    await sleep(400);
+    ok('立刻说在启动', on(w, '#off') && /设备正在启动系统/.test(txt(w, '#offt')),
+       txt(w, '#offt'));
+    ok('不给重连按钮', $(w, '#offr').hidden);
+    ok('说清起不来会回来', /会回到这个页面/.test(txt(w, '#offb')),
+       txt(w, '#offb'));
+  }
+
+  console.log('\n--- 下次开机进恢复页 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p12]').click();
+    $(w, '#bob').click();
+    await sleep(600);
+    ok('按钮改口', txt(w, '#bob') === '已设置', txt(w, '#bob'));
+    ok('说清只生效一次', /再下一次恢复正常/.test(txt(w, '#boh')),
+       txt(w, '#boh'));
+
+    /* 存不进闪存是要说的：断电就白设了 */
+    const w2 = await boot();
+    setsel(w2, 'dev', 'noubi');
+    await sleep(600);
+    $(w2, '.nav[data-p=p12]').click();
+    $(w2, '#bob').click();
+    await sleep(600);
+    ok('保存失败要说明', /断电就失效/.test(txt(w2, '#boh')), txt(w2, '#boh'));
   }
 
   console.log('\n--- 网络状态 ---');
