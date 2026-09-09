@@ -33,7 +33,8 @@ order.
 +obj-y	+= bootmenu-refresh.o
  
  obj-$(CONFIG_TARGET_EN7523) += en7523/
- obj-$(CONFIG_TARGET_AN7581) += an7581/--- /dev/null
+ obj-$(CONFIG_TARGET_AN7581) += an7581/
+--- /dev/null
 +++ b/arch/arm/mach-airoha/bootmenu-refresh.c
 @@ -0,0 +1,143 @@
 +// SPDX-License-Identifier: GPL-2.0
