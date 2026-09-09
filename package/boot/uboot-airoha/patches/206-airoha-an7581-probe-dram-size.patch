@@ -41,7 +41,6 @@ Verified against mmap-aliased memory for the 512 MiB, 1 GiB and 2 GiB cases.
 
 --- a/arch/arm/mach-airoha/an7581/init.c
 +++ b/arch/arm/mach-airoha/an7581/init.c
-+++ dr_b/arch/arm/mach-airoha/an7581/init.c	2026-08-30 12:09:53
 @@ -16,9 +16,99 @@
  	return 0;
  }
