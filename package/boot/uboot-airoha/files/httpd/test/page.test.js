@@ -960,29 +960,46 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('顺手把环境变量也读回来了', !!w.ENV);
   }
 
-  console.log('\n--- 试运行固件，不写闪存 ---');
+  console.log('\n--- 试跑固件，不写闪存 ---');
   {
     const w = await boot();
-    const i = $(w, '#p1 input[name=firmware]');
-    const f = new w.File([new Uint8Array(1024)], 'x.itb');
+    ok('侧栏有试跑固件入口', !!$(w, '.nav[data-p=p14]'));
+    $(w, '.nav[data-p=p14]').click();
+    ok('它自己就是一页', on(w, '#p14'));
+    /* 开关没了，这一页天生就是试跑 —— tryboot 由隐藏字段带上去 */
+    ok('tryboot 默认就带着', $(w, '#p14 input[name=tryboot]').checked);
+    const i = $(w, '#p14 input[name=firmware]');
+    const f = new w.File([new Uint8Array(1024)], 'x-initramfs-recovery.itb');
     Object.defineProperty(i, 'files', { value: [f], configurable: true });
-    $(w, '#p1 input[name=tryboot]').checked = true;
 
     w.ask();
     ok('确认框的主按钮改口', txt(w, '#yes') === '启动它', txt(w, '#yes'));
     ok('说清闪存不写', /不写入闪存/.test(txt(w, '#abody')), txt(w, '#abody'));
     ok('没把它说成写入', !/仍要写入/.test(txt(w, '#yes')));
+    ok('名字对得上就不啰嗦', !/不像 initramfs/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
     w.hide();
 
-    /* 试运行只收固件本身 */
-    const i2 = $(w, '#p1 input[name=firmware]');
-    void i2;
-    $(w, '#p1 input[name=tryboot]').checked = false;
+    /* 传错文件是最可能犯的错：名字不像恢复固件就说一句 */
+    const bad = new w.File([new Uint8Array(1024)], 'x-squashfs-sysupgrade.itb');
+    Object.defineProperty(i, 'files', { value: [bad], configurable: true });
     w.ask();
-    ok('不勾就还是写入', txt(w, '#yes') === '仍要写入', txt(w, '#yes'));
+    ok('传成 sysupgrade 会被点破', /不像 initramfs/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    ok('但拦不住，只是提醒', !$(w, '#yes').hidden);
+    w.hide();
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+
+    /* 日常刷机那一页没有 tryboot，走的还是写入 */
+    $(w, '.nav[data-p=p1]').click();
+    ok('日常刷机没有试跑开关', !$(w, '#p1 input[name=tryboot]'));
+    const i1 = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i1, 'files', { value: [f], configurable: true });
+    w.ask();
+    ok('那边还是写入', txt(w, '#yes') === '仍要写入', txt(w, '#yes'));
     w.hide();
 
-    $(w, '#p1 input[name=tryboot]').checked = true;
+    $(w, '.nav[data-p=p14]').click();
     w.send();
     await sleep(3500);
     ok('走到完成页', on(w, '#p7'));
@@ -1345,7 +1362,7 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
   {
     const w = await boot();
     ok('串口日志不再单独占一格', !$(w, '.nav[data-p=p9]'));
-    ok('侧栏剩十项', w.document.querySelectorAll('.nav').length === 10,
+    ok('侧栏十一项', w.document.querySelectorAll('.nav').length === 11,
        w.document.querySelectorAll('.nav').length);
     ok('诊断这一格在', /诊断/.test(txt(w, '.nav[data-p=p8]')),
        txt(w, '.nav[data-p=p8]'));
@@ -1381,9 +1398,14 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
   console.log('\n--- 改名 ---');
   {
     const w = await boot();
-    ok('创建改成写入 UBI 卷', txt(w, '.nav[data-p=p3]') === '写入 UBI 卷',
+    /* 侧栏求字宽齐整，屏内标题求说全 —— 环境变量那格早就是这么分的 */
+    ok('侧栏那格求短', txt(w, '.nav[data-p=p3]') === '按卷写入',
        txt(w, '.nav[data-p=p3]'));
-    ok('屏内标题也跟着改', txt(w, '#p3 h1') === '写入 UBI 卷', txt(w, '#p3 h1'));
+    ok('屏内标题写全', txt(w, '#p3 h1') === '写入 UBI 卷', txt(w, '#p3 h1'));
+    ok('诊断那格补齐四字', txt(w, '.nav[data-p=p8]') === '系统诊断',
+       txt(w, '.nav[data-p=p8]'));
+    ok('试跑固件那格也是四字', txt(w, '.nav[data-p=p14]') === '试跑固件',
+       txt(w, '.nav[data-p=p14]'));
     ok('重启改成启动与重启', txt(w, '.nav[data-p=p12]') === '启动与重启',
        txt(w, '.nav[data-p=p12]'));
     ok('环境变量屏的标题写全', txt(w, '#p11 h1') === 'U-Boot 环境变量',
@@ -1919,22 +1941,27 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        $(w, '#dll').innerHTML.slice(0, 120));
   }
 
-  console.log('\n--- 试运行起不来，页面不锁死 ---');
+  console.log('\n--- 试跑起不来，页面不锁死 ---');
   {
     const w = await boot();
-    const i = $(w, '#p1 input[name=firmware]');
+    $(w, '.nav[data-p=p14]').click();
+    const i = $(w, '#p14 input[name=firmware]');
     Object.defineProperty(i, 'files',
-      { value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
-    $(w, '#p1 input[name=tryboot]').checked = true;
+      { value: [new w.File([new Uint8Array(1024)], 'x-initramfs-recovery.itb')],
+        configurable: true });
     w.send();
     await sleep(3500);
     ok('走到完成页', on(w, '#p7'));
     ok('心跳留着，等设备回来', w.HB === 1, w.HB);
     ok('侧栏没被锁死', !$(w, '#app').hasAttribute('data-busy'));
-    ok('说的是正在启动系统', on(w, '#off') &&
-       /设备正在启动系统/.test(txt(w, '#offt')), txt(w, '#offt'));
-    ok('说清起不来会回到本页面', /回到本页面/.test(txt(w, '#offb')),
-       txt(w, '#offb'));
+    /* p7 已经把「起不来怎么办」写全了，遮罩只会盖住它 */
+    ok('不再盖一层遮罩', !on(w, '#off'));
+    ok('该说的话在 p7 上', /断电/.test(txt(w, '#p7')) &&
+       /回到本页面/.test(txt(w, '#p7')), txt(w, '#p7'));
+    ok('等设备回来靠整页刷新', w.TRYB === 1, w.TRYB);
+    /* 静默久了也不许弹通用的「连接已断开」 */
+    w.offline('');
+    ok('通用断开框同样不弹', !on(w, '#off'));
   }
 
   console.log('\n--- 老功能没被碰坏 ---');
