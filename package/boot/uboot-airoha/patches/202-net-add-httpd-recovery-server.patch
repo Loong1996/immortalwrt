@@ -170,7 +170,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7362 @@
+@@ -0,0 +1,7403 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -4913,6 +4913,26 @@ new file mode 100644
 +		return 0;
 +	}
 +
++	/*
++	 * One shape of write per upload, because the state machine only ever
++	 * takes one.  An upload carrying a volume attaches UBI, writes the
++	 * volumes and goes straight to the read-back -- a bl2, fip or fit
++	 * sent alongside is never written at all, and then the read-back
++	 * reports a mismatch against a target nothing wrote.  Which reads,
++	 * to the user, as a flash that has gone bad.
++	 *
++	 * The page cannot produce this: its forms are separate.  curl can,
++	 * and the same reasoning as try-boot above applies -- the honest
++	 * place to say so is before the upload is accepted.
++	 */
++	if ((nvols || part_find(FIELD_UBIVOL_FILE)) &&
++	    (part_find(FIELD_BL2) || part_find(FIELD_FIP) ||
++	     part_find(FIELD_FIT) || part_find(FIELD_FORMAT))) {
++		httpd_reject("volumes and the boot chain are written by two "
++			     "different paths; send them as two uploads");
++		return -1;
++	}
++
 +	p = part_find(FIELD_UBIVOL_FILE);
 +	if (p) {
 +		if (!part_text(FIELD_UBIVOL_NAME, buf, sizeof(buf)) ||
@@ -4928,7 +4948,27 @@ new file mode 100644
 +		struct mtd_info *m = flash_master();
 +		char ob[24];
 +		ulong off = 0;
++		int extra = 0;
 +
++		/*
++		 * Worse than the case above: a whole-flash restore ends the
++		 * write where it finishes, so anything else in the upload is
++		 * dropped without even a read-back to notice it.  Counted
++		 * rather than compared against up_nparts, because the offset
++		 * field is optional and "stock plus one more file" would come
++		 * to the same two parts as "stock plus its offset".
++		 */
++		for (i = 0; i < up_nparts; i++)
++			if (strcmp(up_parts[i].name, FIELD_STOCK) &&
++			    strcmp(up_parts[i].name, FIELD_STOCK_OFF))
++				extra++;
++
++		if (extra) {
++			httpd_reject("a whole-flash restore replaces "
++				     "everything; nothing else can come with "
++				     "it");
++			return -1;
++		}
 +		if (!m) {
 +			httpd_reject("no flash device found");
 +			return -1;
@@ -6154,7 +6194,7 @@ new file mode 100644
 +			 * silent from the answer to the reset, so nothing could
 +			 * arrive mid-write.  Two kinds are refused here.
 +			 *
-+			 * The first four write the environment volume
++			 * The first three write the environment volume
 +			 * underneath a UBI write, move the address out from
 +			 * under the page that is watching the write, or -- in
 +			 * the case of /envreset, which runs "env default -a" --
@@ -7488,15 +7528,16 @@ new file mode 100644
 +			return CMD_RET_SUCCESS;
 +		}
 +
-+
 +		/*
 +		 * Last of the deferred actions.  /netmode is refused outright
-+		 * while a write is running, so this can no longer be pending
-+		 * alongside one -- but the ordering stays,
-+		 * because an address change loops back into net_loop(), which
-+		 * calls httpd_start_server(), and that clears flash_pending.
-+		 * One line moved above this one and a write the page had been
-+		 * told was accepted would vanish.
++		 * while a write is running, so it can no longer be pending
++		 * alongside one at all; the ordering is kept because it is
++		 * the honest one, not because anything still rests on it.
++		 * It used to: httpd_start_server() wiped flash_pending on
++		 * every entry, so re-entering net_loop() for an address
++		 * change before the write had been dealt with lost an upload
++		 * the page had already been told was accepted.  That wipe now
++		 * steps around a running write, which is what closed it.
 +		 *
 +		 * Not a return either: what follows a returning httpd depends
 +		 * on how recovery was entered.  web_uboot_boot_forever loops and
