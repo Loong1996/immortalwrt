@@ -177,7 +177,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7790 @@
+@@ -0,0 +1,7807 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -4137,21 +4137,38 @@ new file mode 100644
 + * rebooted underneath the page, and the page reloads itself instead of
 + * showing volume tables from before the reboot.
 + */
-+static char ping_buf[96];
++/*
++ * Sized off the header rather than off the body: JSON_HDR alone is 110 bytes
++ * and jb_done()'s own "reply too large" answer is 155, so anything under that
++ * cannot report its own overflow either.  At 96 -- what this was -- every
++ * single poll was cut mid-"Connection:", header incomplete, body absent.
++ * U-Boot's vsnprintf() truncates and returns what it wrote rather than what
++ * it wanted to (lib/vsprintf.c), so the length looked right and nothing on
++ * the console said otherwise; from the page the board simply never came up
++ * as connected.  Built through jb_printf() for the same reason: /ping was
++ * the one JSON endpoint writing straight into its buffer, which is exactly
++ * how it stayed silently truncated across four releases.
++ */
++static char ping_buf[256];
 +static int ping_len;
 +
 +static int httpd_ping(void)
 +{
++	struct jbuf jb;
++
++	jb_init(&jb, ping_buf, sizeof(ping_buf));
++
 +	/*
 +	 * ovf rides along here because the page polls this anyway, and because
 +	 * a follower on /log?from= would otherwise never learn that the record
 +	 * stopped growing for a reason.
 +	 */
-+	return snprintf(ping_buf, sizeof(ping_buf),
-+			JSON_HDR("200 OK") "{\"up\":%lu,\"ovf\":%d}",
-+			get_timer(0),
-+			IS_ENABLED(CONFIG_CONSOLE_RECORD) &&
-+			(gd->flags & GD_FLG_RECORD_OVF) ? 1 : 0);
++	jb_printf(&jb, JSON_HDR("200 OK") "{\"up\":%lu,\"ovf\":%d}",
++		  get_timer(0),
++		  IS_ENABLED(CONFIG_CONSOLE_RECORD) &&
++		  (gd->flags & GD_FLG_RECORD_OVF) ? 1 : 0);
++
++	return jb_done(&jb, "/ping");
 +}
 +
 +/*
