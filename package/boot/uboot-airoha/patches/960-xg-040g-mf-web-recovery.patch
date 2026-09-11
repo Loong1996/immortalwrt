@@ -4,6 +4,14 @@ Subject: [PATCH] xg-040g-mf: enable complete web recovery support
 Enable the web recovery server for XG-040G-MF, configure its factory volumes,
 add the automatic recovery path, identify the web U-Boot in the boot menu,
 and keep the factory MAC guard in the recovery environment.
+
+CONFIG_EVENT comes with it.  The shared boot menu refresh hangs its two spies
+off EVT_SETTINGS_R and EVT_POST_PREBOOT, and with events compiled out
+event_notify() is a no-op, so neither one is ever called.  A board that has
+saved an environment already -- which is every board that has been booted once
+-- would go on running the boot_ubi and check_buttons it saved back then, both
+of them pointing at TFTP, and never reach the web recovery this patch just gave
+it.  XG-040G-MD has carried the symbol from the start; this is MF catching up.
 diff --git a/configs/an7583_nokia_xg-040g-mf_defconfig b/configs/an7583_nokia_xg-040g-mf_defconfig
 --- a/configs/an7583_nokia_xg-040g-mf_defconfig
 +++ b/configs/an7583_nokia_xg-040g-mf_defconfig
@@ -17,7 +25,15 @@ diff --git a/configs/an7583_nokia_xg-040g-mf_defconfig b/configs/an7583_nokia_xg
  # CONFIG_DISPLAY_BOARDINFO is not set
  CONFIG_HUSH_PARSER=y
  CONFIG_SYS_PROMPT="AN7583> "
-@@ -41,6 +44,12 @@ CONFIG_CMD_MTD_NAND_READ_TEST=y
+@@ -27,6 +30,7 @@ CONFIG_SYS_MAXARGS=8
+ CONFIG_CMD_CPU=y
+ CONFIG_CMD_LICENSE=y
+ CONFIG_CMD_BOOTMENU=y
++CONFIG_EVENT=y
+ CONFIG_CMD_ASKENV=y
+ CONFIG_CMD_ERASEENV=y
+ CONFIG_CMD_ENV_FLAGS=y
+@@ -41,6 +45,12 @@ CONFIG_CMD_MTD_NAND_READ_TEST=y
  CONFIG_CMD_MTD_NAND_WRITE_TEST=y
  CONFIG_CMD_PART=y
  CONFIG_CMD_TFTPSRV=y

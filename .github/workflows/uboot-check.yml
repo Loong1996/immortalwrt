@@ -296,7 +296,12 @@ jobs:
           # 打不开的话 net/httpd.c 根本不会被编译，整个作业就是空转。
           grep -qx 'CONFIG_CMD_HTTPD=y' .config \
             || { echo "::error::.config 里没有 CONFIG_CMD_HTTPD=y —— httpd.c 不会被编译"; exit 1; }
-          grep -E '^CONFIG_(CMD_HTTPD|PROT_TCP|CYCLIC|HTTPD_FACTORY_|CONSOLE_RECORD)' .config
+          # 210 的两个间谍挂在 EVT_SETTINGS_R / EVT_POST_PREBOOT 上，EVENT=n 时
+          # event_notify() 是空操作，升级上来的机器会继续跑存档里指向 TFTP 的
+          # boot_ubi 和 check_buttons —— 编译照样过，救砖入口却没了。
+          grep -qx 'CONFIG_EVENT=y' .config \
+            || { echo "::error::.config 里没有 CONFIG_EVENT=y —— 210 的 env 刷新间谍不会被调用"; exit 1; }
+          grep -E '^CONFIG_(CMD_HTTPD|PROT_TCP|CYCLIC|EVENT|HTTPD_FACTORY_|CONSOLE_RECORD)' .config
 
       - name: Build(交叉编译)
         run: |
