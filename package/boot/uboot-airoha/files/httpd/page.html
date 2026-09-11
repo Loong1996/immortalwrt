@@ -519,7 +519,9 @@ var g=HBGEN,x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fir
 x.timeout=2500;
 x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}
 if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}
-fin(x.status==200,u)};
+/* 200 不算凭据：那个地址上随便什么东西都能回 200 —— 电脑另一条网卡后面的
+   路由器、浏览器缓存、中间的代理。认这块板子的是 up 这个字段 */
+fin(x.status==200&&u>=0,u)};
 x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};
 x.open('GET','/ping');x.send()}
 function seen(o,u){

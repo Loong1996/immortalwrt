@@ -173,7 +173,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7427 @@
+@@ -0,0 +1,7530 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -315,6 +315,13 @@ new file mode 100644
 +#define CONN_WR			((void *)19)
 +#define CONN_WRBUSY		((void *)20)
 +#define CONN_NET		((void *)21)
++/*
++ * Answered and done with, but the peer is still sending: swallow the rest
++ * of the request and say nothing.  An upload is refused long before the
++ * browser has finished pushing the image, and the bytes still on the wire
++ * have to be taken off it -- see httpd_on_snd_una_update().
++ */
++#define CONN_DRAIN		((void *)22)
 +
 +/*
 + * Commands run after the response has been flushed and net_loop() returned.
@@ -1145,7 +1152,9 @@ new file mode 100644
 +	"x.timeout=2500;\n"
 +	"x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}\n"
 +	"if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}\n"
-+	"fin(x.status==200,u)};\n"
++	"/* 200 不算凭据：那个地址上随便什么东西都能回 200 —— 电脑另一条网卡后面的\n"
++	"路由器、浏览器缓存、中间的代理。认这块板子的是 up 这个字段 */\n"
++	"fin(x.status==200&&u>=0,u)};\n"
 +	"x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};\n"
 +	"x.open('GET','/ping');x.send()}\n"
 +	"function seen(o,u){\n"
@@ -2095,6 +2104,24 @@ new file mode 100644
 +static ulong up_base;
 +
 +/*
++ * The head of the request being read, which is what a connection is
++ * classified from.  Its own buffer, and that is the point: the classifier
++ * used to read the staging area, the same memory an upload lands in.
++ * net/tcp.c has one static stream, so up_owner -- a pointer to it -- is
++ * equal for every connection there will ever be, and a request arriving
++ * while an image sat staged was taken for that upload's own bytes and
++ * copied over the head of it.  A /wr poll during a write did that every
++ * 700 ms; what saved it was landing on the HTTP and multipart headers
++ * that precede the first part, a few hundred bytes short of the image.
++ * Nothing could arrive mid-write at all before 0.3.0.
++ *
++ * Only the first 320 bytes are ever looked at (httpd_classify_get()),
++ * and httpd_parse() and st_begin() read their headers from the staging
++ * area itself, where their own bytes did land.
++ */
++static char req_head[HDRBUF_SZ];
++
++/*
 + * The upload lands at $loadaddr and is flashed from where it landed, so the
 + * ceiling is where U-Boot itself begins -- not the top of DRAM, which is
 + * where it relocated its code, malloc arena, FDT and stack to.  The bottom
@@ -2639,9 +2666,17 @@ new file mode 100644
 + * write -- it is only flagged, and jb_done() turns the flag into an error
 + * reply, because half a JSON document is worth less than none.
 + */
++/*
++ * no-store on all of it: each of these is a reading of the board as it is
++ * right now, and none carries a validator for a browser to revalidate
++ * against.  A cached /ping is the worst of them -- the page would go on
++ * being told the board is there, out of its own cache, with the board
++ * long gone.
++ */
 +#define JSON_HDR(status)						\
 +	"HTTP/1.0 " status "\r\n"					\
 +	"Content-Type: application/json; charset=utf-8\r\n"		\
++	"Cache-Control: no-store\r\n"					\
 +	"Connection: close\r\n"						\
 +	"\r\n"
 +
@@ -3930,6 +3965,7 @@ new file mode 100644
 +	static const char hdr[] =
 +		"HTTP/1.0 200 OK\r\n"
 +		"Content-Type: text/plain; charset=utf-8\r\n"
++		"Cache-Control: no-store\r\n"
 +		"Connection: close\r\n"
 +		"\r\n";
 +	static const char full[] =
@@ -4031,6 +4067,7 @@ new file mode 100644
 +	static const char hdr[] =
 +		"HTTP/1.0 200 OK\r\n"
 +		"Content-Type: text/plain; charset=utf-8\r\n"
++		"Cache-Control: no-store\r\n"
 +		"Connection: close\r\n"
 +		"\r\n";
 +	char from[24];
@@ -6014,13 +6051,55 @@ new file mode 100644
 +		return len;
 +
 +	/*
++	 * The head of every request, wherever its bytes end up: classifying
++	 * from this rather than from the staging area is what keeps a request
++	 * off a staged image.  Before the refusals below on purpose -- a
++	 * segment that is dropped or refused here still came off the wire,
++	 * and a stale head is what got a plain GET classified as the POST
++	 * that preceded it.
++	 */
++	if (rx_offs < sizeof(req_head)) {
++		u32 n = sizeof(req_head) - rx_offs;
++
++		if (n > (u32)len)
++			n = (u32)len;
++		memcpy(req_head + rx_offs, buf, n);
++	}
++
++	/*
++	 * Staged, or being written: the staging area is the image now, and
++	 * nothing that gets this far still needs it.  A POST is turned away
++	 * before it stages anything -- CONN_POSTBUSY while a write runs,
++	 * the page itself while an upload is staged -- so these bytes are
++	 * a request that needs no body, or a retransmission of one whose
++	 * body is already in.  Take them off the wire and drop them.
++	 */
++	if (flash_running || up_ready)
++		return len;
++
++	/*
 +	 * Exactly one connection at a time may stage data at $loadaddr.  The
 +	 * first one to deliver offset 0 claims it; a segment arriving before
 +	 * that is refused so it gets retried once the head of the stream is in.
 +	 */
 +	if (!up_owner) {
-+		if (rx_offs != 0)
++		if (rx_offs != 0) {
++			/*
++			 * Nothing holds the staging area and this is not
++			 * the head of a request, so there is nothing for
++			 * these bytes to belong to.  An upload that has
++			 * already been answered is the one way a POST
++			 * gets here -- take the rest off the wire, the
++			 * same thing CONN_DRAIN is for.  Refusing what
++			 * will never be accepted leaves the peer
++			 * retransmitting into a stream that then never
++			 * closes, and this stack serves one at a time.
++			 */
++			if (tcp->priv == CONN_POST)
++				return len;
++
 +			return 0;
++		}
 +		up_owner = tcp;
 +	} else if (up_owner != tcp) {
 +		/*
@@ -6174,7 +6253,7 @@ new file mode 100644
 +	 * [0..rx_bytes-1] are present and contiguous.
 +	 */
 +	if (tcp->priv == CONN_UNKNOWN) {
-+		const char *req = (const char *)up_base;
++		const char *req = req_head;
 +
 +		if (up_owner != tcp || rx_bytes < 4)
 +			return;
@@ -6242,7 +6321,7 @@ new file mode 100644
 +				return;
 +			}
 +
-+			/* Built now, while the request is still at up_base. */
++			/* Built now, while the request is still in req_head. */
 +			if (cls == CONN_INFO)
 +				info_len = httpd_info();
 +			else if (cls == CONN_CHECK)
@@ -6459,6 +6538,15 @@ new file mode 100644
 +		} else {
 +			/* Let them try again without touching the power. */
 +			printf("httpd: /stock failed, ready for another attempt\n");
++			/*
++			 * st_rx() swallows the rest while st_failed is
++			 * set, and clearing it is what this block is
++			 * for; see CONN_DRAIN.  A whole-chip image is
++			 * the longest thing this server is ever sent,
++			 * so the window between the answer and the last
++			 * byte is at its widest right here.
++			 */
++			tcp->priv = CONN_DRAIN;
 +			up_active = 0;
 +			up_owner = NULL;
 +			st_resp_len = 0;
@@ -6514,8 +6602,23 @@ new file mode 100644
 +			flash_running = 1;
 +		}
 +	} else {
-+		/* Let the user retry after a failed upload. */
++		/*
++		 * Let the user retry after a failed upload.  The body is
++		 * still on its way -- an upload is refused on its headers,
++		 * and those arrive first -- while up_failed, the flag that
++		 * had httpd_rx() dropping the rest as it came, is cleared
++		 * right here.  So the stream is reclassified first and the
++		 * bytes keep being dropped.  Without that, every later
++		 * segment took the "not accepted, send it again" path:
++		 * nothing was acknowledged, the browser retransmitted for
++		 * as long as it had patience, and because net/tcp.c keeps
++		 * one stream and refuses a new SYN while it is not CLOSED,
++		 * nothing else could connect -- not even a reload of the
++		 * page.  One refused upload and the board answered nothing
++		 * at all until it was restarted.
++		 */
 +		printf("httpd: upload failed, ready for another attempt\n");
++		tcp->priv = CONN_DRAIN;
 +		up_active = 0;
 +		up_owner = NULL;
 +		up_parsed = 0;
