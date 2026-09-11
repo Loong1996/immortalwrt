@@ -17,8 +17,10 @@ page here before touching the C side; what the stub answers is what the
 real endpoints answer, so a layout or wording change is decided on the
 same data.
 
-Markers are handled the way gen.py does, except that the STOCK section is
-always shown and the @@MACROS@@ get sample values.
+Markers are handled the way gen.py does, except that the @@MACROS@@ get
+sample values.  The STOCK section is shown by default; --no-stock drops it
+instead, which is what a board built without CMD_HTTPD_STOCK_RESTORE serves.
+Anything reachable from outside that section has to keep working in both.
 """
 import json
 import sys
@@ -165,6 +167,17 @@ httpd: DHCP ACK -> 192.168.1.100
 STUB = r"""
 <script>(function(){
 var D=@DATA@,S={dev:'ok',post:'ok',conn:'up'},T0=Date.now(),DOWN=0;
+
+/*
+ * 擦尾报的块数。设备是从镜像占到的最后一个擦除块之后起算的，这里照抄，
+ * 否则完成页上的数字对不上，那一行就白加了。
+ */
+function wiped(u,tot){
+ if(!/wipe=1/.test(u||''))return '';
+ var f=D.info.flash,off=parseInt((/off=0x([0-9a-f]+)/.exec(u||'')||[0,'0'])[1],16),
+     first=off+Math.ceil(tot/f.erase)*f.erase,
+     nb=Math.max(0,Math.floor((f.size-first)/f.erase));
+ return ' wiped '+nb}
 var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',holes:0,name:''};
 var DBUSY=0,DSENT=0,DTOTAL=0,DTICK=null;
 /* 真设备的日志会一直长，跟随功能不自己长就看不出在跟 */
@@ -266,7 +279,7 @@ x.send=function(fd){
    if(st){if(S.post=='fail500'){x.status=500;
      x.responseText='写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电'}
     else{x.status=200;
-     x.responseText='ok '+tot+' bytes crc32 '+((0x3f2a91c4+tot)>>>0).toString(16)+' skipped 0';
+     x.responseText='ok '+tot+' bytes crc32 '+((0x3f2a91c4+tot)>>>0).toString(16)+' skipped 0'+wiped(x.u,tot);
      fall(60000)}
     x.onload&&x.onload();return}
    /* 试运行一去不回，所以它还是先回复后动手 */
@@ -346,11 +359,18 @@ document.addEventListener('DOMContentLoaded',function(){
 """
 
 
-def render(html):
+def render(html, stock=True):
     out = []
+    skip = False
     for line in html.splitlines():
         s = line.strip()
-        if s in ("<!--#if STOCK-->", "<!--#endif-->"):
+        if s == "<!--#if STOCK-->":
+            skip = not stock
+            continue
+        if s == "<!--#endif-->":
+            skip = False
+            continue
+        if skip:
             continue
         out.append(line)
     html = "\n".join(out) + "\n"
@@ -364,10 +384,13 @@ def render(html):
 
 
 def main():
-    html = open(sys.argv[1], encoding="utf-8").read()
-    dst = sys.argv[2] if len(sys.argv) > 2 else "preview.html"
-    open(dst, "w", encoding="utf-8", newline="").write(render(html))
-    print("wrote", dst)
+    args = [a for a in sys.argv[1:] if a != "--no-stock"]
+    stock = "--no-stock" not in sys.argv[1:]
+    html = open(args[0], encoding="utf-8").read()
+    # argv[2] is written over, so it is the destination and never the source.
+    dst = args[1] if len(args) > 1 else "preview.html"
+    open(dst, "w", encoding="utf-8", newline="").write(render(html, stock))
+    print("wrote", dst, "(no stock)" if not stock else "")
 
 
 if __name__ == "__main__":

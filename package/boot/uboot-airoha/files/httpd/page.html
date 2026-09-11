@@ -228,7 +228,6 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
-<!--#if STOCK-->
 <div class=pane id=p14>
 <h1>试跑固件</h1><p class=sub>把恢复固件载入内存直接引导，<b>闪存一个字节都不写</b>。起不来断电即恢复原系统。</p>
 <label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox="0 0 24 24"><polygon points="8 5 19 12 8 19"/></svg></span><span class=tx><span class=t><span class=fn style="color:inherit">选择恢复固件</span></span><span class="s mono">…-initramfs-recovery.itb</span></span><span class=pb>选择文件…</span></label>
@@ -239,11 +238,13 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
 </div>
 
+<!--#if STOCK-->
 <div class=pane id=p4>
 <h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>
 <div class=box>
 <div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 <div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
+<div class="fr wide"><span class=fl>擦净尾部<small>镜像之后的擦除块一并擦空；不擦则保留原有内容</small></span><span class="fc end"><input type=checkbox class=sw name=wipe value=1 checked></span></div>
 </div>
 <p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。写入期间指示灯<b>流水</b>，与其他页面一致；本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">刷写</button></div>
@@ -1015,7 +1016,7 @@ else{W.push('固件仅载入内存，不写入闪存；引导失败断电即恢�
 if(!/recovery/i.test(rows[0].f.name))W.push('这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit 卷里，试运行不写闪存也就用不到它，内核多半起不来');}
 y.textContent='启动它'}
 $('#atitle').textContent=$('h1',p).textContent;
-if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
+if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-rows[0].f.size:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
 if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
 /*
@@ -1066,17 +1067,18 @@ bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正
 var now=Date.now(),dt=(now-RT)/1000;
 if(dt>=1.5){RATE=(done-RN)/dt;RT=now;RN=done}
 $('.pct',prog).textContent=sz(done)+' / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'+(RATE>0?' · '+spd(RATE)+' · 剩余 '+dur((tot-done)/RATE):'')};
-x.upload.onload=function(){bar.className='pbar ind';$('.pwhat',prog).textContent=p.id=='p4'?'传输完成，设备正在写入最后一块…':'上传完成，设备开始写入闪存';
-/* 写入期间设备不响应网络，报不出进度；能给的只有一个估计 */
-$('.pct',prog).textContent=p.id=='p4'?'':'预计 '+dur(Math.max(8,tot/WRSPD))};
+x.upload.onload=function(){bar.className='pbar ind';var wz=$('[name=wipe]',p),tb=$('[name=tryboot]',p),tbo=!!(tb&&tb.checked);$('.pwhat',prog).textContent=p.id=='p4'?(wz&&wz.checked?'传输完成，设备正在写入最后一块并擦净尾部…':'传输完成，设备正在写入最后一块…'):tbo?'已载入内存，即将启动':'上传完成，设备开始写入闪存';
+/* 刷回原厂报不出进度：那条 /stock 连着板子唯一的 tcp_stream，腾不出第二条
+   连接去问。别的页写入期间会轮询 /wr，这里给的只是接手之前的一个估计 */
+$('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};
 x.onload=function(){if(x.status==200){done(x.responseText);return}
 /* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */
 fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};
 x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
 /* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；
    偏移在请求行里，设备收到第一个包就知道该写到哪 */
-if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);
-x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16));x.send(rows[0].f);return}
+if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);var wp=$('[name=wipe]',p);
+x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16)+(wp&&wp.checked?'&wipe=1':''));x.send(rows[0].f);return}
 x.open('POST','/');x.send(fd)}
 function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
 /* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
@@ -1176,11 +1178,11 @@ $('#rbody').innerHTML=h;$('#rmask').setAttribute('data-on','')}
 function rhide(){$('#rmask').removeAttribute('data-on');info()}
 function rboot(){$('#rmask').removeAttribute('data-on');doreboot()}
 /* 设备回的是 "ok N bytes crc32 xxxxxxxx skipped M" */
-function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)/.exec(t||''),h='',k;
+function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)(?: wiped (\d+))?/.exec(t||''),h='',k,f=INFO&&INFO.flash;
 if(m){k=+m[3];
 h='<tr><td>写入</td><td>'+sz(+m[1])+'（'+m[1]+' 字节）</td></tr>'+
 '<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+
-'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'}
+'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'+(m[4]===undefined?'':'<tr><td>擦净尾部</td><td>'+(f?sz(+m[4]*f.erase)+'（'+m[4]+' 块）':m[4]+' 块')+'</td></tr>')}
 else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';
 CHK=null;$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
 function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}

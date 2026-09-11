@@ -18,12 +18,19 @@ const { JSDOM, VirtualConsole } = require('jsdom');
 
 const HERE = __dirname;
 const HTML = path.join(HERE, 'preview.html');
+// The same page as a board without CMD_HTTPD_STOCK_RESTORE serves it.  Kept
+// as a second document rather than a flag on boot(), because what is being
+// checked is what the STOCK markers cut out -- and that is decided while the
+// page is rendered, not while it runs.
+const HTML_NOSTOCK = path.join(HERE, 'preview-nostock.html');
 const PY = process.env.PYTHON ||
 	(process.platform === 'win32' ? 'python' : 'python3');
 
 // Render first, always: a stale preview.html would test yesterday's page.
-execFileSync(PY, [path.join(HERE, '..', 'preview.py'),
-		  path.join(HERE, '..', 'page.html'), HTML], { stdio: 'inherit' });
+const SRC = path.join(HERE, '..', 'page.html');
+const PREVIEW = path.join(HERE, '..', 'preview.py');
+execFileSync(PY, [PREVIEW, SRC, HTML], { stdio: 'inherit' });
+execFileSync(PY, [PREVIEW, '--no-stock', SRC, HTML_NOSTOCK], { stdio: 'inherit' });
 let pass = 0, fail = 0;
 
 function ok(name, cond, extra) {
@@ -32,13 +39,13 @@ function ok(name, cond, extra) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function boot() {
+async function boot(src) {
   // jsdom cannot navigate, so a location.reload() surfaces as a jsdomError;
   // that is how the tests observe whether the page decided to reload.
   const errs = [];
   const vc = new VirtualConsole();
   vc.on('jsdomError', e => errs.push(String(e && e.message)));
-  const dom = new JSDOM(fs.readFileSync(HTML, 'utf8'), {
+  const dom = new JSDOM(fs.readFileSync(src || HTML, 'utf8'), {
     url: 'http://192.168.1.1/', runScripts: 'dangerously', pretendToBeVisual: true,
     virtualConsole: vc,
   });
@@ -546,13 +553,20 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
        txt(w, '#p13 .sub'));
 
     const rows = [...w.document.querySelectorAll('#stres tr')];
-    ok('设备回报三项都在', rows.length === 3, rows.length);
+    ok('设备回报四项都在', rows.length === 4, rows.length);
     ok('写入长度对得上', /1\.0 MiB/.test(rows[0].textContent),
        rows[0].textContent);
     ok('crc32 报出来了', /^[0-9a-f]{1,8}$/.test(rows[1].cells[1].textContent),
        rows[1].cells[1].textContent);
     ok('没有坏块就写无', rows[2].cells[1].textContent === '无',
        rows[2].cells[1].textContent);
+    /* 1 MiB 的镜像落在 256 MiB 的片子上，尾巴 255 MiB = 2040 个 128 KiB 块 */
+    ok('第四项是擦净尾部', /擦净尾部/.test(rows[3].cells[0].textContent),
+       rows[3].cells[0].textContent);
+    ok('擦净的块数和容量都报了',
+       /2040 块/.test(rows[3].cells[1].textContent) &&
+       /255[.,]0 MiB/.test(rows[3].cells[1].textContent),
+       rows[3].cells[1].textContent);
     ok('说清 crc32 拿来跟备份对', /与备份时记录的值一致/.test(txt(w, '#p13')));
     ok('心跳停了', w.HB === 0);
 
@@ -641,10 +655,34 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     w.send();
     w.XMLHttpRequest = XHR;
 
-    ok('走 /stock 并带上偏移', sent && sent.u === '/stock?off=0x8000000',
-       sent && sent.u);
+    /* 擦净尾部默认勾着，所以默认这一发就该带 wipe */
+    ok('走 /stock，带上偏移和擦净标记',
+       sent && sent.u === '/stock?off=0x8000000&wipe=1', sent && sent.u);
     ok('body 就是文件本身，没有 FormData 包装',
        sent && sent.body === f, sent && String(sent.body));
+
+    /* 取消勾选就不带，设备那边照旧只动镜像覆盖到的块 */
+    let sent3 = null;
+    const w3 = await boot();
+    $(w3, '.nav[data-p=p4]').click();
+    ok('擦净尾部默认是勾上的', $(w3, '#p4 input[name=wipe]').checked);
+    const i3 = $(w3, '#p4 input[name=stock]');
+    const f3 = new w3.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f3, 'size', { value: 0x10000000 });
+    Object.defineProperty(i3, 'files', { value: [f3], configurable: true });
+    $(w3, '#p4 input[name=stockoff]').value = '0x8000000';
+    $(w3, '#p4 input[name=wipe]').checked = false;
+    const XHR3 = w3.XMLHttpRequest;
+    w3.XMLHttpRequest = function () {
+      const x = new XHR3();
+      const open = x.open.bind(x);
+      x.open = (m, u) => { sent3 = { m, u }; return open(m, u); };
+      return x;
+    };
+    w3.send();
+    w3.XMLHttpRequest = XHR3;
+    ok('取消勾选就不带擦净标记',
+       sent3 && sent3.u === '/stock?off=0x8000000', sent3 && sent3.u);
 
     /* 别的页仍然是表单 */
     let sent2 = null;
@@ -1999,6 +2037,101 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
                      'typeof', 'function', 'new'].includes(fn))
       .filter(fn => typeof w[fn] !== 'function');
     ok('所有内联 onclick 调的函数都存在', dead.length === 0, dead.join(','));
+  }
+
+  console.log('\n--- 关掉 STOCK 的构建 ---');
+  {
+    const w = await boot(HTML_NOSTOCK);
+    ok('刷回原厂整块没编进来', !$(w, '#p4') && !$(w, '.nav[data-p=p4]'));
+    ok('它的写入完成页也没有', !$(w, '#p13'));
+
+    /* 试跑是服务端一直都有的能力，不跟着 stock restore 走。侧栏按钮和 p1 上
+       的跳转都在 STOCK 段外面，页要是留在段里面，点下去就是一片空白 */
+    ok('侧栏还有试跑固件', !!$(w, '.nav[data-p=p14]'));
+    ok('试跑页本身也在', !!$(w, '#p14'));
+    ok('日常刷机里的跳转落得下去',
+       w.jump('p14') === false && !!$(w, '#p14') && on(w, '#p14'));
+    $(w, '.nav[data-p=p1]').click();
+    ok('回得去日常刷机', on(w, '#p1'));
+    $(w, '.nav[data-p=p14]').click();
+    ok('侧栏点进去也不是空白', on(w, '#p14'));
+    ok('tryboot 标记跟着页一起在', !!$(w, '#p14 input[name=tryboot]'));
+
+    /* 反过来也查一遍：侧栏每个按钮都得有对应的 pane */
+    const orphan = navs(w).map(b => b.getAttribute('data-p'))
+      .filter(id => !$(w, '#' + id));
+    ok('侧栏没有指向不存在的页', orphan.length === 0, orphan.join(','));
+  }
+
+  console.log('\n--- 擦净尾部：确认框先说清楚 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 200 * 1024 * 1024 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+
+    /* 256 MiB 的片子写 200 MiB，剩下 56 MiB */
+    w.ask();
+    ok('说了尾部会被擦成空白',
+       /剩余的 56[.,]0 MiB 将被擦成空白/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+
+    $(w, '#p4 input[name=wipe]').checked = false;
+    w.ask();
+    ok('取消勾选就改口说保留',
+       /剩余的 56[.,]0 MiB 保留原有内容不动/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+  }
+
+  console.log('\n--- 擦净尾部：不勾就不报那一行 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
+    Object.defineProperty(f, 'size', { value: 1 << 20 });
+    Object.defineProperty(i, 'files', { value: [f], configurable: true });
+    $(w, '#p4 input[name=wipe]').checked = false;
+    w.send();
+    await sleep(3200);
+    ok('照样落到写入完成页', on(w, '#p13'));
+    const rows = [...w.document.querySelectorAll('#stres tr')];
+    ok('回报回到三项', rows.length === 3, rows.length);
+    ok('没有擦净尾部那一行', !/擦净尾部/.test(txt(w, '#stres')), txt(w, '#stres'));
+  }
+
+  console.log('\n--- 上传完成那一刻说的话 ---');
+  {
+    /* 桩：80ms 触发 upload.onload，1200ms 后才回 200，中间这段就是屏幕上
+       挂着那句话的时间 */
+    const w = await boot();
+    $(w, '.nav[data-p=p14]').click();
+    const i = $(w, '#p14 input[name=firmware]');
+    Object.defineProperty(i, 'files',
+      { value: [new w.File([new Uint8Array(1024)], 'x-initramfs-recovery.itb')],
+        configurable: true });
+    w.send();
+    await sleep(600);
+    const what = txt(w, '#p14 .pwhat');
+    /* 试跑一个字节都不写闪存，这里原来跟着别的页一起说「开始写入闪存」 */
+    ok('没说在写闪存', !/写入闪存/.test(what), what);
+    ok('说的是载入内存要启动了', /已载入内存，即将启动/.test(what), what);
+    ok('不给按写入速度算的预计时间', txt(w, '#p14 .pct') === '',
+       txt(w, '#p14 .pct'));
+  }
+
+  console.log('\n--- 真要写闪存的页照旧 ---');
+  {
+    const w = await boot();
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files',
+      { value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    w.send();
+    await sleep(600);
+    ok('日常刷机还是说开始写入闪存',
+       /上传完成，设备开始写入闪存/.test(txt(w, '#p1 .pwhat')), txt(w, '#p1 .pwhat'));
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');
