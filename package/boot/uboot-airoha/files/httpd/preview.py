@@ -81,7 +81,7 @@ CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
     ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["web_uboot_envver", 0, "6，与当前 U-Boot 一致", "引导"],
+    ["web_uboot_envver", 0, "7，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
@@ -128,7 +128,7 @@ ENV = [
                              "ubi write $loadaddr fit $filesize"),
     ("vendor", "nokia"),
     ("web_uboot_boot_forever", "while true ; do httpd ; sleep 1 ; done"),
-    ("web_uboot_envver", "6"),
+    ("web_uboot_envver", "7"),
     ("web_uboot_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
     ("web_uboot_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize"),
     ("web_uboot_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "

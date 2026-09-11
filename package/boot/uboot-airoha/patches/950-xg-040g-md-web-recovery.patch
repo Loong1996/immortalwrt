@@ -86,7 +86,7 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+web_uboot_envver=6
++web_uboot_envver=7
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
@@ -99,7 +99,7 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  bootmenu_5=[31mLoad BL2 preloader via TFTP then write to NAND[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
  bootmenu_6=Reboot=reset
  bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
-+bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
++bootmenu_8=[31mStart web recovery server[0m=httpd ; run bootmenu_confirm_return
 +bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run web_uboot_show_about ; run bootmenu_confirm_return
  boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
  boot_default=run bootcmd ; run boot_tftp_forever

@@ -177,7 +177,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7760 @@
+@@ -0,0 +1,7790 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -771,10 +771,11 @@ new file mode 100644
 +		" class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span"
 +		" class=fn>未选择</span></label></div>\n"
 +	"<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input"
-+		" type=text name=stockoff class=mono value=0x0 style=\"width:130px\"><span class=fn>0"
-+		" 为整片，亦可写入单个分区</span></span></div>\n"
-+	"<div class=\"fr wide\"><span class=fl>擦净尾部<small>镜像之后的擦除块一并擦空；不擦则保留原有内容</small></span><span"
-+		" class=\"fc end\"><input type=checkbox class=sw name=wipe value=1 checked></span></div>\n"
++		" type=text name=stockoff class=mono value=0x0 style=\"width:130px\" oninput=stwipe()><span"
++		" class=fn>0 为整片，亦可写入单个分区</span></span></div>\n"
++	"<div class=\"fr wide\"><span class=fl>擦净尾部<small>镜像之后<b>直至片尾</b>的擦除块一并擦空；不擦则保留原有内容</small></span><"
++		"span class=\"fc end\"><input type=checkbox class=sw name=wipe value=1 checked"
++		" onchange=\"this.dataset.t=1\"></span></div>\n"
 +	"</div>\n"
 +	"<p class=note>镜像须来自本机备份，可在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。长度上限为 flash 容量"
 +		" <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于"
@@ -1117,6 +1118,15 @@ new file mode 100644
 +	"drag(i.closest?(i.closest('.drop')||i.closest('.fr')):null,i)})}\n"
 +	"function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return"
 +		" parseInt(v,16)}\n"
++	"/*\n"
++	"* 擦净尾部擦到的是片尾，不是分区尾 —— 设备那边 st_wipe_end 就是 flash 容量。\n"
++	"* 偏移 0 是「整片写回」，把镜像之后的残留擦掉是对的；偏移非 0 是往单个分区里\n"
++	"* 写，再擦就把它后面的东西一起带走了：按页面自己教的「备份下载→原始区段」\n"
++	"* 导出一段再写回来，默认勾着就会连 UBI 和 ri/bosa 一起擦空。所以偏移一改就\n"
++	"* 松勾。用户亲手动过这个开关之后不再代他决定 —— dataset.t 记的就是这个。\n"
++	"*/\n"
++	"function stwipe(){var w=$('[name=wipe]');if(w&&!w.dataset.t)w.checked=hex($('[name=stockoff]').v"
++		"alue)===0}\n"
 +	"function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span"
 +		" class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input"
 +		" type=file name=\"fvol_'+esc(v.n)+'\" data-l=\"'+esc(v.n)+'\"><span class=pb>选择文件…</span><span"
@@ -7871,25 +7881,45 @@ new file mode 100644
 +
 +		if (tryboot_pending) {
 +			struct up_part *fit = part_find(FIELD_FIT);
-+			char cmd[48];
++			const char *conf = env_get("bootconf");
++			char cmd[64];
 +
 +			tryboot_pending = 0;
-+			if (!fit)
-+				return CMD_RET_SUCCESS;
-+			/*
-+			 * The same alignment every flash path gets: libfdt
-+			 * wants the FIT on an 8-byte boundary and a multipart
-+			 * part lands wherever the form data put it.
-+			 */
-+			snprintf(cmd, sizeof(cmd), "bootm 0x%lx",
-+				 part_align(fit));
-+			printf("httpd: booting the upload from memory, "
-+			       "flash untouched: %s\n", cmd);
-+			run_command(cmd, 0);
-+			printf("httpd: that image did not boot; "
-+			       "the flash was not touched\n");
++			if (fit) {
++				/*
++				 * The same alignment every flash path gets:
++				 * libfdt wants the FIT on an 8-byte boundary
++				 * and a multipart part lands wherever the
++				 * form data put it.  The configuration name
++				 * rides along for the reason every other
++				 * boot path carries it: a FIT with no default
++				 * configuration does not boot without one,
++				 * and the serial TFTP path -- which does
++				 * carry it -- would be the only way left in.
++				 */
++				snprintf(cmd, sizeof(cmd), "bootm 0x%lx%s%s",
++					 part_align(fit),
++					 conf && *conf ? "#" : "",
++					 conf && *conf ? conf : "");
++				printf("httpd: booting the upload from "
++				       "memory, flash untouched: %s\n", cmd);
++				run_command(cmd, 0);
++				printf("httpd: that image did not boot; "
++				       "the flash was not touched\n");
++			}
 +
-+			return CMD_RET_SUCCESS;
++			/*
++			 * Back to the page, not out of httpd.  The page
++			 * promises the device returns here when the image
++			 * does not boot, and a return keeps that promise only
++			 * for web_uboot_boot_forever: check_buttons falls
++			 * through to the boot command, so the reset-button
++			 * way in would land in the old system with the page
++			 * gone -- the only way in for a board with no serial
++			 * cable.  Same road as a write that stays up, and
++			 * for the same reason.
++			 */
++			staying = 1;
 +		}
 +
 +		/*

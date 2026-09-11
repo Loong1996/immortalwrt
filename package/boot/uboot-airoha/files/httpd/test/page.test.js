@@ -60,6 +60,8 @@ const txt = (w, s) => ($(w, s) || {}).textContent || '';
 const on = (w, s) => $(w, s).hasAttribute('data-on');
 const navs = (w) => Array.from(w.document.querySelectorAll('.nav'));
 function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(); }
+/* 偏移要经 oninput 改，「擦净尾部」的默认值跟着它走 */
+function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v; e.oninput(); }
 
 (async () => {
   console.log('\n--- 备份下载 (p10) ---');
@@ -641,7 +643,7 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     const f = new w.File([new Uint8Array(4)], 'all_flash.bin');
     Object.defineProperty(f, 'size', { value: 0x10000000 });
     Object.defineProperty(i, 'files', { value: [f], configurable: true });
-    $(w, '#p4 input[name=stockoff]').value = '0x8000000';
+    setoff(w, '0x8000000');
 
     let sent = null;
     const XHR = w.XMLHttpRequest;
@@ -655,23 +657,22 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     w.send();
     w.XMLHttpRequest = XHR;
 
-    /* 擦净尾部默认勾着，所以默认这一发就该带 wipe */
-    ok('走 /stock，带上偏移和擦净标记',
-       sent && sent.u === '/stock?off=0x8000000&wipe=1', sent && sent.u);
+    /* 偏移非 0 是写单个分区，擦尾会连它后面的东西一起带走 —— 默认松勾 */
+    ok('走 /stock，带偏移但不带擦净标记',
+       sent && sent.u === '/stock?off=0x8000000', sent && sent.u);
     ok('body 就是文件本身，没有 FormData 包装',
        sent && sent.body === f, sent && String(sent.body));
 
-    /* 取消勾选就不带，设备那边照旧只动镜像覆盖到的块 */
+    /* 偏移 0 是整片写回，擦掉镜像之后的残留是对的，默认仍旧勾着 */
     let sent3 = null;
     const w3 = await boot();
     $(w3, '.nav[data-p=p4]').click();
-    ok('擦净尾部默认是勾上的', $(w3, '#p4 input[name=wipe]').checked);
+    ok('擦净尾部在偏移 0 时默认勾着', $(w3, '#p4 input[name=wipe]').checked);
     const i3 = $(w3, '#p4 input[name=stock]');
     const f3 = new w3.File([new Uint8Array(4)], 'all_flash.bin');
     Object.defineProperty(f3, 'size', { value: 0x10000000 });
     Object.defineProperty(i3, 'files', { value: [f3], configurable: true });
-    $(w3, '#p4 input[name=stockoff]').value = '0x8000000';
-    $(w3, '#p4 input[name=wipe]').checked = false;
+    setoff(w3, '0x0');
     const XHR3 = w3.XMLHttpRequest;
     w3.XMLHttpRequest = function () {
       const x = new XHR3();
@@ -681,8 +682,8 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     };
     w3.send();
     w3.XMLHttpRequest = XHR3;
-    ok('取消勾选就不带擦净标记',
-       sent3 && sent3.u === '/stock?off=0x8000000', sent3 && sent3.u);
+    ok('偏移 0 照旧带擦净标记',
+       sent3 && sent3.u === '/stock?off=0x0&wipe=1', sent3 && sent3.u);
 
     /* 别的页仍然是表单 */
     let sent2 = null;
@@ -2083,6 +2084,39 @@ function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(
     ok('取消勾选就改口说保留',
        /剩余的 56[.,]0 MiB 保留原有内容不动/.test(txt(w, '#abody')), txt(w, '#abody'));
     w.hide();
+  }
+
+  console.log('\n--- 擦净尾部：默认值跟着写入偏移走 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const wp = $(w, '#p4 input[name=wipe]');
+    ok('开页面是偏移 0，默认勾着', wp.checked);
+
+    setoff(w, '0x20000');
+    ok('偏移改成非 0 就松勾', !wp.checked);
+
+    setoff(w, '0x0');
+    ok('改回 0 又勾上', wp.checked);
+
+    /* 亲手动过之后不再代他决定：勾上再改偏移，勾不会掉 */
+    setoff(w, '0x20000');
+    wp.checked = true;
+    wp.onchange();
+    setoff(w, '0x40000');
+    ok('亲手勾上之后改偏移不会被覆盖', wp.checked);
+  }
+
+  {
+    /* 反向也一样：亲手松勾之后，回到偏移 0 不会自己勾回来 */
+    const w = await boot();
+    $(w, '.nav[data-p=p4]').click();
+    const wp = $(w, '#p4 input[name=wipe]');
+    wp.checked = false;
+    wp.onchange();
+    setoff(w, '0x20000');
+    setoff(w, '0x0');
+    ok('亲手松勾之后回到偏移 0 也不会自己勾回来', !wp.checked);
   }
 
   console.log('\n--- 擦净尾部：不勾就不报那一行 ---');

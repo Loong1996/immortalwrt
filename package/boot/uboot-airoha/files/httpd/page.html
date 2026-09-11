@@ -243,8 +243,8 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>
 <div class=box>
 <div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
-<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px"><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
-<div class="fr wide"><span class=fl>擦净尾部<small>镜像之后的擦除块一并擦空；不擦则保留原有内容</small></span><span class="fc end"><input type=checkbox class=sw name=wipe value=1 checked></span></div>
+<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px" oninput=stwipe()><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
+<div class="fr wide"><span class=fl>擦净尾部<small>镜像之后<b>直至片尾</b>的擦除块一并擦空；不擦则保留原有内容</small></span><span class="fc end"><input type=checkbox class=sw name=wipe value=1 checked onchange="this.dataset.t=1"></span></div>
 </div>
 <p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。写入期间指示灯<b>流水</b>，与其他页面一致；本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">刷写</button></div>
@@ -489,6 +489,14 @@ if(e.dataTransfer&&e.dataTransfer.files.length){try{i.files=e.dataTransfer.files
 function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)};
 drag(i.closest?(i.closest('.drop')||i.closest('.fr')):null,i)})}
 function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return parseInt(v,16)}
+/*
+ * 擦净尾部擦到的是片尾，不是分区尾 —— 设备那边 st_wipe_end 就是 flash 容量。
+ * 偏移 0 是「整片写回」，把镜像之后的残留擦掉是对的；偏移非 0 是往单个分区里
+ * 写，再擦就把它后面的东西一起带走了：按页面自己教的「备份下载→原始区段」
+ * 导出一段再写回来，默认勾着就会连 UBI 和 ri/bosa 一起擦空。所以偏移一改就
+ * 松勾。用户亲手动过这个开关之后不再代他决定 —— dataset.t 记的就是这个。
+ */
+function stwipe(){var w=$('[name=wipe]');if(w&&!w.dataset.t)w.checked=hex($('[name=stockoff]').value)===0}
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
 function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
 function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}

@@ -88,10 +88,10 @@ diff --git a/defenvs/an7583_nokia_xg-040g-mf_env b/defenvs/an7583_nokia_xg-040g-
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
 +bootmenu_title=      [1;39mAiroha Web U-Boot 0.3.0[0m
-+web_uboot_envver=6
++web_uboot_envver=7
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
-+bootmenu_8=[31mStart web recovery server (http://192.168.1.1)[0m=httpd ; run bootmenu_confirm_return
++bootmenu_8=[31mStart web recovery server[0m=httpd ; run bootmenu_confirm_return
 +bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run web_uboot_show_about ; run bootmenu_confirm_return
 +web_uboot_show_about=echo ; echo Airoha Web U-Boot 0.3.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
