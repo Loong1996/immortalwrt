@@ -177,7 +177,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7807 @@
+@@ -0,0 +1,7832 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -2714,6 +2714,25 @@ new file mode 100644
 +	"Connection: close\r\n"						\
 +	"\r\n"
 +
++/*
++ * The same for the answers that are a line of text rather than a document:
++ * /wr and /log stream the console while it is being written, and /envreset,
++ * /bootonce and /netmode each report how one action went.  Those last three
++ * went without no-store until now -- a browser holding on to "ok saved"
++ * would show a later attempt succeeding when the request never left it, on
++ * the three endpoints where that reads as the flash having been touched.
++ *
++ * One macro rather than five copies of the same five lines: this field is
++ * being added to three of them today precisely because the other two got it
++ * and these did not.
++ */
++#define TEXT_HDR(status)						\
++	"HTTP/1.0 " status "\r\n"					\
++	"Content-Type: text/plain; charset=utf-8\r\n"			\
++	"Cache-Control: no-store\r\n"					\
++	"Connection: close\r\n"						\
++	"\r\n"
++
 +struct jbuf {
 +	char	*b;
 +	int	max;
@@ -3996,12 +4015,7 @@ new file mode 100644
 +
 +static int httpd_log(void)
 +{
-+	static const char hdr[] =
-+		"HTTP/1.0 200 OK\r\n"
-+		"Content-Type: text/plain; charset=utf-8\r\n"
-+		"Cache-Control: no-store\r\n"
-+		"Connection: close\r\n"
-+		"\r\n";
++	static const char hdr[] = TEXT_HDR("200 OK");
 +	static const char full[] =
 +		"\n[日志缓冲已满，后续输出未记录]\n";
 +	struct membuf copy = *(struct membuf *)&gd->console_out;
@@ -4098,12 +4112,7 @@ new file mode 100644
 + */
 +static int httpd_wr(void)
 +{
-+	static const char hdr[] =
-+		"HTTP/1.0 200 OK\r\n"
-+		"Content-Type: text/plain; charset=utf-8\r\n"
-+		"Cache-Control: no-store\r\n"
-+		"Connection: close\r\n"
-+		"\r\n";
++	static const char hdr[] = TEXT_HDR("200 OK");
 +	char from[24];
 +	int skip = 0;
 +	int n, room;
@@ -4280,6 +4289,7 @@ new file mode 100644
 +
 +static int httpd_envreset(void)
 +{
++	struct jbuf jb;
 +	char mac[20];
 +	const char *cur;
 +	int saved;
@@ -4297,11 +4307,25 @@ new file mode 100644
 +	       saved ? "restored and saved" :
 +		       "restored in RAM only -- saveenv failed");
 +
-+	return snprintf(envreset_buf, sizeof(envreset_buf),
-+			"HTTP/1.0 200 OK\r\n"
-+			"Content-Type: text/plain; charset=utf-8\r\n"
-+			"Connection: close\r\n"
-+			"\r\n%s", saved ? "ok saved" : "ok");
++	/*
++	 * These three text/plain answers go through jb_printf() for one
++	 * reason: jb_done()'s truncation check is the only one available.
++	 * U-Boot's vsnprintf() reports what it wrote rather than what it
++	 * meant to write, so a reply that outgrew its buffer used to go out
++	 * cut in half with nothing said anywhere -- which is exactly how
++	 * /ping spent four releases answering with half a header.  All three
++	 * fit today with room to spare; the point is that the day one of them
++	 * stops fitting, it says so instead of being quietly wrong.
++	 *
++	 * An overflow replaces the whole buffer, header included, with a
++	 * JSON 500, so nothing is left claiming text/plain over a JSON body;
++	 * every caller of these three checks the status code before it looks
++	 * at the body at all.
++	 */
++	jb_init(&jb, envreset_buf, sizeof(envreset_buf));
++	jb_printf(&jb, TEXT_HDR("200 OK") "%s", saved ? "ok saved" : "ok");
++
++	return jb_done(&jb, "/envreset");
 +}
 +
 +/*
@@ -4312,11 +4336,7 @@ new file mode 100644
 + * inside a tx callback would drop the response on the floor and the page
 + * would report a lost connection instead of a reboot.
 + */
-+static const char resp_reboot[] =
-+	"HTTP/1.0 200 OK\r\n"
-+	"Content-Type: text/plain; charset=utf-8\r\n"
-+	"Connection: close\r\n"
-+	"\r\nok";
++static const char resp_reboot[] = TEXT_HDR("200 OK") "ok";
 +
 +static int reboot_pending;
 +static int boot_pending;
@@ -4353,6 +4373,7 @@ new file mode 100644
 +{
 +	const char *cur = env_get("bootcmd");
 +	char next[CONFIG_SYS_CBSIZE];
++	struct jbuf jb;
 +	const char *msg;
 +
 +	if (env_get(ENV_ONCE)) {
@@ -4380,11 +4401,9 @@ new file mode 100644
 +					: "armed and saved";
 +
 +out:
-+	bootonce_len = snprintf(bootonce_buf, sizeof(bootonce_buf),
-+				"HTTP/1.0 200 OK\r\n"
-+				"Content-Type: text/plain; charset=utf-8\r\n"
-+				"Connection: close\r\n"
-+				"\r\n%s\n", msg);
++	jb_init(&jb, bootonce_buf, sizeof(bootonce_buf));
++	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
++	bootonce_len = jb_done(&jb, "/bootonce");
 +
 +	return bootonce_len;
 +}
@@ -4419,7 +4438,14 @@ new file mode 100644
 + * device on an existing network is sometimes the only way in, and it falls
 + * back to the previous address when no lease arrives.
 + */
-+static char netmode_buf[256];
++/*
++ * 512 where the other two text/plain answers get 256: netmode_reply() takes a
++ * 160 byte message, and TEXT_HDR is 104 -- 264 in the worst case, which 256
++ * does not hold.  It held before only because these answers carried no
++ * Cache-Control, and that is the kind of arithmetic nobody redoes when adding
++ * a header field.
++ */
++static char netmode_buf[512];
 +static int netmode_len;
 +static int netmode_pending;
 +/*
@@ -4510,17 +4536,16 @@ new file mode 100644
 +static int netmode_reply(const char *fmt, ...)
 +{
 +	char msg[160];
++	struct jbuf jb;
 +	va_list ap;
 +
 +	va_start(ap, fmt);
 +	vsnprintf(msg, sizeof(msg), fmt, ap);
 +	va_end(ap);
 +
-+	netmode_len = snprintf(netmode_buf, sizeof(netmode_buf),
-+			       "HTTP/1.0 200 OK\r\n"
-+			       "Content-Type: text/plain; charset=utf-8\r\n"
-+			       "Connection: close\r\n"
-+			       "\r\n%s\n", msg);
++	jb_init(&jb, netmode_buf, sizeof(netmode_buf));
++	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
++	netmode_len = jb_done(&jb, "/netmode");
 +
 +	return netmode_len;
 +}
