@@ -173,7 +173,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7539 @@
+@@ -0,0 +1,7590 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -1970,7 +1970,6 @@ new file mode 100644
 +static int	up_ready;	/* image complete and moved to $loadaddr */
 +static u32	up_body;	/* stream offset of the first image byte */
 +static u32	up_total;	/* total request length (headers + body) */
-+static u32	up_size;	/* total payload bytes across all parts */
 +static char	up_bound[80];	/* "\r\n--" + multipart boundary */
 +static struct tcp_stream *up_owner;	/* owns the staging area */
 +static int	up_bound_len;
@@ -5153,7 +5152,6 @@ new file mode 100644
 +	u32 pos = up_body;
 +
 +	up_nparts = 0;
-+	up_size = 0;
 +
 +	while (up_nparts < MAX_PARTS && pos < up_total) {
 +		char ph[512];
@@ -5199,7 +5197,6 @@ new file mode 100644
 +			part->addr = (ulong)(base + pos);
 +			part->size = dlen;
 +
-+			up_size += dlen;
 +			up_nparts++;
 +
 +			printf("httpd: \"%s\": %u bytes at 0x%lx\n",
@@ -5576,13 +5573,20 @@ new file mode 100644
 +	avail = top > up_base + DUMP_GAP ? top - (up_base + DUMP_GAP) : 0;
 +	dump_win = avail > DUMP_WIN_MAX ? DUMP_WIN_MAX : (u32)avail;
 +	dump_win &= ~0xffUL;
-+	if (dump_win > len)
-+		dump_win = len;
++	/*
++	 * Asked of the memory, before the window is narrowed to the
++	 * transfer: a 4 KiB volume wants a 4 KiB window, and what is being
++	 * asked here is whether there is room to work in at all.  Narrowing
++	 * first turned down every object smaller than the floor -- and told
++	 * the user it was short of memory, which it was not.
++	 */
 +	if (dump_win < SZ_64K) {
 +		dump_fail("507 Insufficient Storage",
 +			  "内存不足，无法分配读取窗口");
 +		return;
 +	}
++	if (dump_win > len)
++		dump_win = len;
 +	dump_base = (top - dump_win) & ~0xffUL;
 +
 +	dump_len = len;
@@ -5772,6 +5776,10 @@ new file mode 100644
 + * Parse the head, which the CONN_UNKNOWN path has already staged at up_base,
 + * and lay the ring out over the same area.  Everything that can be refused is
 + * refused here -- once the first eraseblock is gone there is no going back.
++ *
++ * 0 when the ring is laid out and the write can start, -1 when the request is
++ * refused (the answer is written and waiting), 1 when the head is not all here
++ * yet and the caller should ask again on the next segment.
 + */
 +static int st_begin(u32 rx_bytes)
 +{
@@ -5792,8 +5800,18 @@ new file mode 100644
 +
 +	hdr_end = mem_find(hdr, n, "\r\n\r\n", 4);
 +	if (hdr_end < 0) {
-+		st_fail("请求头不完整");
-+		return -1;
++		/*
++		 * Only a failure once there is no room left to find it
++		 * in: a head can span segments, and the caller asks
++		 * again on the next one.  httpd_parse() draws the same
++		 * line in the same place.
++		 */
++		if (n >= HDRBUF_SZ - 1) {
++			st_fail("请求头超过 %d 字节", HDRBUF_SZ - 1);
++			return -1;
++		}
++
++		return 1;
 +	}
 +	hdr_end += 4;
 +
@@ -6267,6 +6285,26 @@ new file mode 100644
 +		if (up_owner != tcp || rx_bytes < 4)
 +			return;
 +		if (!memcmp(req, "POST", 4)) {
++			/*
++			 * Which POST this is sits in the request line, and a
++			 * segment boundary can fall anywhere in it -- including
++			 * inside the word after the method.  So nothing is
++			 * decided until the line is whole, the same way
++			 * httpd_classify_get() waits.  Deciding on what had
++			 * arrived sent a "POST /stock" whose head came in two
++			 * pieces down the multipart path, which then turned it
++			 * away as not being one.  A line longer than the 320
++			 * bytes read here is nobody's real request; it falls
++			 * through to the upload path, where httpd_parse() says
++			 * so in as many words.
++			 */
++			int n = rx_bytes < 320 ? rx_bytes : 320;
++			int eol = mem_find(req, n, "\r\n", 2);
++
++			/* Not all of the line is here yet; ask again later. */
++			if (eol < 0 && rx_bytes < 320)
++				return;
++
 +			if (dump_stale()) {
 +				printf("httpd: the download in flight went quiet, dropping it\n");
 +				dump_busy = 0;
@@ -6281,17 +6319,31 @@ new file mode 100644
 +				up_owner = NULL;
 +				return;
 +			}
-+			up_active = 1;
 +#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)
 +			/* "POST /stock" -- straight to flash, never staged. */
-+			if (rx_bytes > 11 && !memcmp(req + 4, " /stock", 7) &&
++			if (eol > 11 && !memcmp(req + 4, " /stock", 7) &&
 +			    (req[11] == '?' || req[11] == ' ')) {
++				int r = st_begin(rx_bytes);
++
++				/*
++				 * Its head is not all here yet.  Nothing
++				 * was claimed or classified, so the next
++				 * pass comes back and asks again -- and it
++				 * is asked ahead of up_active, or a retry
++				 * would meet its own claim and be turned
++				 * away as a second upload.
++				 */
++				if (r > 0)
++					return;
++
++				up_active = 1;
 +				tcp->priv = CONN_STOCK;
-+				if (!st_begin(rx_bytes))
++				if (!r)
 +					st_commit(rx_bytes);
 +				return;
 +			}
 +#endif
++			up_active = 1;
 +			tcp->priv = CONN_POST;
 +		} else {
 +			void *cls = CONN_GET;
@@ -6775,7 +6827,6 @@ new file mode 100644
 +	up_ready = 0;
 +	up_body = 0;
 +	up_total = 0;
-+	up_size = 0;
 +	up_nparts = 0;
 +	up_bound_len = 0;
 +	flash_pending = 0;
