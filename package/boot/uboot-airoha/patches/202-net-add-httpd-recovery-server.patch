@@ -173,7 +173,7 @@ diff --git a/net/httpd.c b/net/httpd.c
 new file mode 100644
 --- /dev/null
 +++ b/net/httpd.c
-@@ -0,0 +1,7530 @@
+@@ -0,0 +1,7539 @@
 +// SPDX-License-Identifier: GPL-2.0+
 +/*
 + * Airoha Web U-Boot -- HTTP recovery server.
@@ -6067,17 +6067,6 @@ new file mode 100644
 +	}
 +
 +	/*
-+	 * Staged, or being written: the staging area is the image now, and
-+	 * nothing that gets this far still needs it.  A POST is turned away
-+	 * before it stages anything -- CONN_POSTBUSY while a write runs,
-+	 * the page itself while an upload is staged -- so these bytes are
-+	 * a request that needs no body, or a retransmission of one whose
-+	 * body is already in.  Take them off the wire and drop them.
-+	 */
-+	if (flash_running || up_ready)
-+		return len;
-+
-+	/*
 +	 * Exactly one connection at a time may stage data at $loadaddr.  The
 +	 * first one to deliver offset 0 claims it; a segment arriving before
 +	 * that is refused so it gets retried once the head of the stream is in.
@@ -6118,6 +6107,26 @@ new file mode 100644
 +	 * sending and get to reading the answer.
 +	 */
 +	if (up_failed)
++		return len;
++
++	/*
++	 * Staged, or being written: the staging area is the image now, and
++	 * nothing that gets this far still needs it.  A POST is turned
++	 * away before it stages anything -- CONN_POSTBUSY while a write
++	 * runs, the page itself while an upload is staged -- so these
++	 * bytes are a request that needs no body, or a retransmission of
++	 * one whose body is already in.  Take them off the wire and drop
++	 * them.
++	 *
++	 * Below the claim above, and where it sits is the whole point:
++	 * that claim is the only one in the file, and
++	 * httpd_on_rcv_nxt_update() will not classify a stream that does
++	 * not hold it.  Guarding ahead of it instead left every /wr poll
++	 * after the first one of a write unclassified, unanswered and
++	 * never closed -- with the stack refusing new connections behind
++	 * it for as long as that stream took to time out.
++	 */
++	if (flash_running || up_ready)
 +		return len;
 +
 +	/*
