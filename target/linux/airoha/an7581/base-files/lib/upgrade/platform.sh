@@ -19,7 +19,9 @@ platform_check_image() {
 		nand_do_platform_check "$board" "$1"
 		return $?
 		;;
-	nokia,xg-040g-md-ubi)
+	nokia,xg-040g-md-ubi|\
+	znxt,zn504xg-d|\
+	znxt,zn515xg-d)
 		fit_check_image "$1"
 		return $?
 		;;
@@ -33,7 +35,9 @@ platform_do_upgrade() {
 
 	case "$board" in
 		gemtek,w1700k-ubi|\
-		nokia,xg-040g-md-ubi)
+		nokia,xg-040g-md-ubi|\
+		znxt,zn504xg-d|\
+		znxt,zn515xg-d)
 			fit_do_upgrade "$1"
 			;;
 		*)

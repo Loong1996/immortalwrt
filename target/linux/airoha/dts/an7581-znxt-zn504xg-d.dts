@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+#include "an7581-znxt-zn50xg-d-common.dtsi"
+
+/ {
+	model = "ZNXT ZN504XG-D";
+	compatible = "znxt,zn504xg-d", "airoha,an7581", "airoha,en7581";
+};

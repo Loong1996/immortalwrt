@@ -1,0 +1,60 @@
+ipaddr=192.168.1.1
+serverip=192.168.1.254
+loadaddr=0x90000000
+console=earlycon=uart8250,mmio32,0x11002000 console=ttyS0
+bootcmd=run check_buttons ; run boot_ubi
+bootconf=config-1
+bootdelay=0
+bootfile=immortalwrt-airoha-an7581-znxt_zn504xg-d-initramfs-recovery.itb
+bootfile_bl2=immortalwrt-airoha-an7581-znxt_zn504xg-d-preloader.bin
+bootfile_fip=immortalwrt-airoha-an7581-znxt_zn504xg-d-bl31-uboot.fip
+bootfile_upg=immortalwrt-airoha-an7581-znxt_zn504xg-d-squashfs-sysupgrade.itb
+bootled_status=green:power
+web_uboot_envver=7
+bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
+bootmenu_default=0
+bootmenu_delay=0
+bootmenu_title=      [1;39mAiroha Web U-Boot 0.3.0[0m
+bootmenu_0=Initialize environment.=run _firstboot
+bootmenu_0d=Run default boot command.=run boot_default
+bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
+bootmenu_2=Boot production system from NAND=run boot_production ; run bootmenu_confirm_return
+bootmenu_3=Load production system via TFTP then write to NAND=setenv noboot 1 ; setenv replacevol 1 ; run boot_tftp_production ; setenv noboot ; setenv replacevol ; run bootmenu_confirm_return
+bootmenu_4=[31mLoad BL31+U-Boot FIP via TFTP then write to NAND[0m=run boot_tftp_write_fip ; run bootmenu_confirm_return
+bootmenu_5=[31mLoad BL2 preloader via TFTP then write to NAND[0m=run boot_tftp_write_bl2 ; run bootmenu_confirm_return
+bootmenu_6=Reboot=reset
+bootmenu_7=Reset all settings to factory defaults=run reset_factory ; reset
+bootmenu_8=[31mStart web recovery server[0m=httpd ; run bootmenu_confirm_return
+bootmenu_9=About - github.com/Loong1996/ImmortalWrt-Airoha=run web_uboot_show_about ; run bootmenu_confirm_return
+boot_first=if button reset ; then led $bootled_status on ; run boot_default ; fi ; bootmenu
+boot_default=run bootcmd ; run boot_tftp_forever
+boot_production=led $bootled_status on ; run ubi_read_production && bootm $loadaddr#$bootconf ; led $bootled_status off
+boot_ubi=run boot_production ; run web_uboot_boot_forever
+boot_tftp_forever=led $bootled_status on ; while true ; do run boot_tftp ; sleep 1 ; done
+web_uboot_boot_forever=while true ; do httpd ; sleep 1 ; done
+boot_tftp_production=tftpboot $loadaddr $bootfile_upg && env exists replacevol && iminfo $loadaddr && run ubi_write_production ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+boot_tftp_recovery=tftpboot $loadaddr $bootfile && env exists replacevol && iminfo $loadaddr && run ubi_write_recovery ; if env exists noboot ; then else bootm $loadaddr#$bootconf ; fi
+boot_tftp=tftpboot $loadaddr $bootfile && bootm $loadaddr#$bootconf
+boot_tftp_write_bl2=mw.b $loadaddr 0xff 0x800 ; setexpr loadaddr_bl2 $loadaddr + 0x800 ; tftpboot $loadaddr_bl2 $bootfile_bl2 && run mtd_write_bl2
+boot_tftp_write_fip=tftpboot $loadaddr $bootfile_fip && run ubi_write_fip && run reset_factory
+preboot=led $bootled_status on
+check_buttons=if button reset ; then httpd ; fi
+web_uboot_show_about=echo ; echo Airoha Web U-Boot 0.3.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
+part_default=production
+reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
+mtd_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr
+web_uboot_write_bl2=mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize
+web_uboot_write_fip=if ubi check fip ; then ubi write $loadaddr fip $filesize ; else run ubi_write_fip ; fi
+ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
+ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
+web_uboot_format_ubi=ubi detach ; mtd erase ubi && ubi part ubi
+ubi_prepare_rootfs=if ubi check rootfs_data ; then else if env exists rootfs_data_max ; then ubi create rootfs_data $rootfs_data_max dynamic || ubi create rootfs_data - dynamic ; else ubi create rootfs_data - dynamic ; fi ; fi
+ubi_read_production=ubi read $loadaddr fit && iminfo $loadaddr && run ubi_prepare_rootfs
+ubi_remove_rootfs=ubi check rootfs_data && ubi remove rootfs_data
+ubi_write_fip=run ubi_remove_rootfs ; ubi check fip && ubi remove fip ; ubi create fip 0x100000 static && ubi write $loadaddr fip $filesize
+ubi_write_production=ubi check fit && ubi remove fit ; run ubi_remove_rootfs ; ubi create fit $filesize dynamic && ubi write $loadaddr fit $filesize
+_init_env=setenv _init_env ; run ubi_create_env ; saveenv ; saveenv
+_firstboot=setenv _firstboot ; run check_buttons ; ubi part ubi || run web_uboot_no_ubi ; run _switch_to_menu ; run _init_env ; run boot_first
+web_uboot_no_ubi=echo ; echo "This flash carries no usable UBI. Leaving it alone." ; echo "Web recovery starts in 3s at http://$ipaddr - press a key for the menu" ; setenv bootmenu_0 "Continue to web recovery at http://$ipaddr=run web_uboot_boot_forever" ; bootmenu 3 ; run web_uboot_boot_forever
+_switch_to_menu=setenv _switch_to_menu ; setenv bootdelay 3 ; setenv bootmenu_delay 3 ; setenv bootmenu_0 $bootmenu_0d ; setenv bootmenu_0d ; run _bootmenu_update_title
+_bootmenu_update_title=setenv _bootmenu_update_title ; setenv bootmenu_title "$bootmenu_title       [33m$ver[0m"
