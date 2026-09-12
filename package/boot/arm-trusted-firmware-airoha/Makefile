@@ -150,6 +150,11 @@ define Build/Prepare
 
 	$(eval $(call Download,atf-airoha))
 	$(TAR) -C $(PKG_BUILD_DIR) --strip-components=1 -xf $(DL_DIR)/$(FILE)
+
+	# AN7581 DDR3 default is 1866; some boards (ZN504XG-D) train OK then
+	# fail LZMA of BL23 in DRAM. Force the PC3 table to 1600. DDR4 unused.
+	$(if $(filter an7581-bl2,$(BUILD_VARIANT)), \
+		python3 ./scripts/force-ddr3-1600.py $(PKG_BUILD_DIR))
 endef
 
 define Build/Compile/bl2
