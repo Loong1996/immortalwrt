@@ -198,13 +198,8 @@ define Device/znxt_zn50xg-d-common
   UBOOTENV_IN_UBI := 1
   KERNEL_IN_UBI := 1
   KERNEL := kernel-bin | gzip
-  KERNEL_INITRAMFS := kernel-bin | lzma | \
-	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   IMAGES := sysupgrade.itb
-  IMAGE/sysupgrade.itb := append-kernel | \
-	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
-	append-metadata
   DEVICE_PACKAGES := kmod-gpio-button-hotplug kmod-leds-gpio fitblk
   ARTIFACTS := bl31-uboot.fip preloader.bin
 endef
@@ -213,6 +208,11 @@ define Device/znxt_zn504xg-d
   $(call Device/znxt_zn50xg-d-common)
   DEVICE_MODEL := ZN504XG-D
   DEVICE_DTS := an7581-znxt-zn504xg-d
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  IMAGE/sysupgrade.itb := append-kernel | \
+	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	append-metadata
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot znxt_zn504xg-d
   ARTIFACT/preloader.bin := an7581-preloader znxt_zn504xg-d
 endef
@@ -222,6 +222,11 @@ define Device/znxt_zn515xg-d
   $(call Device/znxt_zn50xg-d-common)
   DEVICE_MODEL := ZN515XG-D
   DEVICE_DTS := an7581-znxt-zn515xg-d
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  IMAGE/sysupgrade.itb := append-kernel | \
+	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	append-metadata
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot znxt_zn515xg-d
   ARTIFACT/preloader.bin := an7581-preloader znxt_zn515xg-d
 endef
