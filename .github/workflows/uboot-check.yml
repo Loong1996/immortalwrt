@@ -8,8 +8,12 @@ name: Web U-Boot 检查
 #     没人会为了看一眼语法去等它。于是就出现过连着五批 C 改动一次没编译的
 #     情况 —— 这条 workflow 就是为了让那种事不再发生。
 #
-# 三道便宜的（page 作业，~3 min）加一道贵的（compile 作业，两块板并行，各
-# ~6-9 min）。改动只碰 package/boot/uboot-airoha 时才跑。
+# 三道便宜的（page 作业，~3 min）加一道贵的（compile 作业，每块板一个 job
+# 并行，各 ~6-9 min）。改动只碰 package/boot/uboot-airoha 时才跑。
+#
+# 只检查、不出可刷的东西：板子要的是 BL2 + BL31/U-Boot 的 FIP，得走 OpenWrt
+# 整套编译（ImmortalWrt-Airoha 的 CI）；这里的 u-boot.bin 用发行版的交叉
+# 编译器编、带 -ci 后缀，所以不上传。
 
 on:
   push:
@@ -38,10 +42,10 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout(检出)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node(装 Node)
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -194,9 +198,13 @@ jobs:
             config: an7581_nokia_xg-040g-md
           - label: XG-040G-MF (AN7583)
             config: an7583_nokia_xg-040g-mf
+          - label: XG-040G-TF (AN7581)
+            config: an7581_nokia_xg-040g-tf
+          - label: ZN504XG-D (AN7581)
+            config: an7581_znxt_zn504xg-d
     steps:
       - name: Checkout(检出)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Read Makefile(读 PKG_VERSION / PKG_HASH)
         id: ver
@@ -211,7 +219,7 @@ jobs:
 
       # include/u-boot.mk 的默认源：u-boot-$(PKG_VERSION).tar.bz2，35 MB 上下
       - name: Cache Tarball(缓存源码包)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/dl
           key: uboot-src-${{ steps.ver.outputs.hash }}
@@ -266,6 +274,9 @@ jobs:
           UB="$RUNNER_TEMP/build/u-boot-$UBOOT_VERSION"
           echo "UB=$UB" >> "$GITHUB_ENV"
           cd "$UB"
+          # 与 include/package-defaults.mk 的 Build/Prepare/Default 一致：先把
+          # src/ 盖进源码树（TF、ZN504 的 defconfig、DTS、env 都在那里），再打补丁
+          cp -a "$GITHUB_WORKSPACE/$PKG/src/." "$UB/"
           # OpenWrt 用 quilt 按文件名顺序 -p1 打；这里等价地用 patch(1)
           for p in "$GITHUB_WORKSPACE/$PKG"/patches/*.patch; do
             echo "--- $(basename "$p")"
@@ -315,6 +326,11 @@ jobs:
           cd "$UB"
           test -f net/httpd.o || { echo "::error::net/httpd.o 没生成，httpd.c 没被编进去"; exit 1; }
           test -f u-boot.bin  || { echo "::error::u-boot.bin 没生成"; exit 1; }
+          # 与 package/boot/uboot-airoha/Makefile 的构建检查一致：开了网页救砖的
+          # 板子必须在 /options/u-boot 声明流水灯，否则进救砖时面板没有流水效果
+          test -f dts/dt.dtb || { echo "::error::dts/dt.dtb 没生成"; exit 1; }
+          grep -qa 'httpd-chase-leds' dts/dt.dtb \
+            || { echo "::error::U-Boot DTS 没在 /options/u-boot 声明 httpd-chase-leds"; exit 1; }
           echo "net/httpd.o  $(stat -c%s net/httpd.o) B"
           echo "u-boot.bin   $(stat -c%s u-boot.bin) B"
           aarch64-linux-gnu-size net/httpd.o || true
@@ -327,13 +343,3 @@ jobs:
           cd "$UB"
           rm -f net/httpd.o
           make -j"$(nproc)" CROSS_COMPILE=aarch64-linux-gnu- KCFLAGS="-Werror" net/httpd.o
-
-      - name: Upload(留一份镜像与 .config)
-        uses: actions/upload-artifact@v4
-        with:
-          name: u-boot-${{ matrix.config }}
-          path: |
-            ${{ env.UB }}/u-boot.bin
-            ${{ env.UB }}/.config
-          if-no-files-found: error
-          retention-days: 7
