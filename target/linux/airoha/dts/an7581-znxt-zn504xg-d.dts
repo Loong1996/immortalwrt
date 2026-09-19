@@ -1,0 +1,313 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "an7581.dtsi"
+
+/*
+ * 板上外设与 Nokia XG-040G-MD 相同（1x 2.5G EN8811H + 3x 千兆交换机口），
+ * 只是没有 USB，所以不描述 usb0/usb1、USB 灯和 USB 供电。
+ *
+ * 灯的颜色不同：面板与网口灯是蓝色，只有 WAN 光信号灯是红色。
+ *
+ * 闪存不同：F50L2G41XA 256 MiB，BL2 占前 128 KiB，其余整片 UBI。
+ * 没有原厂 ri 卷，MAC 暂不指定，由驱动生成随机地址。
+ */
+
+/ {
+	model = "ZNXT ZN504XG-D";
+	compatible = "znxt,zn504xg-d", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		serial0 = &uart1;
+		led-boot = &led_power_blue;
+		led-failsafe = &led_power_blue;
+		led-running = &led_power_blue;
+		led-upgrade = &led_power_blue;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+		linux,usable-memory-range = <0x0 0x80200000 0x0 0x7fe00000>;
+		rootdisk = <&ubi_fit>;
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		button-0 {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_power_blue: led-0 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
+			panic-indicator;
+		};
+
+		led-1 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 18 GPIO_ACTIVE_LOW>;
+		};
+
+		led-2 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
+		};
+
+		led-3 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WAN_ONLINE;
+			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+
+		conf {
+			pins = "gpio2";
+			output-high;
+		};
+	};
+
+	gswp2_led0_pins: gswp2-led0-pins {
+		mux {
+			function = "phy2_led0";
+			pins = "gpio44";
+		};
+	};
+
+	gswp3_led0_pins: gswp3-led0-pins {
+		mux {
+			function = "phy3_led0";
+			pins = "gpio45";
+		};
+	};
+
+	gswp4_led0_pins: gswp4-led0-pins {
+		mux {
+			function = "phy4_led0";
+			pins = "gpio46";
+		};
+	};
+};
+
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	/* ID 2c:24 covers multiple geometries; the board compatible selects F50L2G41XA. */
+	compatible = "esmt,f50l2g41xa", "spi-nand";
+
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bl2";
+			reg = <0x0 0x20000>;
+			read-only;
+		};
+
+		partition@20000 {
+			label = "ubi";
+			reg = <0x20000 0xffe0000>;
+			compatible = "linux,ubi";
+
+			volumes {
+				ubi_fit: ubi-volume-fit {
+					volname = "fit";
+				};
+
+				ubi-volume-fip {
+					volname = "fip";
+				};
+
+				ubi_env: ubi-volume-ubootenv {
+					volname = "ubootenv";
+				};
+
+				ubi_env2: ubi-volume-ubootenv2 {
+					volname = "ubootenv2";
+				};
+			};
+		};
+	};
+};
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&eth_pcs {
+	status = "okay";
+};
+
+&pon_pcs {
+	status = "okay";
+};
+
+&mdio {
+	/* LED0 的默认规则与引脚方向由驱动处理，见 generic/backport-6.18/786。 */
+	en8811: ethernet-phy@f {
+		compatible = "ethernet-phy-id03a2.a411";
+		reg = <0xf>;
+
+		reset-gpios = <&en7581_pinctrl 31 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <10000>;
+		reset-deassert-us = <20000>;
+
+		leds {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			led-0 {
+				reg = <0>;
+				color = <LED_COLOR_ID_BLUE>;
+				function = LED_FUNCTION_LAN;
+				function-enumerator = <1>;
+			};
+		};
+	};
+};
+
+&switch {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+};
+
+&gsw_port2 {
+	status = "okay";
+
+	label = "lan2";
+};
+
+&gsw_phy2 {
+	status = "okay";
+
+	interrupts = <2>;
+
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp2_led0_pins>;
+};
+
+&gsw_phy2_led0 {
+	status = "okay";
+
+	color = <LED_COLOR_ID_BLUE>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <2>;
+	active-low;
+};
+
+&gsw_port3 {
+	status = "okay";
+
+	label = "lan3";
+};
+
+&gsw_phy3 {
+	status = "okay";
+
+	interrupts = <3>;
+
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp3_led0_pins>;
+};
+
+&gsw_phy3_led0 {
+	status = "okay";
+
+	color = <LED_COLOR_ID_BLUE>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <3>;
+	active-low;
+};
+
+&gsw_port4 {
+	status = "okay";
+
+	label = "lan4";
+};
+
+&gsw_phy4 {
+	status = "okay";
+
+	interrupts = <4>;
+
+	pinctrl-names = "gbe-led";
+	pinctrl-0 = <&gswp4_led0_pins>;
+};
+
+&gsw_phy4_led0 {
+	status = "okay";
+
+	color = <LED_COLOR_ID_BLUE>;
+	function = LED_FUNCTION_LAN;
+	function-enumerator = <4>;
+	active-low;
+};
+
+&gdm1 {
+	status = "okay";
+};
+
+&gdm4 {
+	status = "okay";
+
+	openwrt,netdev-name = "lan1";
+
+	phy-handle = <&en8811>;
+	phy-mode = "2500base-x";
+};

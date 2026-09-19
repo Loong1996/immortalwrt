@@ -20,7 +20,8 @@ platform_check_image() {
 		return $?
 		;;
 	nokia,xg-040g-md-ubi|\
-	quantum,q1000k-ubi)
+	quantum,q1000k-ubi|\
+	znxt,zn504xg-d)
 		fit_check_image "$1"
 		return $?
 		;;
@@ -35,7 +36,8 @@ platform_do_upgrade() {
 	case "$board" in
 		gemtek,w1700k-ubi|\
 		nokia,xg-040g-md-ubi|\
-		quantum,q1000k-ubi)
+		quantum,q1000k-ubi|\
+		znxt,zn504xg-d)
 			fit_do_upgrade "$1"
 			;;
 		*)
