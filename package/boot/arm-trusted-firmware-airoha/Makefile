@@ -30,7 +30,7 @@ define Trusted-Firmware-A/an7581-bl2
   $(call Trusted-Firmware-A/bl2/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi znxt_zn504xg-d
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d
 endef
 
 define Trusted-Firmware-A/an7583-bl2
@@ -51,7 +51,7 @@ define Trusted-Firmware-A/an7581-bl31
   $(call Trusted-Firmware-A/bl31/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi znxt_zn504xg-d
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d
 endef
 
 define Trusted-Firmware-A/an7583-bl31
@@ -183,6 +183,31 @@ define Package/trusted-firmware-a/bl2/install
 		$(PKG_BUILD_DIR)/bl23.lzma \
 		$(PKG_BUILD_DIR)/flash_table.lzma \
 		$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-bl2.bin
+
+	# Boards with a fused root-of-trust key (XG-040G-TF) only run a BL2
+	# that carries a Trusted Boot FW Certificate, and that BL2 in turn
+	# authenticates BL31 and U-Boot.  The fuses hold the hash of the SDK's
+	# default rot_key_4096.pem, shipped in the source.  The key and the
+	# signing script are staged for the image recipes, which sign the
+	# BL31 + U-Boot FIP (Build/an7581-bl31-uboot-signed).
+	# Should a newer TF-A drop the key, only those boards fail (their
+	# recipes find no certificate or key); the rest keep building.  Stale
+	# files are removed so they can never pair with a different BL2.
+	rm -f $(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-bl2.tb-fw-cert \
+		$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-rot-key.pem
+	$(INSTALL_DIR) $(STAGING_DIR_HOST)/bin
+	$(INSTALL_BIN) ./scripts/airoha_tbbr_cert.py $(STAGING_DIR_HOST)/bin/
+	if [ -f $(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem ]; then \
+		$(PYTHON) ./scripts/airoha_tbbr_cert.py tb-fw \
+			$(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem \
+			$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-bl2.bin \
+			$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-bl2.tb-fw-cert && \
+		$(CP) $(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem \
+			$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-rot-key.pem; \
+	else \
+		echo "WARNING: plat/ecnt/key/rot_key_4096.pem not found," \
+			"no $(BUILD_SUBTARGET)-bl2.tb-fw-cert for signed preloaders" >&2; \
+	fi
 endef
 
 define Package/trusted-firmware-a/bl31/install

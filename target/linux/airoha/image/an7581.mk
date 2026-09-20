@@ -11,12 +11,43 @@ define Build/an7581-preloader
   cat $(STAGING_DIR_IMAGE)/an7581_$1-bl2.fip >> $@
 endef
 
+# BL2 plus its Trusted Boot FW Certificate, for chips whose BootROM checks it.
+define Build/an7581-preloader-signed
+  $(STAGING_DIR_HOST)/bin/fiptool create \
+		--tb-fw $(STAGING_DIR_IMAGE)/an7581-bl2.bin \
+		--tb-fw-cert $(STAGING_DIR_IMAGE)/an7581-bl2.tb-fw-cert \
+		$(STAGING_DIR_IMAGE)/an7581_$1-bl2-signed.fip
+  cat $(STAGING_DIR_IMAGE)/an7581_$1-bl2-signed.fip >> $@
+endef
+
 define Build/an7581-bl31-uboot
   $(STAGING_DIR_HOST)/bin/fiptool create \
 		--soc-fw $(STAGING_DIR_IMAGE)/an7581-bl31.lzma \
 		--nt-fw $(STAGING_DIR_IMAGE)/an7581_$1-u-boot.lzma \
 		$(STAGING_DIR_IMAGE)/an7581_$1-bl31-u-boot.fip
   cat $(STAGING_DIR_IMAGE)/an7581_$1-bl31-u-boot.fip >> $@
+endef
+
+# BL31 + U-Boot plus the TBBR certificate chain, for chips whose BL2
+# authenticates them: without it BL2 fails with "Failed to load image id 3".
+define Build/an7581-bl31-uboot-signed
+  rm -rf $@.certs
+  $(PYTHON) $(STAGING_DIR_HOST)/bin/airoha_tbbr_cert.py fip \
+		$(STAGING_DIR_IMAGE)/an7581-rot-key.pem \
+		$(STAGING_DIR_IMAGE)/an7581-bl31.lzma \
+		$(STAGING_DIR_IMAGE)/an7581_$1-u-boot.lzma \
+		$@.certs
+  $(STAGING_DIR_HOST)/bin/fiptool create \
+		--soc-fw $(STAGING_DIR_IMAGE)/an7581-bl31.lzma \
+		--nt-fw $(STAGING_DIR_IMAGE)/an7581_$1-u-boot.lzma \
+		--trusted-key-cert $@.certs/trusted-key.crt \
+		--soc-fw-key-cert $@.certs/soc-fw-key.crt \
+		--nt-fw-key-cert $@.certs/nt-fw-key.crt \
+		--soc-fw-cert $@.certs/soc-fw.crt \
+		--nt-fw-cert $@.certs/nt-fw.crt \
+		$(STAGING_DIR_IMAGE)/an7581_$1-bl31-u-boot-signed.fip
+  cat $(STAGING_DIR_IMAGE)/an7581_$1-bl31-u-boot-signed.fip >> $@
+  rm -rf $@.certs
 endef
 
 define Build/an7581-chainloader
@@ -188,6 +219,30 @@ define Device/nokia_xg-040g-md-ubi
   ARTIFACTS := bl31-uboot.fip preloader.bin
 endef
 TARGET_DEVICES += nokia_xg-040g-md-ubi
+
+define Device/nokia_xg-040g-tf-ubi
+  $(call Device/nokia_xg-040g-md-common)
+  DEVICE_MODEL := XG-040G-TF
+  DEVICE_VARIANT := (UBI)
+  DEVICE_DTS := an7581-nokia_xg-040g-tf-ubi
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  IMAGE/sysupgrade.itb := append-kernel | \
+	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	append-metadata
+  DEVICE_PACKAGES += fitblk
+  # The efuse holds a root-of-trust key: the BootROM checks BL2's
+  # certificate, and BL2 checks those of BL31 and U-Boot.
+  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot-signed nokia_xg-040g-tf
+  ARTIFACT/preloader.bin := an7581-preloader-signed nokia_xg-040g-tf
+  ARTIFACTS := bl31-uboot.fip preloader.bin
+endef
+TARGET_DEVICES += nokia_xg-040g-tf-ubi
 
 define Device/quantum_q1000k-ubi
   DEVICE_VENDOR := Quantum Fiber
