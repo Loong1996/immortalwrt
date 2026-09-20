@@ -26,7 +26,7 @@ import json
 import sys
 
 MACROS = {
-    "WEB_VERSION": "0.3.0",
+    "WEB_VERSION": "1.0.0",
     "AUTHOR": "Loong",
     "AUTHOR_HOST": "github.com/Loong1996",
     "AUTHOR_URL": "https://github.com/Loong1996",
@@ -81,7 +81,7 @@ CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
     ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["web_uboot_envver", 0, "7，与当前 U-Boot 一致", "引导"],
+    ["web_uboot_envver", 0, "8，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
@@ -96,6 +96,7 @@ CHECK = [
     ["ri 卷", 0, "已读取，MAC 90:03:2e:12:34:56", "出厂数据"],
     ["bosa 卷", 1, "已读取，内容为空", "出厂数据"],
     ["U-Boot MAC", 0, "90:03:2e:12:34:56，与出厂数据一致", "出厂数据"],
+    ["流水灯", 0, "5 个：green:power、green:wan、green:wan-online、green:usb-1、green:usb-2", "指示灯"],
 ]
 ENV = [
     ("arch", "arm"),
@@ -105,7 +106,7 @@ ENV = [
     ("bootcmd", "run _firstboot ; run boot_ubi ; run web_uboot_boot_forever"),
     ("bootdelay", "3"),
     ("bootmenu_0", "启动 ImmortalWrt.=run boot_ubi"),
-    ("bootmenu_8", "网页恢复（Airoha Web U-Boot 0.3.0）.=httpd"),
+    ("bootmenu_8", "网页恢复（Airoha Web U-Boot 1.0.0）.=httpd"),
     ("bootmenu_delay", "3"),
     ("check_buttons", "if button reset ; then echo recovery ; httpd ; fi"),
     ("ethaddr", "90:03:2e:12:34:56"),
@@ -128,7 +129,7 @@ ENV = [
                              "ubi write $loadaddr fit $filesize"),
     ("vendor", "nokia"),
     ("web_uboot_boot_forever", "while true ; do httpd ; sleep 1 ; done"),
-    ("web_uboot_envver", "7"),
+    ("web_uboot_envver", "8"),
     ("web_uboot_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
     ("web_uboot_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize"),
     ("web_uboot_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
@@ -195,7 +196,8 @@ function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3
 if(S.dev=='noubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
 {n:'UBI',s:2,v:'无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
 {n:'ubootenv 卷',s:2,v:'无法读取，UBI 未挂载，环境仅存于内存，断电丢失',g:'环境'},
-{n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'}]);
+{n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'},
+{n:'流水灯',s:0,v:'5 个：green:power、green:wan、green:wan-online、green:usb-1、green:usb-2',g:'指示灯'}]);
 if(S.dev=='nofip')c.forEach(function(i){if(i.n=='fip 卷'){i.s=2;i.v='不存在。当前 U-Boot 仅存于内存，请在「引导升级」页上传 U-Boot 文件'}});
 return c}
 function ip4(s){var a=/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(s||''),i;
@@ -293,13 +295,13 @@ x.send=function(fd){
  */
 var VNAME={bl2:'BL2',fip:'U-Boot',firmware:'固件',ubifile:'卷'};
 function wrlines(parts,fmt){var L=[],tot=0;
- if(fmt)L.push(['s 擦除 UBI 分区',2600]);
+ if(fmt)L.push(['s 重建 UBI',2600]);
  parts.forEach(function(p){var nm=VNAME[p.k]||(p.k.indexOf('fvol_')==0?p.k.slice(5):p.k);
   tot+=p.n;
   L.push(['s 写入 '+nm+' '+p.n,Math.max(800,Math.min(7000,p.n/1400000*1000))]);
   L.push(['r '+nm+' '+p.n+' '+((0x3f2a91c4+p.n)>>>0).toString(16),250])});
  if(S.post=='fail500'){L=L.slice(0,fmt?2:1);
-  L.push(['f 写入失败（-5）。闪存内容不完整，重新写入至成功之前不要重启',0]);
+  L.push(['f 写入 BL2 失败，详见串口日志',0]);
   return L}
  L.push(['s 回读校验 '+tot,500]);
  for(var i=1;i<=5;i++)L.push(['v '+Math.round(tot*i/5)+' '+tot,520]);
@@ -322,6 +324,8 @@ window.XMLHttpRequest=XHR;
 window.PV=D;
 document.addEventListener('DOMContentLoaded',function(){
  var b=document.createElement('div');
+ /* 这条是预览自己的，不属于设备那张页面：别让语言切换去动它 */
+ b.id='pvbar';b.setAttribute('data-raw','');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
  b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);

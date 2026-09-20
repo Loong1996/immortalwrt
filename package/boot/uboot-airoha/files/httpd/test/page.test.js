@@ -39,7 +39,9 @@ function ok(name, cond, extra) {
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function boot(src) {
+// 页面没选过语言时照 navigator.language 挑一次，所以每个用例都得把浏览器
+// 的语言钉死，否则跑在英文系统上的 node 会让整套用例对着英文页面断言中文。
+async function boot(src, nav) {
   // jsdom cannot navigate, so a location.reload() surfaces as a jsdomError;
   // that is how the tests observe whether the page decided to reload.
   const errs = [];
@@ -48,6 +50,10 @@ async function boot(src) {
   const dom = new JSDOM(fs.readFileSync(src || HTML, 'utf8'), {
     url: 'http://192.168.1.1/', runScripts: 'dangerously', pretendToBeVisual: true,
     virtualConsole: vc,
+    beforeParse(w) {
+      Object.defineProperty(w.navigator, 'language',
+        { value: nav || 'zh-CN', configurable: true });
+    },
   });
   const w = dom.window;
   w.__errs = errs;
@@ -58,6 +64,22 @@ async function boot(src) {
 const $ = (w, s) => w.document.querySelector(s);
 const txt = (w, s) => ($(w, s) || {}).textContent || '';
 const on = (w, s) => $(w, s).hasAttribute('data-on');
+// 页面上还剩多少中文：只看设备那张页面（#app），跳过 data-raw 标记的子树与
+// script/style 的正文 —— 那几处本来就不该被翻译。
+function zhLeft(w) {
+  const out = [];
+  (function walk(n) {
+    if (n.nodeType === 3) {
+      if (/[\u4e00-\u9fff]/.test(n.data)) out.push(n.data.trim().slice(0, 40));
+      return;
+    }
+    if (n.nodeType !== 1) return;
+    if (n.tagName === 'SCRIPT' || n.tagName === 'STYLE' ||
+        n.hasAttribute('data-raw')) return;
+    for (let c = n.firstChild; c; c = c.nextSibling) walk(c);
+  })($(w, '#app'));
+  return out;
+}
 const navs = (w) => Array.from(w.document.querySelectorAll('.nav'));
 function setsel(w, id, v) { const s = $(w, '#pv' + id); s.value = v; s.onchange(); }
 /* 偏移要经 oninput 改，「擦净尾部」的默认值跟着它走 */
@@ -276,7 +298,7 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     const w = await boot();
     $(w, '.nav[data-p=p8]').click();
     await sleep(2200);
-    ok('体检跑完且没弹框', !on(w, '#off') && /16 项正常/.test(txt(w, '#chkh')));
+    ok('体检跑完且没弹框', !on(w, '#off') && /17 项正常/.test(txt(w, '#chkh')));
   }
 
   console.log('\n--- 重启 (p12) ---');
@@ -373,7 +395,7 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     ok('没有结果框', !on(w, '#rmask'));
     ok('进度条转红', $(w, '#p1 .prog').className === 'prog bad',
        $(w, '#p1 .prog').className);
-    ok('设备那句话带出来', /写入失败/.test(txt(w, '#p1 .pwhat')),
+    ok('设备那句话带出来', /写入 BL2 失败/.test(txt(w, '#p1 .pwhat')),
        txt(w, '#p1 .pwhat'));
     ok('按钮放回来，能重传', !$(w, '#p1 button[type=submit]').disabled);
   }
@@ -1611,13 +1633,14 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     $(w, '.nav[data-p=p8]').click();
     await sleep(2200);
     const heads = [...w.document.querySelectorAll('#chk th.g')].map(t => t.textContent);
-    ok('五组标题都在', heads.join(',') === '闪存,引导,UBI,环境,出厂数据', heads.join(','));
-    ok('十七项都在',
-       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 17);
+    ok('六组标题都在', heads.join(',') === '闪存,引导,UBI,环境,出厂数据,指示灯', heads.join(','));
+    ok('十八项都在',
+       w.document.querySelectorAll('#chk td.s0,#chk td.s1,#chk td.s2').length === 18);
+    ok('流水灯报出来了', /流水灯/.test(txt(w, '#chk')) && /green:wan-online/.test(txt(w, '#chk')));
     ok('envver 报出来了', /envver/.test(txt(w, '#chk')));
     ok('固件版本报出来了', /2026-09-05 17:01/.test(txt(w, '#chk')));
     ok('两份环境对比过', /与 ubootenv 一致/.test(txt(w, '#chk')));
-    ok('汇总仍然正确', /1 项注意 · 16 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
+    ok('汇总仍然正确', /1 项注意 · 17 项正常/.test(txt(w, '#chkh')), txt(w, '#chkh'));
   }
 
   console.log('\n--- 卷名当数据看，不当代码看 ---');
@@ -2166,6 +2189,67 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     await sleep(600);
     ok('日常刷机还是说开始写入闪存',
        /上传完成，设备开始写入闪存/.test(txt(w, '#p1 .pwhat')), txt(w, '#p1 .pwhat'));
+  }
+
+  console.log('\n--- 中英切换 ---');
+  {
+    const w = await boot();
+    ok('浏览器是中文就给中文', txt(w, '.nav.n1') === '日常刷机', txt(w, '.nav.n1'));
+    ok('胶囊选中「中」',
+       $(w, '.lg button[data-g=zh]').getAttribute('aria-checked') === 'true');
+
+    w.setlang('en');
+    ok('侧栏换英文', txt(w, '.nav.n1') === 'Flash firmware', txt(w, '.nav.n1'));
+    ok('启动与重启也换', txt(w, '.nav.n11') === 'Boot & reboot', txt(w, '.nav.n11'));
+    ok('长段说明也换', /held in recovery/.test(txt(w, '#p1 .note')),
+       txt(w, '#p1 .note').slice(0, 40));
+    ok('连接状态换', txt(w, '#lives') === 'Online', txt(w, '#lives'));
+    ok('title 属性也换',
+       $(w, '.tb').getAttribute('title') === 'Toggle light / dark',
+       $(w, '.tb').getAttribute('title'));
+    ok('html lang=en', w.document.documentElement.getAttribute('lang') === 'en');
+    ok('胶囊选中 EN',
+       $(w, '.lg button[data-g=en]').getAttribute('aria-checked') === 'true');
+    ok('胶囊自己不被翻译', txt(w, '.lg button[data-g=zh]') === '中',
+       txt(w, '.lg button[data-g=zh]'));
+    ok('存进 localStorage', w.localStorage.getItem('xglang') === 'en');
+    ok('整页没有中文残留', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+
+    w.setlang('zh');
+    ok('切回来是中文原文', txt(w, '.nav.n1') === '日常刷机', txt(w, '.nav.n1'));
+    ok('长段说明也还原',
+       /设备停在恢复模式/.test(txt(w, '#p1 .note')), txt(w, '#p1 .note').slice(0, 20));
+    ok('title 属性还原',
+       $(w, '.tb').getAttribute('title') === '切换深浅色',
+       $(w, '.tb').getAttribute('title'));
+  }
+  {
+    const w = await boot(null, 'en-US');
+    ok('浏览器不是中文就直接给英文',
+       txt(w, '.nav.n1') === 'Flash firmware', txt(w, '.nav.n1'));
+    ok('胶囊跟着选 EN',
+       $(w, '.lg button[data-g=en]').getAttribute('aria-checked') === 'true');
+    ok('自动挑的也没有中文残留', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+    w.setlang('zh');
+    ok('点回中文能覆盖自动选的', txt(w, '.nav.n1') === '日常刷机', txt(w, '.nav.n1'));
+  }
+
+  console.log('\n--- 英文下后插进来的内容 ---');
+  {
+    const w = await boot();
+    w.setlang('en');
+    w.check();
+    await sleep(2500);
+    const chk = txt(w, '#chk');
+    ok('设备回报的分组名也翻', /Flash/.test(chk) && !/闪存/.test(chk),
+       chk.slice(0, 60));
+    ok('检查汇总是英文', / ok$/.test(txt(w, '#chkh')) || /fail · /.test(txt(w, '#chkh')),
+       txt(w, '#chkh'));
+    w.seg($(w, '#p5 .seg button[data-s=s53]'));
+    await sleep(200);
+    ok('UBI 表头是英文', /Name/.test(txt(w, '#ubi')) && !/名称/.test(txt(w, '#ubi')),
+       txt(w, '#ubi').slice(0, 60));
+    ok('新插入的也没有中文', zhLeft(w).length === 0, zhLeft(w).join(' | '));
   }
 
   console.log('\n' + pass + ' passed, ' + fail + ' failed');

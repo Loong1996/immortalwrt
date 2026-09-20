@@ -86,12 +86,12 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  bootfile_fip=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-bl31-uboot.fip
  bootfile_upg=immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-squashfs-sysupgrade.itb
  bootled_status=green:power
-+web_uboot_envver=7
++web_uboot_envver=9
  bootmenu_confirm_return=askenv - Press ENTER to return to menu ; bootmenu 60
  bootmenu_default=0
  bootmenu_delay=0
 -bootmenu_title=      [0;34m( ( ( [1;39mOpenWrt[0;34m ) ) )
-+bootmenu_title=      [1;39mAiroha Web U-Boot 0.3.0[0m
++bootmenu_title=      [1;39mAiroha Web U-Boot 1.0.0[0m
  bootmenu_0=Initialize environment.=run _firstboot
  bootmenu_0d=Run default boot command.=run boot_default
  bootmenu_1=Boot system via TFTP=run boot_tftp ; run bootmenu_confirm_return
@@ -109,7 +109,7 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  preboot=led $bootled_status on
  check_buttons=if button reset ; then httpd ; fi
 -ethaddr_factory=ubi read 0x90000000 ri && env readmem -b ethaddr 0x9000003e 0x6 ; setenv ethaddr_factory
-+web_uboot_show_about=echo ; echo Airoha Web U-Boot 0.3.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
++web_uboot_show_about=echo ; echo Airoha Web U-Boot 1.0.0 by Loong ; echo Guide: https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html ; echo Project: https://github.com/Loong1996/ImmortalWrt-Airoha ; echo Author: https://github.com/Loong1996 ; echo
 +ethaddr_factory=ubi read 0x90000000 ri && env readmem -b rimac 0x9000003e 0x6 ; if test "$rimac" = "ff:ff:ff:ff:ff:ff" ; then echo ri volume holds no factory MAC ; setenv rimac ; fi ; if test -n "$rimac" ; then setenv ethaddr "$rimac" ; fi ; setenv rimac ; setenv ethaddr_factory
  part_default=production
  reset_factory=ubi part ubi ; mw $loadaddr 0x0 0x800 ; ubi write $loadaddr ubootenv 0x800 ; ubi write $loadaddr ubootenv2 0x800
@@ -124,3 +124,57 @@ diff --git a/defenvs/an7581_nokia_xg-040g-md_env b/defenvs/an7581_nokia_xg-040g-
  ubi_create_board_data=ubi check bosa || ubi create bosa 0x40000 || run ubi_format ; ubi check ri || ubi create ri 0x40000 || run ubi_format
  ubi_create_env=ubi check ubootenv || ubi create ubootenv 0x1f000 dynamic || run ubi_format ; ubi check ubootenv2 || ubi create ubootenv2 0x1f000 dynamic || run ubi_format
  ubi_format=ubi detach ; mtd erase ubi && ubi part ubi ; reset
+diff --git a/dts/upstream/src/arm64/airoha/an7581-nokia-xg-040g-md.dts b/dts/upstream/src/arm64/airoha/an7581-nokia-xg-040g-md.dts
+--- a/dts/upstream/src/arm64/airoha/an7581-nokia-xg-040g-md.dts
++++ b/dts/upstream/src/arm64/airoha/an7581-nokia-xg-040g-md.dts
+@@ -18,6 +18,14 @@
+ 		linux,usable-memory-range = <0x0 0x80200000 0x0 0x1fe00000>;
+ 	};
+ 
++	options {
++		u-boot {
++			compatible = "u-boot,config";
++			/* Web recovery LED chase, in this order; red stays out. */
++			httpd-chase-leds = <&led_power &led_wan &led_wan_online &led_usb1 &led_usb2>;
++		};
++	};
++
+ 	memory@80000000 {
+ 		device_type = "memory";
+ 		reg = <0x0 0x80000000 0x0 0x20000000>;
+@@ -36,12 +44,12 @@
+ 	leds {
+ 		compatible = "gpio-leds";
+ 
+-		led-0 {
++		led_power: led-0 {
+ 			label = "green:power";
+ 			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+-		led-1 {
++		led_wan: led-1 {
+ 			label = "green:wan";
+ 			gpios = <&en7581_pinctrl 18 GPIO_ACTIVE_LOW>;
+ 		};
+@@ -51,17 +59,17 @@
+ 			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+-		led-3 {
++		led_wan_online: led-3 {
+ 			label = "green:wan-online";
+ 			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+-		led-4 {
++		led_usb2: led-4 {
+ 			label = "green:usb-2";
+ 			gpios = <&en7581_pinctrl 34 GPIO_ACTIVE_LOW>;
+ 		};
+ 
+-		led-5 {
++		led_usb1: led-5 {
+ 			label = "green:usb-1";
+ 			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
+ 		};

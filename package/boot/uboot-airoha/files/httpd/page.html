@@ -1,5 +1,5 @@
 <!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>
-<script>try{var t=localStorage.getItem('xgtheme');if(t)document.documentElement.setAttribute('data-t',t)}catch(e){}</script>
+<script>try{var t=localStorage.getItem('xgtheme'),g=localStorage.getItem('xglang')||(/^zh/i.test(navigator.language||'')?'zh':'en');if(t)document.documentElement.setAttribute('data-t',t);if(g=='en')document.documentElement.setAttribute('lang','en')}catch(e){}</script>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Airoha Web U-Boot</title>
 <style>
@@ -53,9 +53,15 @@ input::placeholder{color:var(--c3)}
 .id small{color:var(--c2)}
 .id small a,.about span a{color:inherit}
 .id small a:hover,.about span a:hover{color:var(--blue)}
-.foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.6rem .5rem 0}
+.foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:.5rem .45rem;padding:.6rem .4rem 0}
 .foot .tb{margin-top:0;align-self:auto}
-.live{display:flex;align-items:center;color:var(--c2);font-size:.92em;white-space:nowrap}
+.fbtns{display:flex;align-items:center;gap:.3rem}
+.lg{display:inline-flex;align-items:center;height:26px;padding:2px;gap:2px;border-radius:99px;background:var(--fill);box-shadow:inset 0 0 0 1px var(--sep);flex:none}
+.lg button{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:var(--c2);font:inherit;font-size:.86em;font-weight:500;line-height:1;padding:0 .42rem;height:100%;border-radius:99px;cursor:pointer;outline:0;display:inline-flex;align-items:center;transition:background .18s,color .18s,box-shadow .18s}
+.lg button:hover{color:var(--fg)}
+.lg button[aria-checked=true]{background:var(--segon);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.14),0 0 0 .5px rgba(0,0,0,.04)}
+.lg button:focus-visible{box-shadow:0 0 0 3px rgba(10,102,214,.35)}
+.live{display:flex;align-items:center;color:var(--c2);font-size:.92em;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .alert .mi.bad{background:var(--red)}
 .alert .mi.info{background:var(--blue)}
 .alert .mi.ok{background:var(--grn)}
@@ -79,7 +85,9 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .drop{display:flex;align-items:center;gap:1rem;background:var(--card);border:1.5px dashed var(--btnb);border-radius:9px;padding:1rem 1.1rem;cursor:pointer}
 .drop:hover,.drop.has,.drop.over{border-color:var(--blue);border-style:solid}
 .fr.over{background:var(--fill)}
-.fr.over::after{content:"松手放到这里";position:absolute;right:.9rem;color:var(--blue);font-size:.9em}
+:root{--drop:"松手放到这里"}
+[lang=en]{--drop:"Drop it here"}
+.fr.over::after{content:var(--drop);position:absolute;right:.9rem;color:var(--blue);font-size:.9em}
 .drop .ic{width:40px;height:40px;border-radius:9px;background:var(--fill);color:var(--blue);display:inline-flex;align-items:center;justify-content:center;flex:none}
 .drop .ic svg{width:20px;height:20px}
 .drop .tx{min-width:0;flex:1}
@@ -158,7 +166,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .bar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:0 0 .6rem}
 .bar label{display:flex;gap:.4rem;align-items:center;color:var(--c2)}
 .envv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;white-space:pre-wrap;word-break:break-all}
-.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.5rem;background:var(--c3)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.38rem;background:var(--c3)}
 .dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}
 .kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}
 .kv td.hot{color:var(--red)}
@@ -176,7 +184,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .vleg em.re::after{content:"";position:absolute;inset:0;border-radius:2px;background:repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,transparent 2px 4px)}
 .vleg em.free{background:var(--fill);box-shadow:inset 0 0 0 1px var(--sep)}
 @media (max-width:860px){.fr{grid-template-columns:1fr}input[type=text]{max-width:100%}.kv td:first-child{width:auto}}
-@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--sep)}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.ban{margin:1rem 1rem 0}.pane{padding:1rem}}
+@media (max-width:700px){.app{grid-template-columns:1fr}.side{border-right:0;border-bottom:1px solid var(--sep)}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.foot{flex-wrap:wrap}.ban{margin:1rem 1rem 0}.pane{padding:1rem}}
 </style>
 </head><body><div class=app id=app>
 <div class=side>
@@ -196,7 +204,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=nsep></div>
 <button class="nav n11" data-p=p12 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></span>启动与重启</button>
 <button class="nav n6" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span>关于</button>
-<div class=foot><button type=button class=tb onclick=tg() title="切换深浅色" aria-label="切换深浅色"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill=currentColor stroke=none/></svg></button><span class=live><span class="dot s1" id=lived></span><span id=lives>连接中…</span></span></div>
+<div class=foot><span class=fbtns><button type=button class=tb onclick=tg() title="切换深浅色" aria-label="切换深浅色"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill=currentColor stroke=none/></svg></button><span class=lg data-raw role=radiogroup aria-label="Language"><button type=button role=radio data-g=zh aria-checked=true lang=zh onclick="setlang('zh')">中</button><button type=button role=radio data-g=en aria-checked=false lang=en onclick="setlang('en')">EN</button></span></span><span class=live><span class="dot s1" id=lived></span><span id=lives>连接中…</span></span></div>
 </div>
 <form method=post enctype=multipart/form-data onsubmit="return ask()">
 <div class=ban id=ban hidden><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span id=bant></span></div>
@@ -221,7 +229,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=box>
 <div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
 </div>
-<p class=note><b>重建 UBI 前先备份。</b>ri（出厂 MAC、SN）与 bosa（光模块校准）逐机唯一且不可再生，请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
+<p class=note><b>重建 UBI 前先备份。</b>请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
 <p class=note><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>
 <p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
@@ -269,7 +277,6 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>
 <div class=seg data-seg=g10 role=tablist><button type=button role=tab data-s=s101 aria-controls=s101 aria-selected=true onclick=seg(this)>UBI 卷</button><button type=button role=tab data-s=s102 aria-controls=s102 aria-selected=false onclick=seg(this)>原始区段</button></div>
 <div class=sp data-g=g10 id=s101 data-on>
-<p class=note>逐机唯一的出厂数据位于 ri 与 bosa 卷。</p>
 <div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>
 </div>
 <div class=sp data-g=g10 id=s102>
@@ -333,7 +340,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 <div class=sp data-g=g8 id=s83>
 <p class=note>U-Boot 本次上电以来的控制台输出。</p>
-<div class=box><pre class=log id=log>未读取</pre></div>
+<div class=box><pre class=log id=log data-ph>未读取</pre></div>
 <p class=note id=logovf hidden>日志缓冲已满，后续输出未记录。重启后重新开始记录。</p>
 <div class=row><label><input type=checkbox class=sw id=logf onchange=logfollow()>实时跟随</label><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
 </div>
@@ -447,11 +454,14 @@ function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAl
 function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d.setAttribute('data-t',n);try{localStorage.setItem('xgtheme',n)}catch(e){}}
 function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?(n/1024).toFixed(0)+' KiB':n+' B'}
 function spd(b){return b>=1048576?(b/1048576).toFixed(1)+' MiB/s':b>=1024?(b/1024).toFixed(0)+' KiB/s':Math.round(b)+' B/s'}
-/* 秒数说成人话；超过一小时就不必精确到秒了 */
-function dur(s){s=Math.round(s);
-if(s<60)return s+' 秒';
-var m=Math.floor(s/60);if(m<60)return m+' 分 '+(s%60)+' 秒';
-return Math.floor(m/60)+' 小时 '+(m%60)+' 分'}
+/*
+ * 秒数说成人话；超过一小时就不必精确到秒了。这一处不走字典 —— 「 分」「 秒」
+ * 当片段太短，会咬进「擦除 UBI 分区」这种词里，所以在这里直接分语言。
+ */
+function dur(s){s=Math.round(s);var e=LANG=='en';
+if(s<60)return s+(e?' s':' 秒');
+var m=Math.floor(s/60);if(m<60)return m+(e?' min ':' 分 ')+(s%60)+(e?' s':' 秒');
+return Math.floor(m/60)+(e?' h ':' 小时 ')+(m%60)+(e?' min':' 分')}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 function pane(){return $('.pane[data-on]')}
 function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')})}
@@ -966,28 +976,28 @@ $('#scan').innerHTML=h;
 $('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'
 :s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;
-if(l.textContent=='未读取')l.textContent='正在读取…';get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
+if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');l.textContent='正在读取…'}get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
-function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push('(未运行健康检查)');copy(b,s.join('\n'))}
+function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push(T('(未运行健康检查)'));copy(b,s.join('\n'))}
 /* 复制那份是给聊天窗口用的；这份是给附件用的，把日志和 env 也带上 */
 function diagtext(){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];
-s.push('导出于 '+new Date().toLocaleString());s.push('');
-s.push('== 设备 ==');
+s.push(T('导出于 ')+new Date().toLocaleString());s.push('');
+s.push(T('== 设备 =='));
 if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});
 if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}
-else s.push('(/info 读取失败)');
-s.push('');s.push('== 网络 ==');
-s.push($('#net').textContent.replace(/\s+/g,' ').trim()||'(未读取)');
-s.push('');s.push('== 快速检查 ==');
+else s.push(T('(/info 读取失败)'));
+s.push('');s.push(T('== 网络 =='));
+s.push($('#net').textContent.replace(/\s+/g,' ').trim()||T('(未读取)'));
+s.push('');s.push(T('== 快速检查 =='));
 if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});
-else s.push('(未运行)');
-s.push('');s.push('== 环境变量 ==');
+else s.push(T('(未运行)'));
+s.push('');s.push(T('== 环境变量 =='));
 if(ENV)ENV.env.forEach(function(e){s.push(e.k+'='+e.v)});
-else s.push('(未读取)');
-s.push('');s.push('== 全片扫描 ==');
-s.push($('#scan .empty')?'(未扫描)'
+else s.push(T('(未读取)'));
+s.push('');s.push(T('== 全片扫描 =='));
+s.push($('#scan .empty')?T('(未扫描)')
 :$('#scan').textContent.replace(/\s+/g,' ').trim());
-s.push('');s.push('== 串口日志 ==');
+s.push('');s.push(T('== 串口日志 =='));
 s.push($('#log').textContent);
 return s.join('\n')}
 /* 要等 /log 和 /env 回来才拼得全，所以按回调串起来 */
@@ -1195,6 +1205,719 @@ else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';
 CHK=null;$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
 function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}
 document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
+/*
+ * 英文版：中文原文就是字典的键 —— 页面里那几百处文案一处都不用改，设备回报
+ * 的中文（/check、/wr、各种错误）也一样走这里。切过去时整棵树替换一遍，之后
+ * 由 MutationObserver 接手后插进来的节点。切回中文是按节点上存下的原文还原，
+ * 不做英译中：设备日志里全是英文，反查会把它们也一起换掉。
+ *
+ * I18N 整段匹配，I18P 按片段替换 —— 只有中间夹着数字、容量、卷名的句子才
+ * 需要后者，「无」这类短词放进去会在别的句子里乱咬。
+ */
+/* i18n-dict begin */
+var I18N={
+"日常刷机":"Flash firmware",
+"引导升级":"Bootloader",
+"试跑固件":"Boot from RAM",
+"刷回原厂":"Restore stock",
+"按卷写入":"UBI volumes",
+"备份下载":"Backup",
+"设备详情":"Device info",
+"系统诊断":"Diagnostics",
+"环境变量":"Environment",
+"启动与重启":"Boot & reboot",
+"关于":"About",
+"切换深浅色":"Toggle light / dark",
+"连接中…":"Linking…",
+"将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。":"Writes a sysupgrade image into the fit volume. rootfs_data is erased. While the system still boots, use sysupgrade instead.",
+"固件":"Firmware",
+"选择固件文件":"Choose a firmware file",
+"选择文件…":"Choose file…",
+"设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改；写完回读校验一遍，再由你决定是否重启。":"The device is held in recovery and will not boot on its own. Nothing is written to flash until the upload finishes; the image is then read back and verified, and rebooting is your call.",
+"想先不写闪存试一次，去「":"To try an image without touching flash, go to ",
+"未选择文件":"No file selected",
+"上传并刷写":"Upload and flash",
+"写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。":"Writes BL2 and the U-Boot FIP. Use it for the first migration from a tcboot / stock layout, or to upgrade U-Boot.",
+"未选择":"None selected",
+"可选，同时写入":"Optional, written in the same pass",
+"首次迁移":"First migration",
+"重建 UBI":"Rebuild UBI",
+"擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。":"Erases the ubi partition and recreates every volume. The factory MAC, the U-Boot environment and user settings are lost. ",
+"必须同时上传 BL2 与 U-Boot":"BL2 and U-Boot must both be uploaded",
+"重建 UBI 前先备份。":"Back up before rebuilding UBI. ",
+"请先在「":"Export everything from ",
+"」中导出。":" first.",
+"」。":".",
+"。":".",
+"重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截":"The rebuild erases from 0x20000 on, which covers the back half of the stock bootloader",
+"（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。":" (the stock bootloader partition is 0x0–0x80000, while bl2 in this layout only occupies 0x0–0x20000). So if you write U-Boot without BL2, the stock BL2 still starts at boot but can no longer find its next stage — only a serial console gets you out of that. Hence this option demands BL2 and U-Boot together.",
+"仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。":"Upgrading U-Boot alone needs no rebuild: pick only the U-Boot file and rootfs_data survives.",
+"把恢复固件载入内存直接引导，":"Loads a recovery image into RAM and boots it. ",
+"闪存一个字节都不写":"Not one byte of flash is written",
+"。起不来断电即恢复原系统。":". If it does not come up, power-cycle and the old system is back.",
+"选择恢复固件":"Choose a recovery image",
+"要用 initramfs 恢复固件。":"Use an initramfs recovery image. ",
+"它的根文件系统随镜像一起进内存，不依赖闪存，所以 UBI 是空的、fit 卷没了也照样跑得起来。":"Its root filesystem travels into RAM with the image and needs no flash, so it runs even when UBI is empty or the fit volume is gone. ",
+"sysupgrade 固件不适合这里":"A sysupgrade image will not do here",
+"：它的根要由 fitblk 从闪存的 fit 卷里读（设备树的 rootdisk 指着那个卷），试跑时内核是新的、根还是闪存里那份旧的，多半起不来。":": its root is read by fitblk from the fit volume in flash (rootdisk in the device tree points there), so a trial run pairs a new kernel with the old root still in flash, and usually fails to boot.",
+"引导成功后本页面不再可用；要回到恢复页，断电重来即可。闪存没写过一个字节，原系统还在。":"Once it boots, this page is gone; power-cycle to get back to recovery. Flash was never written and the old system is intact.",
+"启动它":"Boot it",
+"将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。":"Writes an image to a given flash offset. It is written as it arrives rather than buffered in RAM, so there is no separate upload stage. At offset 0 the whole chip is written, which overwrites the running bootloader and this page; migrating back to OpenWrt then needs a USB-TTL serial console.",
+"镜像":"Image",
+"写入偏移":"Write offset",
+"十六进制，按擦除块对齐":"Hexadecimal, aligned to an erase block",
+"0 为整片，亦可写入单个分区":"0 writes the whole chip; a single partition works too",
+"擦净尾部":"Erase the tail",
+"镜像之后":"The erase blocks after the image, ",
+"直至片尾":"all the way to the end of the chip",
+"的擦除块一并擦空；不擦则保留原有内容":", are erased as well. Leave it off to keep what is there",
+"镜像须来自本机备份，可在「":"The image must come from a backup of this board, exported from ",
+"」中导出。长度上限为 flash 容量 ":". Its length is capped at the flash size, ",
+"页面不校验镜像内容、机型与偏移是否匹配":"This page does not check that the image, the model and the offset match",
+"，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；":", and a wrong write can only be undone over serial. A whole-chip write takes far longer than a firmware write. ",
+"写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启":"Once writing starts, an interruption leaves flash inconsistent; resend until it succeeds before rebooting",
+"。写入期间指示灯":". The LEDs ",
+"流水":"chase",
+"，与其他页面一致；本页写入与接收同时进行，":" while writing, as on the other pages. Here writing and receiving happen at once, so ",
+"网线与电源都不能断":"neither the cable nor the power may be cut",
+"，进度以本页进度条为准。":". Go by the progress bar on this page.",
+"刷写":"Flash it",
+"写入 UBI 卷":"Write UBI volume",
+"按卷名写入 UBI 卷，卷不存在时按文件长度创建。物理位置由 UBI 层管理，不涉及 bl2 分区。":"Writes a UBI volume by name, creating it at the file's size if it does not exist. UBI decides where it physically lands; the bl2 partition is not involved.",
+"出厂数据":"Factory data",
+"文件须来自本机备份，可同时写入":"The files must come from a backup of this board; several can go in one pass",
+"任意卷":"Any volume",
+"卷名错误将覆盖对应卷的内容":"A wrong name overwrites whatever that volume holds",
+"卷名":"Volume name",
+"如 fip、fit":"e.g. fip, fit",
+"仅限字母、数字与 _ - .":"Letters, digits and _ - . only",
+"内容":"Contents",
+"卷":"Volume",
+"卷内容":"Volume contents",
+"写完由你决定是否重启，所以可以连着写好几个卷。":"Rebooting is your call once a write finishes, so several volumes can be written back to back.",
+"读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。":"Reads flash and downloads it. Reading and transferring run together with no length limit; the device may stop answering while it does.",
+"UBI 卷":"Volumes",
+"原始区段":"Raw range",
+"正在读取…":"Reading…",
+"绕过 UBI 按 flash 偏移读取，偏移与「刷回原厂」一致。":"Reads by flash offset, bypassing UBI. The offsets match the ones on Restore stock.",
+"起始偏移":"Start offset",
+"十六进制":"Hexadecimal",
+"0 为片首":"0 is the start of the chip",
+"长度":"Length",
+"留空到片尾":"empty = to the end",
+"留空读至片尾":"Leave empty to read to the end of the chip",
+"整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。":"A whole-chip read takes the flash itself, not the partition table, so on a stock layout romfile and config come along.",
+"文件偏移等于 flash 偏移":"Offsets in the file equal flash offsets",
+"，坏块在文件中保留占位，格式与 ":". Bad blocks keep their place in the file, and the format matches a ",
+" 镜像一致：外部 ":" image: an ",
+" 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。":" from elsewhere can be written straight back, and an image exported here also works in a programmer. On the way back bad blocks are skipped rather than squeezed out, so everything after them stays put.",
+"整片下载":"Download whole chip",
+"下载区段":"Download range",
+"已完成":"Finished",
+"crc32 基于实际传出的字节计算，可与本地文件核对":"The crc32 covers the bytes actually sent, so it can be checked against the file you got",
+"选择卷，或填写偏移与长度":"Pick a volume, or fill in an offset and length",
+"传输期间设备不应答：U-Boot 的 TCP 栈同时只有一条连接，而这条连接正被下载占着，所以本页面问不到「传了多少字节」。":"The device goes quiet during the transfer: U-Boot's TCP stack holds one connection at a time and the download owns it, so this page cannot ask how many bytes have gone out. ",
+"字节进度请看浏览器自己的下载栏":"Watch the browser's own download bar for that",
+"。传完这里会给出 crc32，可与本地文件核对。":". When it finishes, the crc32 appears here to check against the file.",
+"运行时从设备树、MTD 与 UBI 读取。":"Read at runtime from the device tree, MTD and UBI.",
+"硬件":"Hardware",
+"网络":"Network",
+"端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。":"Port numbers follow the switch's internal order, which need not match the labels on the case. Ports that do not answer are left out.",
+"地址":"Address",
+"三种模式互斥，应用后需以新地址重新打开本页面":"The three modes are exclusive; after applying, reopen this page at the new address",
+"模式":"Mode",
+"DHCP 服务器 · 本机发地址":"DHCP server · this device hands out addresses",
+"静态地址":"Static address",
+"DHCP 客户端 · 向上级路由要":"DHCP client · ask the upstream router",
+"路由器 IP":"Router IP",
+"本机地址，末位固定为 1":"This device's address; the last octet is always 1",
+"子网掩码":"Subnet mask",
+"保存到闪存":"Save to flash",
+"不保存则只在本次开机有效":"Without this it only lasts until the next power-up",
+"应用":"Apply",
+"读取设备状态：关键位置检查、全片扫描，以及本次上电的控制台输出。":"Reads the device's state: a check of the critical spots, a whole-chip scan, and the console output since this power-up.",
+"快速检查":"Quick check",
+"全片扫描":"Full scan",
+"串口日志":"Serial log",
+"检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。":"Checks BL2, bad blocks, the UBI volumes and the U-Boot MAC. The device stops answering while it reads flash, for a few seconds.",
+"未执行检查":"Not checked yet",
+"点「开始检查」读取 BL2、坏块与各卷状态":"Press Run check to read BL2, the bad blocks and the state of each volume",
+"开始检查":"Run check",
+"复制诊断信息":"Copy diagnostics",
+"下载诊断包":"Download diagnostics",
+"未扫描":"Not scanned",
+"点「开始扫描」逐页读一遍整片闪存":"Press Start scan to read every page of the chip once",
+"逐页读取全片；只读，不改动闪存。「快速检查」只覆盖关键位置，颗粒退化需整片读取才能发现。分段执行，段间页面保持响应；整片耗时数分钟，其间设备响应变慢。":"Reads the whole chip page by page. Read-only; flash is not modified. Quick check only covers the critical spots, while a decaying NAND die shows up only in a full read. It runs in chunks and the page stays responsive between them; the whole chip takes minutes and the device answers more slowly meanwhile.",
+"开始扫描":"Start scan",
+"U-Boot 本次上电以来的控制台输出。":"U-Boot's console output since this power-up.",
+"未读取":"Not read yet",
+"日志缓冲已满，后续输出未记录。重启后重新开始记录。":"The log buffer is full and later output was not recorded. Recording restarts after a reboot.",
+"实时跟随":"Follow live",
+"读取日志":"Read log",
+"复制日志":"Copy log",
+"U-Boot 环境变量":"U-Boot environment",
+"当前生效的变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。":"The variables in effect, read-only. A broken bootcmd or boot menu is a common reason a device will not start.",
+"变量":"Variables",
+"引导菜单预览":"Boot menu preview",
+"恢复默认":"Restore defaults",
+"过滤名称或值":"Filter by name or value",
+"只看关键项":"Key variables only",
+"重新读取":"Read again",
+"复制全部":"Copy all",
+"设备启动时的菜单，由 bootmenu_* 变量构成。":"The menu shown at boot, built from the bootmenu_* variables.",
+"恢复为本版 U-Boot 的默认值":"Restore this U-Boot's own defaults",
+"清除自定义的 bootcmd、引导菜单与网络设置并保存":"Clears a customised bootcmd, boot menu and network settings, and saves",
+"出厂 MAC 位于 ri 卷，":"The factory MAC lives in the ri volume and is ",
+"不受影响":"left alone",
+"；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。":"; firmware and user settings are untouched as well. A reboot is needed for it to take effect. If UBI cannot be mounted the save fails and the change lives only in RAM.",
+"离开本页面的三种方式，均不改动闪存。":"Three ways to leave this page. None of them touches flash.",
+"重启后正常引导，":"After a reboot the device boots normally, and ",
+"引导成功就离开本页面了":"once it boots you have left this page",
+" —— 之后这个地址上是系统自己的页面。只有引导失败才回到恢复页，届时本页面自动刷新。":" — this address then belongs to the system's own page. Only a failed boot comes back to recovery, and this page reloads itself when it does.",
+"立即重启":"Reboot now",
+"其他启动方式":"Other ways to start",
+"直接启动系统":"Boot the system now",
+"执行 bootcmd，不经过冷启动；引导失败回到本页面":"Runs bootcmd without a cold start; a failed boot returns to this page",
+"启动系统":"Boot system",
+"下次开机进恢复页":"Stop in recovery next boot",
+"仅生效一次，进入后自动还原":"One shot; it clears itself once you get here",
+"设置":"Arm",
+"设置后下次开机停在本页面，再下次开机恢复正常引导。":"Once armed, the next power-up stops on this page and the one after that boots normally again.",
+"U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。":"An HTTP recovery service built into U-Boot. The page loads nothing from the network.",
+"作者":"Author",
+"项目主页":"Project",
+"门户":"Portal",
+"问题反馈":"Issues",
+"基于":"Based on",
+"已交给设备启动":"Handed over to the device",
+"设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。":"The device is booting that image from RAM. Flash was not modified. Once it boots, this page is gone.",
+"起不来怎么办":"If it does not come up",
+"断电":"Power off",
+"再上电即回到原有系统，闪存一个字节都没写":"Power it back on and the old system is there; not one byte of flash was written",
+"等待":"Wait",
+"引导失败时设备自行回到本页面，届时自动刷新":"A failed boot brings the device back to this page, which then reloads itself",
+"本次动作":"What happens",
+"写入完成":"Write finished",
+"镜像已全部写入闪存，设备正在重启。本页面可以关闭。":"The whole image is in flash and the device is rebooting. You can close this page.",
+"设备回报":"Device reported",
+"crc32 由设备对收到的字节计算，与备份时记录的值一致即说明传输无误。":"The device computed the crc32 over the bytes it received; if it matches the one noted at backup time, the transfer was clean.",
+"重启约需 1–2 分钟。整片写入后本页面所属的 U-Boot 已被覆盖，设备将按镜像中的引导程序启动。":"The reboot takes one or two minutes. After a whole-chip write the U-Boot this page belongs to is gone, and the device starts from the bootloader inside the image.",
+"重新连接":"Reconnect",
+"确认写入":"Confirm write",
+"取消":"Cancel",
+"仍要写入":"Write anyway",
+"写入完毕":"Write complete",
+"留在恢复页":"Stay in recovery",
+"已连接":"Online",
+"设备忙…":"Busy…",
+"无响应…":"Quiet…",
+"已断开":"Offline",
+"闪存中没有可挂载的 UBI。":"There is no mountable UBI in flash. ",
+"首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。":"First migration: on Bootloader, upload BL2, U-Boot and the firmware together and turn on Rebuild UBI.",
+"闪存中没有 U-Boot（fip 卷）。":"There is no U-Boot in flash (the fip volume). ",
+"当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。":"The running U-Boot lives only in RAM and is lost on power-off. Upload a U-Boot file on Bootloader.",
+"设备正在写入":"The device is writing",
+"指示灯流水表示设备还在工作。":"Chasing LEDs mean it is still working. ",
+"请勿断电":"Do not cut the power",
+"，也不要拔网线。":", and do not unplug the cable.",
+"设备正在重启":"The device is rebooting",
+"引导成功即进入系统，":"A successful boot lands in the system and ",
+"本页面不再可用":"this page is gone",
+"；引导失败才回到这里并自动刷新。":"; only a failed boot comes back here, and the page reloads itself.",
+"设备正在启动系统":"The device is booting the system",
+"闪存未改动。引导成功后":"Flash was not modified. Once it boots, ",
+"；引导失败则回到本页面。":"; a failed boot returns to this page.",
+"与设备的连接已断开":"The connection to the device is down",
+"设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。":"The device is not answering. Check the cable and the power. If the LEDs are still chasing it is alive, so give it a moment.",
+"每 2 秒自动重试。":"Retrying every 2 seconds.",
+"写入完成，HTTP 服务已恢复，可继续写入下一个卷":"Write finished, the HTTP service is back, and the next volume can go in",
+"正在重试…":"Retrying…",
+"闪存内容不受影响":"Flash is not affected",
+"闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。":"There is no mountable UBI in flash and the running U-Boot lives only in RAM. ",
+"重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入":"After a reboot the old system is back, and U-Boot has to be sent over serial again before this page can be opened. Better to finish the write on Bootloader first",
+"闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。":"There is no U-Boot in flash (the fip volume) and the running one lives only in RAM. ",
+"重启后本页面将无法再打开":"After a reboot this page can no longer be opened",
+"重启":"Reboot",
+"动作":"Action",
+"DHCP 服务器":"DHCP server",
+"DHCP 客户端":"DHCP client",
+"设备的接口地址":"The device's interface address",
+"电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 ":"With a computer plugged straight into this device, it gets an address on connect and needs no manual IP. The mask is fixed at ",
+"，电脑拿到的是本网段 ":", the computer gets ",
+"，网关指向本设备且不带 DNS。":" on this subnet, and the gateway points at this device with no DNS. ",
+"接入已有网络前不要用这一档":"Do not use this mode on an existing network",
+"：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。":": it answers every request and races that network's router to hand out addresses, knocking whichever machines it wins off the network.",
+"接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。":"Use this mode on an existing network: give it a free address on that subnet. The device stops handing out addresses, and once applied this page opens from any machine on the network.",
+"地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。":"The upstream router assigns the address, which this page cannot know in advance — look it up by MAC in the router's client list. The device stops handing out addresses. Without a lease it falls back to the current address.",
+"主机需在同一网段":"Your computer must be on the same subnet",
+"填本网段内任一地址即可，如 192.168.1.1":"Any address on this subnet will do, e.g. 192.168.1.1",
+"DHCP 服务器 192.168.1.1 / 255.255.255.0（出厂默认）":"DHCP server 192.168.1.1 / 255.255.255.0 (factory default)",
+"。勾上「保存到闪存」才会把当前这一套写进去替换它；不勾就只管本次开机。":". Only Save to flash writes the current settings over it; without it they last until the next power-up.",
+"IP 不是一个合法的地址":"That is not a valid IP address",
+"子网掩码不是一个合法的地址":"That is not a valid subnet mask",
+"改网络模式":"Change network mode",
+"本机":"This device",
+"不再发地址":"stops handing out addresses",
+"，电脑需手动配置同网段的 IP":", so the computer needs a manual IP on the same subnet",
+"地址由上级路由分配，本页面无法预知。":"The upstream router assigns the address; this page cannot know it. ",
+"；未取得租约时退回当前地址":"; without a lease it falls back to the current address",
+"：下次开机就用这一套。地址填错时断电也无法恢复":": the next power-up uses these settings. If the address is wrong, a power-cycle will not undo it",
+"本机用的是设备发的地址":"Your computer is using an address this device handed out",
+"请改用上级路由那个网络里的机器":"use a machine on the upstream router's network instead",
+"正在获取地址":"Getting an address",
+"10 秒后自动跳转。":"Jumping there in 10 seconds.",
+"闪存内容不受影响；引导失败回到本页面":"Flash is not affected; a failed boot returns to this page",
+"未设置":"Not armed",
+"未保存":"Not saved",
+"已设置":"Armed",
+"已设置，但未能保存到闪存：断电后失效，请在「诊断」中确认 ubootenv 卷":"Armed, but it could not be saved to flash: it will not survive a power-off. Check the ubootenv volume under Diagnostics",
+"此前已设置，下次开机将停在本页面":"Already armed; the next power-up stops on this page",
+"已设置。下次开机停在本页面，再下次开机恢复正常引导":"Armed. The next power-up stops on this page, and the one after that boots normally again",
+"读取失败，刷新页面重试":"Read failed. Reload the page and try again",
+"UBI 未挂载":"UBI is not mounted",
+"首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份":"Before the first migration flash still holds the stock content — this is the moment to back up the whole chip from Raw range",
+"下载":"Download",
+"设备拒绝了本次备份":"The device refused this backup",
+"到片尾":"to the end",
+"未收到设备回报，本次备份可能未完成，请查看「诊断」中的串口日志":"No word back from the device — the backup may be incomplete. Check the serial log under Diagnostics",
+"传输完成":"Transfer complete",
+"无法读取闪存信息":"Cannot read the flash information",
+"起始偏移不是有效的十六进制数":"The start offset is not a valid hexadecimal number",
+"长度不是有效的十六进制数":"The length is not a valid hexadecimal number",
+"长度为 0":"The length is 0",
+"设备正在写入，稍后再试":"The device is writing. Try again shortly",
+"没有匹配的变量":"No variable matches",
+"没有 bootmenu_* 条目":"No bootmenu_* entries",
+"环境中没有引导菜单：串口不会停顿，直接执行 bootcmd":"The environment has no boot menu: the console will not pause and bootcmd runs straight away",
+"自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值":"A customised bootcmd, boot menu and network settings go back to this U-Boot's defaults",
+"出厂 MAC、固件与用户配置不受影响；恢复后需重启生效":"The factory MAC, the firmware and user settings are untouched; a reboot is needed for it to take effect",
+"正在恢复…":"Restoring…",
+"已恢复并保存，重启后生效":"Restored and saved; it takes effect after a reboot",
+"已恢复，但保存失败（UBI 未挂载），改动仅存于内存":"Restored, but the save failed (UBI is not mounted), so the change lives only in RAM",
+"读不到网络信息":"Cannot read the network information",
+"网关":"Gateway",
+"网卡":"Interface",
+"未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。":"No address has been handed out; your computer is on a manually configured IP, and another machine would need configuring too.",
+"未连接":"No link",
+"机型":"Model",
+"内存":"RAM",
+"闪存":"Flash",
+"分区":"Partitions",
+"名称":"Name",
+"类型":"Type",
+"大小":"Size",
+"已用":"Used",
+"检查中…":"Checking…",
+"正在检查，读取闪存期间设备不响应…":"Checking. The device does not answer while it reads flash…",
+"重新检查":"Check again",
+"重新扫描":"Scan again",
+"已停止":"Stopped",
+"已停止，结果仅覆盖已扫描的部分":"Stopped; the result only covers what was scanned",
+"停止":"Stop",
+"正在扫描":"Scanning",
+"扫描完成，存在无法读出的页":"Scan finished; some pages could not be read",
+"扫描完成":"Scan finished",
+"已扫描":"Scanned",
+"坏块":"Bad blocks",
+"无":"None",
+"ECC 纠错":"ECC corrections",
+"读失败":"Read failures",
+"扫描完成，见上表":"Scan finished; see the table above",
+"扫描完成，全片可读":"Scan finished; the whole chip reads",
+"已复制":"Copied",
+"(未运行健康检查)":"(no health check was run)",
+"导出于 ":"Exported ",
+"== 设备 ==":"== Device ==",
+"(/info 读取失败)":"(/info could not be read)",
+"== 网络 ==":"== Network ==",
+"(未读取)":"(not read)",
+"== 快速检查 ==":"== Quick check ==",
+"(未运行)":"(not run)",
+"== 环境变量 ==":"== Environment ==",
+"== 全片扫描 ==":"== Full scan ==",
+"(未扫描)":"(not scanned)",
+"== 串口日志 ==":"== Serial log ==",
+"正在收集…":"Collecting…",
+"将固件载入内存并直接引导":"Load the image into RAM and boot it",
+"不写入闪存":"Flash is not written",
+"；引导失败断电即恢复原系统":"; if it fails to boot, power-cycle and the old system is back",
+"试跑需要选择一个恢复固件":"A trial run needs a recovery image",
+"试跑仅接收固件本身，其他文件不会被写入":"A trial run takes the image alone; no other file is written",
+"固件仅载入内存，不写入闪存；引导失败断电即恢复原系统":"The image only goes into RAM, not flash; if it fails to boot, power-cycle and the old system is back",
+"这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit 卷里，试运行不写闪存也就用不到它，内核多半起不来":"That file name does not look like an initramfs recovery image. A sysupgrade image keeps its root filesystem in the fit volume in flash, which a trial run never touches, so the kernel will most likely not come up",
+"写入偏移不是有效的十六进制数":"The write offset is not a valid hexadecimal number",
+"写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启":"Writing runs alongside the upload; an interruption leaves flash inconsistent, so resend until it succeeds before rebooting",
+"写入后本页面不再可用，重新迁移需经串口":"After this write the page is gone, and migrating back needs a serial console",
+"选择了卷内容但未填写卷名":"Volume contents were picked but no volume name was given",
+"填写了卷名但未选择卷内容":"A volume name was given but no contents were picked",
+"卷名仅限字母、数字与 _ - .":"A volume name may only contain letters, digits and _ - .",
+"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动":"Rebuild UBI is on but no U-Boot file was picked: the rebuild wipes the fip volume, and without U-Boot the device will not start",
+"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救":"Rebuild UBI is on but no BL2 was picked: the rebuild erases from 0x20000 on, which covers the back half of the stock bootloader. Writing U-Boot alone leaves a device that will not boot, and only a serial console gets you out of that",
+"闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件":"There is no U-Boot in flash (the fip volume), so a U-Boot file has to go in this time",
+"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件":"There is no mountable UBI in flash: turn on Rebuild UBI and upload BL2, U-Boot and the firmware together",
+"重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置":"Rebuilding UBI clears the factory MAC, the U-Boot environment and user settings",
+"未选择 BL2 或 U-Boot，本次只写入固件":"No BL2 or U-Boot was picked; only the firmware goes in this time",
+"闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移":"There is no mountable UBI in flash — finish the first migration on Bootloader first",
+"闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件":"There is no U-Boot in flash (the fip volume). The write will not reboot on its own, but add a U-Boot file on Bootloader before you do reboot",
+"rootfs_data 将被清空":"rootfs_data will be erased",
+"未选择任何文件":"No files selected",
+"写入中…":"Writing…",
+"上传中…":"Uploading…",
+"传输完成，设备正在写入最后一块并擦净尾部…":"Transfer complete; the device is writing the last block and erasing the tail…",
+"传输完成，设备正在写入最后一块…":"Transfer complete; the device is writing the last block…",
+"已载入内存，即将启动":"Loaded into RAM, about to boot",
+"上传完成，设备开始写入闪存":"Upload complete; the device has started writing flash",
+"连接中断，请检查网线后重试":"The connection dropped. Check the cable and try again",
+"写入未完成，闪存已写入一部分。":"The write did not finish and flash is partly written. ",
+"在重新写入成功之前不要重启设备。":"Do not reboot the device until a write succeeds.",
+"连接中断，写入可能未完成。":"The connection dropped and the write may be incomplete. ",
+"未收到设备回报，请查看「诊断」中的串口日志":"No word back from the device. Check the serial log under Diagnostics",
+"通过":"Passed",
+"回读校验没通过，闪存里的内容与上传的不一致。":"The read-back check failed: what is in flash differs from what was uploaded. ",
+"重新写入至成功之前不要重启设备。":"Do not reboot until a rewrite succeeds.",
+"即将完成…":"Almost done…",
+"回读校验":"Read-back check",
+"用时":"Took",
+"设备已写入完成":"The device finished writing",
+"闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。":"Flash is written. Reboot now to start from it, or stay on this page and write something else.",
+"闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动":"There is still no U-Boot in flash (the fip volume); a reboot now will not start",
+"写入":"Written",
+"回报":"Reply",
+"（无）":"(none)",
+"重建 UBI…":"Rebuilding UBI…",
+"写入 BL2…":"Writing BL2…",
+"写入 U-Boot…":"Writing U-Boot…",
+"写入 固件…":"Writing firmware…",
+"回读校验…":"Verifying…",
+"分区表":"Partition table",
+"可写空间":"Writable space",
+"引导":"Boot",
+"引导菜单":"Boot menu",
+"指示灯":"LEDs",
+"流水灯":"Chase LEDs",
+"环境":"Env volumes",
+"磨损":"Wear",
+"没有找到闪存设备":"No flash device found",
+"没有分区，只能按 flash 偏移读写":"No partitions; only raw flash-offset access works",
+"bl2 分区为空。断电后 BootROM 无法找到 BL2，请在「引导升级」页上传":"The bl2 partition is empty. After a power-off the BootROM cannot find BL2 — upload one on Bootloader",
+"未设置，设备不会自行引导。可在「环境变量」页恢复默认值":"Not set, so the device will not boot on its own. Restore the defaults on Environment",
+"与当前版本默认值一致":"Matches this version's default",
+"无条目":"No entries",
+"无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件":"Cannot be mounted; there is no usable UBI in flash. For a first migration, turn on Rebuild UBI on the Bootloader page and upload BL2, U-Boot and the firmware together",
+"已挂载但无法访问":"Mounted but not accessible",
+"UBI 已挂载但无法访问":"UBI is mounted but not accessible",
+"UBI 无法挂载，只能按 flash 偏移备份":"UBI cannot be mounted; only raw flash-offset backups are possible",
+"不存在。闪存中无 U-Boot，断电后无法启动，请在「引导升级」页上传 U-Boot 文件":"Missing. There is no U-Boot in flash, so the device will not start after a power-off — upload a U-Boot file on Bootloader",
+"不存在。闪存中无固件，请在「日常刷机」页上传":"Missing. There is no firmware in flash — upload one on Flash firmware",
+"无法读取镜像描述，仅能确认为 FIT 格式":"The image description cannot be read; only the FIT format could be confirmed",
+"镜像中无描述信息":"The image carries no description",
+"无法读取，卷不存在":"Cannot be read; the volume does not exist",
+"存在，无法读取内容":"Present, but the contents cannot be read",
+"不存在。U-Boot 环境无处保存，首次正常启动时自动创建":"Missing. The U-Boot environment has nowhere to live; it is created at the first normal boot",
+"已读取":"Read OK",
+"已读取，内容为空":"Read OK, but empty",
+"已读取，无有效 MAC":"Read OK, but no valid MAC in it",
+"ethaddr 不是有效地址":"ethaddr is not a valid address",
+"未启用 CONFIG_LED，救砖时指示灯不流水":"CONFIG_LED is off, so the LEDs will not chase during recovery",
+"另一个备份正在传输，请等待传输完成后重试":"Another backup is transferring. Wait for it to finish and try again",
+"正在写入闪存，这一项要等写完再改":"Flash is being written; this one has to wait until the write is done",
+"设备正在传输备份。请等待传输完成后再上传，或刷新页面放弃该次下载":"The device is transferring a backup. Wait for it to finish before uploading, or reload the page to abandon that download",
+"设备正在接收上传，请等待写入完成后再备份":"The device is receiving an upload. Wait for the write to finish before backing up",
+"设备正忙，等这次传输完成后再扫描":"The device is busy; scan again once this transfer is done",
+"卷名不合法":"Invalid volume name",
+"卷名缺失或过长":"The volume name is missing or too long",
+"没有 Content-Length":"No Content-Length",
+"读取失败，详见串口日志":"Read failed — see the serial log",
+"起始偏移超过闪存容量":"The start offset is past the flash size",
+"偏移加长度超过闪存容量":"Offset plus length is past the flash size",
+"内存不足，无法分配读取窗口":"Not enough memory for a read window",
+};
+var I18P={
+"。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置":". Widths are each volume's reserved size, ordered by volume ID. UBI volumes are not contiguous in flash, so this is not a physical layout",
+" 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：":" bad, including the block the bl2 partition sits in — the BootROM may fail to read BL2: ",
+" MiB；写入固件时会先删掉 fit 与 rootfs_data，再腾出 ":" MiB; writing firmware deletes fit and rootfs_data first, freeing another ",
+"。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电":". Flash is partly written and a reboot now will not start. Write again until it succeeds, and keep the power on",
+" 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志":" block(s) could not be read and were filled with 0xff — see the serial log under Diagnostics",
+"U-Boot 设备树未在 /options/u-boot 声明 ":"The U-Boot device tree does not declare ",
+"设备正在传输备份。请等待传输完成后再上传，或刷新页面放弃该次下载":"The device is transferring a backup. Wait for it to finish before uploading, or reload the page to abandon that download",
+"获取成功后设备位于新地址，请在上级路由的客户端列表中按 ":"Once it has one, the device is at a new address — look it up in the upstream router's client list by ",
+"，加上写入时会腾出的 fit 与 rootfs_data":", plus the fit and rootfs_data freed on write",
+" 不同。重建 UBI 后常见，将备份的出厂卷写回即可":" in the factory data. Common after a UBI rebuild — just write the backed-up factory volume back",
+" 处无 BL2 镜像头，可能为原厂或第三方引导程序":" holds no BL2 image header — it may be a stock or third-party bootloader",
+" 不同。两份环境内容不一致，启动时使用较新的一份":" — the two copies differ, and the newer one is used at boot",
+"环境中无 ethaddr，本次启动使用随机地址 ":"No ethaddr in the environment; this boot uses the random address ",
+"，超过 bl2 分区自 0x800 起可写的 ":", more than the bl2 partition can take from 0x800 on: ",
+"请在上级路由的客户端列表中按 MAC 查找：":"Look it up by MAC in the upstream router's client list: ",
+"。当前打开本页面的主机用的就是设备发的地址。":". The machine viewing this page is on one of them.",
+"少量属正常；成片出现表明颗粒退化，应尽快备份":"A few are normal; a cluster of them means the die is decaying, so back up soon",
+"，覆盖 bootloader 及其后全部内容":", overwriting the bootloader and everything after it",
+"，接近 SLC 颗粒常见寿命，需留意坏块增长":", near the usual life of an SLC die — watch for new bad blocks",
+"本页面连接的是旧地址，不会自动恢复。请以 ":"This page is still on the old address and will not recover by itself. Reopen it at ",
+"环境中没有这一项，当前 U-Boot 为 ":"Not in the environment; the running U-Boot is ",
+"。引导菜单为旧版本，下次正常启动时自动刷新":". The boot menu is from an older version and refreshes at the next normal boot",
+" 个块读取失败，该部分以 0xff 填充":" block(s) could not be read and were filled with 0xff",
+"。ECC 无法纠正，这些位置的数据已丢失":". ECC could not fix them, so the data there is lost",
+" 的文件名与常规命名不符，请确认文件正确":" has an unusual file name — make sure it is the right file",
+"。不一定装得下一份固件；可先删掉不用的卷":". That may not fit a firmware image; delete volumes you do not need",
+"另一个备份正在传输，请等待传输完成后重试":"Another backup is transferring. Wait for it to finish and try again",
+"设备正在接收上传，请等待写入完成后再备份":"The device is receiving an upload. Wait for the write to finish before backing up",
+"偏移加镜像长度超过 flash 容量 ":"Offset plus image length is past the flash size, ",
+"写入 U-Boot 失败，详见串口日志":"Writing U-Boot failed — see the serial log",
+"没有分区，只能按 flash 偏移读写":"No partitions; only raw flash-offset access works",
+"不保存：只管本次开机，下次开机回到 ":"Not saved: this lasts until the next power-up, which goes back to ",
+"设备启动时的菜单，序号即串口上按的键":"The menu shown at boot; the number is the key pressed on the serial console",
+"本页面将断开，需以 http://":"This page will drop; reopen it at http://",
+"偏移加长度超过 flash 容量 ":"Offset plus length is past the flash size, ",
+" 秒内无按键则执行 bootcmd":" s without a keypress runs bootcmd",
+"），请重新上传 U-Boot 文件":"). Upload the U-Boot file again",
+"），卷内数据校验未通过，内容已损坏":"), and the volume's checksum failed — the contents are corrupt",
+"没有 Content-Length":"No Content-Length",
+"：本机这个地址马上就没人续租了，":": nothing will renew your computer's address any more, so ",
+" 查找。未取得租约时退回原地址。":". Without a lease it falls back to the old address.",
+"起始偏移超出 flash 容量 ":"The start offset is past the flash size, ",
+"当前主机用的是手动配置的 IP。":"your computer is on a manually configured IP.",
+"与当前版本默认值不同，已被修改：":"Differs from this version's default; modified: ",
+"。下次正常启动时自动刷新引导菜单":". The boot menu refreshes at the next normal boot",
+"写入 BL2 失败，详见串口日志":"Writing BL2 failed — see the serial log",
+"挂载 UBI 失败，详见串口日志":"Mounting UBI failed — see the serial log",
+"重建 UBI 失败，详见串口日志":"Rebuilding UBI failed — see the serial log",
+"内存不足以分配接收环，至少需要 ":"Not enough memory for the receive ring; at least ",
+"[日志缓冲已满，后续输出未记录]":"[log buffer full; later output not recorded]",
+"正在写入闪存，这一项要等写完再改":"Flash is being written; this one has to wait until the write is done",
+" 字节。固件不完整，请重新上传":" bytes. The firmware is incomplete — upload it again",
+"本机开始发地址：电脑将拿到 ":"This device starts handing out addresses; the computer will get ",
+" · 已截断，完整内容见串口":" · truncated; the full list is on the serial console",
+"卷内不是 FIT 镜像（头 ":"The volume does not hold a FIT image (header ",
+"，与当前 U-Boot 一致":", matches the running U-Boot",
+" 读回来的内容与上传的不一致":" read back differently from what was uploaded",
+"自 flash 偏移 0x":"Writes from flash offset 0x",
+" 块，镜像中对应内容未写入":" block(s); the matching parts of the image were not written",
+" 个，已由 UBI 避开：":" bad, all avoided by UBI: ",
+"，当前 U-Boot 为 ":", the running U-Boot is ",
+"写入固件失败，详见串口日志":"Writing the firmware failed — see the serial log",
+"整片写入失败，详见串口日志":"The whole-chip write failed — see the serial log",
+"内存不足，无法分配读取窗口":"Not enough memory for a read window",
+" 不存在时按文件长度创建":" will be created at the file's size if it does not exist",
+"，超过设备单次可接收的 ":", more than the device can take in one go: ",
+" 字节，超过它们覆盖的 ":" bytes, more than the ",
+"（本次读取已纠正位翻转）":" (bit flips were corrected on this read)",
+" 次地址，均未被接受；":" offer(s), none accepted; ",
+"空闲与 UBI 预留 ":"Free and UBI reserve ",
+"，超过 fip 卷的 ":", more than the fip volume's ",
+"：内存不足，设备将拒绝":" — not enough RAM, so it will be refused",
+" 字节没有划进任何分区":" bytes not covered by any partition",
+"bl2 分区读取失败（":"Reading the bl2 partition failed (",
+" 项，当前版本默认为 ":" entries; this version defaults to ",
+"卷内不是 FIP（头 ":"The volume does not hold a FIP (header ",
+" 个灯，一个也没有找到":" LEDs and not one was found",
+" 卷失败，详见串口日志":" volume failed — see the serial log",
+" 字节将超出闪存容量 ":" bytes would run past the flash size of ",
+"读取失败，详见串口日志":"Read failed - see the serial log",
+"偏移加长度超过闪存容量":"Offset plus length is past the flash size",
+"设备拒绝了本次备份：":"The device refused this backup: ",
+"。红色条目会写入闪存":". Red entries write to flash",
+" MiB：当前空闲 ":" MiB — free now ",
+" 页在读取时被纠正。":" page(s) were corrected on read. ",
+"写入偏移未按擦除块 ":"The write offset is not aligned to the erase block, ",
+"U-Boot 文件 ":"The U-Boot file is ",
+" 处有 BL2 镜像":" holds a BL2 image",
+"，救砖时指示灯不流水":" under /options/u-boot, so the LEDs will not chase during recovery",
+"起始偏移超过闪存容量":"The start offset is past the flash size",
+"需手动把本机配成 ":"set it manually to an address in ",
+"，最近一次分配给 ":", most recently to ",
+" 保留原有内容不动":" after the image keeps what is already there",
+" 的分区，无法检查":" among the partitions, so it cannot be checked",
+"），请重新上传固件":"). Upload the firmware again",
+"，与出厂数据中的 ":", differs from ",
+"DHCP 服务器":"DHCP server",
+"DHCP 客户端":"DHCP client",
+"正在读取并传送 ":"Reading and sending ",
+" · 写入时腾出":" · freed on write",
+"镜像之后剩余的 ":"The ",
+"回读校验没通过：":"The read-back check failed: ",
+"设备拒绝了上传（":"The device refused the upload (",
+"声明的大小合计 ":"declared sizes total ",
+" MiB 未划分":" MiB is unpartitioned",
+" 个逻辑擦除块）":" logical erase blocks)",
+" 字节，无法读取":" bytes and cannot be read",
+" 字节，卷内仅 ":" bytes but the volume holds only ",
+" 字节，校验通过":" bytes, checksum OK",
+"，与出厂数据一致":", matches the factory data",
+"已读取，MAC ":"Read OK, MAC ",
+"（闪存尚未改动）":" (flash was not modified)",
+"没有找到闪存设备":"No flash device found",
+" 个文件 · ":" file(s) · ",
+"设备没有接受：":"The device did not accept it: ",
+"下次开机回到 ":"The next power-up goes back to ",
+"UBI 预留 ":"UBI reserve ",
+" · 擦除块 ":" · erase block ",
+" 项异常 · ":" fail · ",
+" 项注意 · ":" warn · ",
+"扫描没能进行（":"The scan could not run (",
+" 将被擦成空白":" after the image will be erased blank",
+"BL2 文件 ":"The BL2 file is ",
+"设备写入失败（":"The device failed to write (",
+" 个卷，坏块 ":" volumes, ",
+" 个逻辑擦除块":" free logical erase blocks",
+"擦写次数最大 ":"Erase count max ",
+"FIT 镜像，":"FIT image, ",
+"存在，CRC ":"Present, CRC ",
+" 个没有找到）":" not found)",
+" 未按擦除块 ":" is not aligned to the erase block ",
+"卷名缺失或过长":"The volume name is missing or too long",
+"（出厂默认）":" (factory default)",
+" · 电脑 ":" · computer ",
+"/ 重新打开":"/",
+" 的一个地址":"",
+"设备已移至 ":"The device moved to ",
+" 重新打开。":".",
+" 块读取失败":" unreadable block(s)",
+"空闲与预留 ":"Free and reserve ",
+"逻辑擦除块 ":"Logical erase block ",
+"。刷机可用 ":". Available for flashing: ",
+" · 剩余 ":" · left ",
+" 页无法读出":" page(s) could not be read",
+"连续覆盖整片":"contiguous over the whole chip",
+" 个，空闲 ":" bad blocks, ",
+"。当前空闲 ":". Free now ",
+"，实际写入 ":", wrote ",
+"请求头超过 ":"The request header is longer than ",
+"下次开机：":"Next power-up: ",
+"设置失败（":"Arming failed (",
+"读至片尾，":"Reads to the end of the chip, ",
+"传输完成；":"Transfer complete; ",
+" 起的区段":" onwards",
+"恢复失败（":"Restore failed (",
+" · 页 ":" · page ",
+"（擦除块 ":" (erase block ",
+"扫描完成，":"Scan finished; ",
+"读取失败（":"Read failed (",
+" 起写入 ":" onwards: ",
+"本次上传 ":"This upload is ",
+"正在写入 ":"Writing ",
+"正在上传 ":"Uploading ",
+"预计还需 ":"About ",
+"回读校验 ":"Verifying ",
+"没有名为 ":"There is nothing named ",
+" 个分区，":" partitions; ",
+" 之间有 ":" has ",
+"连续覆盖 ":"contiguous over ",
+"片上其余 ":"the chip's other ",
+"，擦除块 ":", erase block ",
+"，OOB ":", OOB ",
+"刷机可用 ":"Available for flashing: ",
+"闪存中为 ":"Flash holds ",
+"镜像声明 ":"The image declares ",
+"存在，与 ":"Present, matches ",
+" 声明了 ":" declares ",
+"（声明了 ":" (declares ",
+" 个，有 ":", ",
+"写入偏移 ":"The write offset ",
+"卷名不合法":"Invalid volume name",
+"长度为 0":"The length is 0",
+"静态地址":"Static address",
+"已发出 ":"Handed out ",
+" 个地址":" address(es)",
+" 全双工":" full duplex",
+" 半双工":" half duplex",
+" 项正常":" ok",
+" 字节）":" bytes)",
+"：有重叠":" they span: they overlap",
+"擦除块 ":"erase block ",
+" 失败（":" failed (",
+"读不回 ":"could not read back ",
+"已选 ":"Selected ",
+"设备 ":"Device ",
+"端口 ":"Port ",
+"空闲 ":"Free ",
+"全部 ":"All ",
+" 个：":": ",
+" 页：":" page(s): ",
+" 对齐":"",
+"预计 ":"About ",
+"跳过 ":"Skipped ",
+" 块）":" block(s))",
+"写入 ":"Writing ",
+" 的卷":" among the volumes",
+"，页 ":", page ",
+"平均 ":"average ",
+"卷内 ":"The volume holds ",
+" 一致":"",
+"，与 ":", differs from ",
+" 的 ":"'s ",
+"擦除 ":"Erasing ",
+" 字节":" bytes",
+" 卷":" volume",
+" 项":" entries",
+"卷 ":"Volume ",
+" 块":" block(s)",
+"页 ":"page ",
+"自 ":"From ",
+"）：":"): ",
+"；":"; ",
+"、":", ",
+"（":" (",
+"）":")",
+"，":", ",
+};
+/* i18n-dict end */
+var LANG='zh',I18RE=null,I18R=null,I18ON=0,
+I18A=['title','aria-label','placeholder','data-l'],
+CJK=/[\u4e00-\u9fff]/;
+function i18re(){var k=[],x;for(x in I18P)k.push(x);
+k.sort(function(a,b){return b.length-a.length});
+I18RE=k.length?new RegExp(k.map(function(s){
+return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}).join('|'),'g'):null}
+/* 诊断导出的那几行不进 DOM，只能显式过一道 */
+function T(s){return LANG=='en'?i18s(s):s}
+function i18s(s){var e=I18N[s];if(e!==undefined)return e;
+return I18RE?s.replace(I18RE,function(m){return I18P[m]}):s}
+function i18text(n){var s=n.data,r;if(!s||!CJK.test(s))return;
+r=i18s(s);if(r!=s){if(n.zh0===undefined)n.zh0=s;n.data=r}}
+function i18attr(e,a){var s=e.getAttribute&&e.getAttribute(a),r;
+if(!s||!CJK.test(s))return;
+r=i18s(s);if(r!=s){if(e['zh0_'+a]===undefined)e['zh0_'+a]=s;e.setAttribute(a,r)}}
+/* script 与 style 的正文也是文本节点，注释里全是中文，别去动它 */
+function i18skip(n){var t=n.tagName;
+return t=='SCRIPT'||t=='STYLE'||n.hasAttribute('data-raw')}
+function i18on(n){var c;
+if(n.nodeType==3){i18text(n);return}
+if(n.nodeType!=1||i18skip(n))return;
+I18A.forEach(function(a){if(n.hasAttribute(a))i18attr(n,a)});
+for(c=n.firstChild;c;c=c.nextSibling)i18on(c)}
+/*
+ * 还原以节点上存的原文为准。但有几处是把当时的文字先存进变量、过后再写回去的
+ * （复制按钮、提交按钮的原标题），那份文字在英文下存的就是英文，写回来的是个
+ * 新节点、身上没有原文。对这种整段相等的再按英文反查一次 —— 只认整段，不碰
+ * 片段，设备日志里的英文单词才不会被换掉。
+ */
+function i18rev(){I18R={};for(var k in I18N)I18R[I18N[k]]=k}
+function i18off(n){var c,b;
+if(n.nodeType==3){if(n.zh0!==undefined){n.data=n.zh0;n.zh0=undefined}
+else if(I18R&&(b=I18R[n.data])!==undefined)n.data=b;
+return}
+if(n.nodeType!=1||i18skip(n))return;
+I18A.forEach(function(a){var k='zh0_'+a;
+if(n[k]!==undefined){n.setAttribute(a,n[k]);n[k]=undefined}});
+for(c=n.firstChild;c;c=c.nextSibling)i18off(c)}
+var I18OB=window.MutationObserver?new MutationObserver(function(rs){
+if(!I18ON)return;var i,j,r;
+for(i=0;i<rs.length;i++){r=rs[i];
+if(r.type=='characterData')i18text(r.target);
+else if(r.type=='attributes')i18attr(r.target,r.attributeName);
+else for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;
+function setlang(l){
+$$('.lg button').forEach(function(b){
+b.setAttribute('aria-checked',b.getAttribute('data-g')==l?'true':'false')});
+if(l==LANG)return;LANG=l;
+try{localStorage.setItem('xglang',l)}catch(e){}
+document.documentElement.setAttribute('lang',l);
+if(l=='en'){if(!I18RE)i18re();I18ON=1;i18on(document.body);
+if(I18OB)I18OB.observe(document.body,{childList:true,subtree:true,
+characterData:true,attributes:true,attributeFilter:I18A})}
+else{I18ON=0;if(I18OB)I18OB.disconnect();if(!I18R)i18rev();i18off(document.body)}}
+/* 没选过就照浏览器的语言挑一次；点过之后以点的为准 */
+try{if((localStorage.getItem('xglang')||(/^zh/i.test(navigator.language||'')?'zh':'en'))=='en')setlang('en')}catch(e){}
 bind();info();hbstart();
 </script>
 </body></html>

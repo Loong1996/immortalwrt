@@ -102,8 +102,19 @@ define Build/Configure
 	sed -i 's/CONFIG_TOOLS_LIBCRYPTO=y/# CONFIG_TOOLS_LIBCRYPTO is not set/' $(PKG_BUILD_DIR)/.config
 endef
 
+# A board with web recovery (CONFIG_CMD_HTTPD) must name its LED chase with
+# httpd-chase-leds in /options/u-boot, or the panel stays dark while it waits.
+# The built control DTB is checked, so where the DTS lives does not matter.
 define Build/Compile
 	$(call Build/Compile/U-Boot)
+	if grep -q '^CONFIG_CMD_HTTPD=y' $(PKG_BUILD_DIR)/.config; then \
+		[ -f $(PKG_BUILD_DIR)/dts/dt.dtb ] || { \
+			echo "$(BUILD_VARIANT): dts/dt.dtb not found" >&2; exit 1; }; \
+		grep -qa 'httpd-chase-leds' $(PKG_BUILD_DIR)/dts/dt.dtb || { \
+			echo "$(BUILD_VARIANT): CONFIG_CMD_HTTPD=y but its U-Boot DTS" \
+			     "declares no httpd-chase-leds in /options/u-boot" >&2; \
+			exit 1; }; \
+	fi
 	$(if $(LZMA_COMPRESS), $(STAGING_DIR_HOST)/bin/lzma e \
 		$(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/u-boot.lzma)
