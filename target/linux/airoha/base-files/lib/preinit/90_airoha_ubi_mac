@@ -1,4 +1,7 @@
 #
+# 出厂 MAC 放在 ri 卷里的机型（XG-040G-MD / TF）用它，没有 ri 卷的机型
+# （ZN504XG-D）用它保住一个固定的随机 MAC。
+#
 # ubi 变体的 ri 卷（存放原厂 MAC）不是镜像的一部分，需刷机时从原厂 ri 分区
 # 转存。所以该变体的 dts 里去掉了 nvmem-cells —— 一旦声明，卷缺失时
 # airoha_eth 会永久停在 deferred probe，整机无网络。
@@ -12,10 +15,12 @@
 # /etc/config/network 里显式设了 macaddr，netifd 会在之后覆盖，优先级更高。
 #
 
-XG040GMD_MAC_FILE=/etc/xg-040g-md-mac
+AIROHA_MAC_FILE=/etc/airoha-ubi-mac
+# 0.4.0 之前叫这个名字，升级上来的机器沿用里面已经用了一阵的 MAC
+AIROHA_MAC_FILE_OLD=/etc/xg-040g-md-mac
 
 # 等价于内核的 is_valid_ether_addr()：非全零、且不是组播地址
-xg040gmd_mac_valid() {
+airoha_ubi_mac_valid() {
 	case "$1" in
 		??:??:??:??:??:??) ;;
 		*) return 1 ;;
@@ -24,7 +29,7 @@ xg040gmd_mac_valid() {
 	[ $(( 0x${1%%:*} & 1 )) -eq 0 ]
 }
 
-xg040gmd_mac_from_ri() {
+airoha_ubi_mac_from_ri() {
 	local v name vol mac
 
 	for v in /sys/class/ubi/ubi*_*; do
@@ -39,16 +44,19 @@ xg040gmd_mac_from_ri() {
 	# 偏移与共用 dtsi 中 macaddr@3e 的 reg = <0x3e 0x6> 一致
 	mac=$(dd if="/dev/$vol" bs=1 skip=62 count=6 2>/dev/null | \
 		hexdump -v -e '1/1 ":%02x"' | cut -c2-)
-	xg040gmd_mac_valid "$mac" || return 1
+	airoha_ubi_mac_valid "$mac" || return 1
 
 	echo "$mac"
 }
 
-xg040gmd_set_mac() {
+airoha_ubi_set_mac() {
 	local mac src netdev flags
 
 	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
-		nokia,xg-040g-md-ubi|nokia,xg-040g-tf-ubi) ;;
+		nokia,xg-040g-md-ubi|nokia,xg-040g-mf-ubi|nokia,xg-040g-tf-ubi) ;;
+		# ri 卷本来就没有，走下面持久化的随机 MAC：不然 airoha_eth 每次
+		# 启动都自己随机一个，网口 MAC 一开机就变。
+		znxt,zn504xg-d) ;;
 		*) return ;;
 	esac
 
@@ -56,19 +64,21 @@ xg040gmd_set_mac() {
 	# 这里绝不能去动它们，否则救援网络就断了。
 	[ "$FAILSAFE" = "true" ] && return
 
-	mac=$(xg040gmd_mac_from_ri)
+	mac=$(airoha_ubi_mac_from_ri)
 	src="ri volume"
 
 	if [ -z "$mac" ]; then
-		src="random"
-		[ -r "$XG040GMD_MAC_FILE" ] && read -r mac < "$XG040GMD_MAC_FILE"
-		if ! xg040gmd_mac_valid "$mac"; then
+		src="no ri volume, random"
+		[ -r "$AIROHA_MAC_FILE" ] || [ ! -r "$AIROHA_MAC_FILE_OLD" ] || \
+			mv "$AIROHA_MAC_FILE_OLD" "$AIROHA_MAC_FILE" 2>/dev/null
+		[ -r "$AIROHA_MAC_FILE" ] && read -r mac < "$AIROHA_MAC_FILE"
+		if ! airoha_ubi_mac_valid "$mac"; then
 			mac=$(dd if=/dev/urandom bs=1 count=6 2>/dev/null | \
 				hexdump -v -e '1/1 ":%02x"' | cut -c2-)
 			# 置本地管理位、清组播位
 			mac="$(printf '%02x' $(( (0x${mac%%:*} & 0xfe) | 0x02 ))):${mac#*:}"
-			xg040gmd_mac_valid "$mac" || return
-			echo "$mac" > "$XG040GMD_MAC_FILE" 2>/dev/null
+			airoha_ubi_mac_valid "$mac" || return
+			echo "$mac" > "$AIROHA_MAC_FILE" 2>/dev/null
 		fi
 	fi
 
@@ -86,7 +96,7 @@ xg040gmd_set_mac() {
 	done
 
 	# 此阶段 logd 尚未启动，logger 无处可写，直接打到控制台便于排查
-	echo "- xg-040g-md: MAC $mac from $src -"
+	echo "- MAC $mac from $src -"
 }
 
-boot_hook_add preinit_main xg040gmd_set_mac
+boot_hook_add preinit_main airoha_ubi_set_mac
