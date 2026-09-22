@@ -29,6 +29,13 @@ nokia,xg-040g-md-ubi)
 	# 面板那排是光猫的三个灯 —— 「注册」(green:wan)、「光信号」(red:wan)、
 	# 「上网」(green:wan-online)，当路由器时没有对应状态，一律不接管。
 	;;
+nokia,xg-040g-tf-ubi)
+	# 板子与 MD 相同，但灯是蓝的（光信号灯仍是红的）
+	ucidef_set_led_netdev "lan1" "lan1" "mt7530-0:0f:blue:lan-1" "lan1" "link tx rx"
+	ucidef_set_led_netdev "lan2" "lan2" "mt7530-0:0a:blue:lan-2" "lan2" "link tx rx"
+	ucidef_set_led_netdev "lan3" "lan3" "mt7530-0:0b:blue:lan-3" "lan3" "link tx rx"
+	ucidef_set_led_netdev "lan4" "lan4" "mt7530-0:0c:blue:lan-4" "lan4" "link tx rx"
+	;;
 znxt,zn504xg-d)
 	ucidef_set_led_netdev "lan1" "lan1" "mt7530-0:0f:blue:lan-1" "lan1" "link tx rx"
 	ucidef_set_led_netdev "lan2" "lan2" "mt7530-0:0a:blue:lan-2" "lan2" "link tx rx"
