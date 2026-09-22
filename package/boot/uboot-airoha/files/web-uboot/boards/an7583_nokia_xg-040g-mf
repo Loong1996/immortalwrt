@@ -1,0 +1,11 @@
+# AN7583 bundle has no CONFIG_OF_UPSTREAM: its U-Boot DTS lives in
+# arch/arm/dts and the names have no airoha/ prefix.
+soc=an7583
+profile=nokia_xg-040g-mf-ubi
+dts=an7583-nokia-xg-040g-mf
+fdt=an7583-nokia-xg-040g-mf.dtb
+led=green:power
+bundle=an7583_web_defconfig
+policy=factory
+factory_vols=ri:0x40000 bosa:0x40000
+factory_mac=ri:0x3e
