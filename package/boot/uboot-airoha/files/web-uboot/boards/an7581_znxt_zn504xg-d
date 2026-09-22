@@ -1,0 +1,10 @@
+# No factory ri/bosa. A UBI without a fip volume is treated as stock
+# and left untouched. The U-Boot config name stays without -ubi; the
+# image profile carries it.
+soc=an7581
+profile=znxt_zn504xg-d-ubi
+dts=airoha/an7581-znxt-zn504xg-d
+fdt=airoha/an7581-znxt-zn504xg-d.dtb
+led=blue:power
+bundle=an7581_web_defconfig
+policy=foreign

@@ -207,3 +207,16 @@ define Device/quantum_q1000k-ubi
   SOC := an7581
 endef
 TARGET_DEVICES += quantum_q1000k-ubi
+
+define Device/znxt_zn504xg-d-ubi
+  DEVICE_VENDOR := ZNXT
+  DEVICE_MODEL := ZN504XG-D
+  DEVICE_DTS := an7581-znxt-zn504xg-d
+  SOC := an7581
+  $(call Device/airoha-ubi)
+  DEVICE_PACKAGES += kmod-gpio-button-hotplug kmod-leds-gpio \
+	kmod-phy-airoha-en8811h
+  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot znxt_zn504xg-d
+  ARTIFACT/preloader.bin := an7581-preloader znxt_zn504xg-d
+endef
+TARGET_DEVICES += znxt_zn504xg-d-ubi
