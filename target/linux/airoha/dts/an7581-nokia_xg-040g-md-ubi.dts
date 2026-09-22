@@ -20,7 +20,7 @@
  *	platform 1fb58000.switch: deferred probe pending: (reason unknown)
  *	platform 1fb50000.ethernet: deferred probe pending: (reason unknown)
  *
- * 改由 base-files/lib/preinit/90_xg-040g-md_mac 在用户态读取同一个卷：转存过
+ * 改由 base-files/lib/preinit/90_airoha_ubi_mac 在用户态读取同一个卷：转存过
  * ri 的机器拿到的仍是真实硬件 MAC，没转存的则退回随机 MAC，不会锁死网络。
  */
 &gdm1 {
