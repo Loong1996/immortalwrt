@@ -62,66 +62,46 @@ jobs:
           npm install --no-audit --no-fund
           npm test
 
-      - name: gen.py Sync(补丁里嵌的页面是不是 page.html)
+      # 1.0.1 起 httpd.c 不在 202 里了，是 src/net/httpd.c 整个文件。这一步
+      # 原先去 202 里抽它，抽不到就红，而 compile 作业 needs 这个作业 ——
+      # 于是从那次搬家起四块板的交叉编译一直被跳过，没人发现。
+      - name: gen.py Sync(src/net/httpd.c 里嵌的页面是不是 page.html)
         run: |
           set -eu
           python3 - <<'PY'
           # io.open 而不是 Path.read_text(newline=)：后者要 Python 3.13，
           # runner 上是 3.12
-          import difflib, io, os, pathlib, re, subprocess, sys, tempfile
+          import difflib, io, os, pathlib, shutil, subprocess, sys, tempfile
 
           pkg   = pathlib.Path(os.environ["PKG"])
-          patch = pkg / "patches/202-net-add-httpd-recovery-server.patch"
+          src   = pkg / "src/net/httpd.c"
           html  = pkg / "files/httpd/page.html"
           gen   = pkg / "files/httpd/gen.py"
 
-          raw = io.open(patch, encoding="utf-8", newline="").read()
+          if not src.is_file():
+              sys.exit("::error::%s 不存在" % src)
+          raw = io.open(src, encoding="utf-8", newline="").read()
           if "\r\n" in raw:
-              sys.exit("::error::202 补丁是 CRLF 换行，本检查按 LF 处理")
-          lines = raw.split("\n")
+              sys.exit("::error::src/net/httpd.c 是 CRLF 换行，本检查按 LF 处理")
 
-          # net/httpd.c 是整块新文件的一个 hunk，取出来、去掉行首的 '+'
-          try:
-              i = lines.index("+++ b/net/httpd.c")
-          except ValueError:
-              sys.exit("::error::202 补丁里找不到 '+++ b/net/httpd.c'")
-          m = re.fullmatch(r"@@ -0,0 \+1,(\d+) @@", lines[i + 1])
-          if not m:
-              sys.exit("::error::httpd.c 的 hunk 头不是整块新文件：%r" % lines[i + 1])
-          n    = int(m.group(1))
-          body = lines[i + 2:i + 2 + n]
-          off  = [k for k, l in enumerate(body) if not l.startswith("+")]
-          if len(body) != n or off:
-              sys.exit("::error::hunk 头写 %d 行，正文对不上（第 %s 行不是 '+' 开头）"
-                       % (n, off[0] + 1 if off else "?"))
-
-          src = "".join(l[1:] + "\n" for l in body)
+          # gen.py 就地改写它的第二个参数，所以在副本上跑
           tmp = pathlib.Path(tempfile.mkdtemp()) / "httpd.c"
-          io.open(tmp, "w", encoding="utf-8", newline="").write(src)
-
+          shutil.copyfile(src, tmp)
           subprocess.run([sys.executable, str(gen), str(html), str(tmp)], check=True)
           new = io.open(tmp, encoding="utf-8", newline="").read()
 
-          nl = new.split("\n")
-          if nl[-1] != "":
-              sys.exit("::error::gen.py 产出的 httpd.c 末尾没有换行")
-          nl = nl[:-1]
-
-          out = "\n".join(lines[:i + 1]
-                          + ["@@ -0,0 +1,%d @@" % len(nl)]
-                          + ["+" + l for l in nl]
-                          + lines[i + 2 + n:])
-
-          if out == raw:
-              print("OK：补丁里嵌的页面与 page.html 一致（%d 行）" % n)
+          if new == raw:
+              print("OK：src/net/httpd.c 里嵌的页面与 page.html 一致（%d 行）"
+                    % raw.count("\n"))
               sys.exit(0)
 
-          d = list(difflib.unified_diff(raw.split("\n"), out.split("\n"),
+          d = list(difflib.unified_diff(raw.split("\n"), new.split("\n"),
                                         "committed", "regenerated", lineterm="", n=2))
           print("\n".join(d[:400]))
           if len(d) > 400:
               print("...（还有 %d 行差异未显示）" % (len(d) - 400))
-          sys.exit("::error::page.html 改了但 202 补丁没重新生成")
+          sys.exit("::error::page.html 改了但 src/net/httpd.c 没重新生成"
+                   "（gen.py files/httpd/page.html src/net/httpd.c）")
           PY
 
       - name: Patch Hunks(补丁 @@ 计数校验)
