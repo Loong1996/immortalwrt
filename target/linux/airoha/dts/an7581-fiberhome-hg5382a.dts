@@ -1,0 +1,253 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+/dts-v1/;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include <dt-bindings/leds/common.h>
+#include "an7581.dtsi"
+
+/*
+ * FiberHome HG5382A：1x 2.5G（外置 MaxLinear GPY211）+ 3x 千兆交换机口，
+ * 上行是 PON。本固件不带 PON 驱动，只当路由器 / 交换机用，所以不描述
+ * xpon_mac、BOSA（i2c0@0x51）和 gdm2。
+ *
+ * 闪存是 8 位 TSOP48 并口 NAND（Winbond W29N02KVSIAF，ef:da，2 Gbit，
+ * 2K 页 / 128K 块 / 128 字节 OOB），走 pnand 而不是 snfi。它不支持 ONFI，
+ * 几何与 ECC 靠 patches-6.18/904 的完整 ID；ECC8、每扇区 spare 28，与原厂
+ * 引导、U-Boot、BL2 一致。BootROM 从第一个块的 0x800 处取 BL2，其余整片
+ * UBI，与 U-Boot 的 bl2 128K + ubi 分区一致。
+ *
+ * MAC 不在这里用 nvmem 指定：没有已知的出厂 MAC 位置。由
+ * base-files/lib/preinit/90_airoha_ubi_mac 首次开机生成一个随机 MAC
+ * 并固化到 /etc（同 ZN504XG-D）。
+ */
+
+/ {
+	model = "FiberHome HG5382A";
+	compatible = "fiberhome,hg5382a", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		serial0 = &uart1;
+		led-boot = &led_power_blue;
+		led-failsafe = &led_power_blue;
+		led-running = &led_power_blue;
+		led-upgrade = &led_power_blue;
+	};
+
+	chosen {
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+		linux,usable-memory-range = <0x0 0x80200000 0x0 0x7fe00000>;
+		rootdisk = <&ubi_fit>;
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		button-0 {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
+			debounce-interval = <60>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_power_blue: led-0 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_POWER;
+			gpios = <&en7581_pinctrl 13 GPIO_ACTIVE_LOW>;
+			panic-indicator;
+		};
+
+		/* 光猫的「注册」灯，当路由器时没有对应状态，不挂触发器 */
+		led-1 {
+			color = <LED_COLOR_ID_BLUE>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 14 GPIO_ACTIVE_LOW>;
+		};
+
+		/* 光猫的「光信号」(LOS) 灯，同上 */
+		led-2 {
+			color = <LED_COLOR_ID_RED>;
+			function = LED_FUNCTION_WAN;
+			gpios = <&en7581_pinctrl 16 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	mdio_pins: mdio-pins {
+		mux {
+			function = "mdio";
+			groups = "mdio";
+		};
+	};
+
+	pnand_pins: pnand-pins {
+		mux {
+			function = "pnand";
+			groups = "pnand";
+		};
+	};
+};
+
+&pnand_ecc {
+	status = "okay";
+};
+
+&pnand {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pnand_pins>;
+	status = "okay";
+
+	nand@0 {
+		reg = <0>;
+		nand-bus-width = <8>;
+
+		/*
+		 * ECC 强度按 NAND ID / ONFI 的要求取（98:da 是 8 bit / 512 B），
+		 * 与 BL2、U-Boot 写入的页布局一致，不能在这里另指定。
+		 */
+		nand-ecc-mode = "hw";
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			partition@0 {
+				label = "bl2";
+				reg = <0x0 0x20000>;
+				read-only;
+			};
+
+			/* 长度 0 表示到芯片末尾，换了容量不同的料也不用改 */
+			partition@20000 {
+				label = "ubi";
+				reg = <0x20000 0x0>;
+				compatible = "linux,ubi";
+
+				volumes {
+					ubi_fit: ubi-volume-fit {
+						volname = "fit";
+					};
+
+					ubi-volume-fip {
+						volname = "fip";
+					};
+
+					ubi_env: ubi-volume-ubootenv {
+						volname = "ubootenv";
+					};
+
+					ubi_env2: ubi-volume-ubootenv2 {
+						volname = "ubootenv2";
+					};
+				};
+			};
+		};
+	};
+};
+
+&ubi_env {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&ubi_env2 {
+	nvmem-layout {
+		compatible = "u-boot,env-redundant-bool-layout";
+	};
+};
+
+&npu {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};
+
+&eth_pcs {
+	status = "okay";
+};
+
+&mdio {
+	/* GPY211 在交换机 MDIO 的地址 7，复位是低有效的 GPIO34 */
+	gpy211: ethernet-phy@7 {
+		compatible = "ethernet-phy-ieee802.3-c45";
+		reg = <7>;
+
+		reset-gpios = <&en7581_pinctrl 34 GPIO_ACTIVE_LOW>;
+		reset-assert-us = <100000>;
+		reset-deassert-us = <100000>;
+	};
+};
+
+&switch {
+	status = "okay";
+
+	pinctrl-names = "default";
+	pinctrl-0 = <&mdio_pins>;
+};
+
+&gsw_port2 {
+	status = "okay";
+
+	label = "lan2";
+};
+
+&gsw_phy2 {
+	status = "okay";
+
+	interrupts = <2>;
+};
+
+&gsw_port3 {
+	status = "okay";
+
+	label = "lan3";
+};
+
+&gsw_phy3 {
+	status = "okay";
+
+	interrupts = <3>;
+};
+
+&gsw_port4 {
+	status = "okay";
+
+	label = "lan4";
+};
+
+&gsw_phy4 {
+	status = "okay";
+
+	interrupts = <4>;
+};
+
+&gdm1 {
+	status = "okay";
+};
+
+&gdm4 {
+	status = "okay";
+
+	openwrt,netdev-name = "lan1";
+
+	phy-handle = <&gpy211>;
+	phy-mode = "2500base-x";
+};
