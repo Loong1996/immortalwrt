@@ -1,0 +1,136 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/* BL2 and TF-A reserve the first 2 MiB of DRAM. */
+/memreserve/ 0x80000000 0x200000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "en7581.dtsi"
+
+/*
+ * FiberHome HG5382A: AN7581 on parallel NAND, not SPI NAND.  The SNFI node
+ * (spi@1fa10000) stays disabled as en7581.dtsi ships it -- its second reg
+ * window is the same NFI block at 0x1fa11000, and a probed SNFI would switch
+ * the NFI to serial mode under the parallel driver.
+ */
+
+/ {
+	model = "FiberHome HG5382A";
+	compatible = "fiberhome,hg5382a", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		serial0 = &uart1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	options {
+		u-boot {
+			compatible = "u-boot,config";
+			httpd-chase-leds = <&led_power &led_wan>;
+		};
+	};
+
+	/* 512 MiB fallback; dram_init() probes and fixups the real size. */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 35 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_power: led-power {
+			label = "blue:power";
+			gpios = <&en7581_pinctrl 13 GPIO_ACTIVE_LOW>;
+		};
+
+		led_wan: led-wan {
+			label = "blue:wan";
+			gpios = <&en7581_pinctrl 14 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 50>;
+
+	/* Pins 4-7 and 30-42 (GPIO17-29) go to the parallel bus. */
+	pnand_pins: pnand-pins {
+		mux {
+			function = "pnand";
+			groups = "pnand";
+		};
+	};
+};
+
+&{/soc} {
+	/*
+	 * The driver takes its register bases from constants, not from reg;
+	 * reg is kept for documentation.  The ECC node below has no U-Boot
+	 * driver and is only described for completeness.
+	 */
+	pnand: nand-controller@1fa11000 {
+		compatible = "airoha,en7581-nfc";
+		reg = <0x0 0x1fa11000 0x0 0x600>;
+		/* NFI runs off the bus clock; its ACCCON timing assumes it. */
+		clocks = <&scuclk EN7523_CLK_BUS>;
+		clock-names = "nfi_clk";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pnand_pins>;
+		nand-ecc-engine = <&pnand_ecc>;
+
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		nand@0 {
+			reg = <0>;
+			nand-bus-width = <8>;
+			nand-ecc-mode = "hw_syndrome";
+
+			partitions {
+				compatible = "fixed-partitions";
+				#address-cells = <1>;
+				#size-cells = <1>;
+
+				/* The BootROM reads the BL2 FIP at 0x800. */
+				partition@0 {
+					label = "bl2";
+					reg = <0x0 0x20000>;
+				};
+
+				/*
+				 * Size 0 is MTDPART_SIZ_FULL to U-Boot's OF
+				 * parser: the rest of the chip, whatever size
+				 * part is fitted.
+				 */
+				partition@20000 {
+					label = "ubi";
+					reg = <0x20000 0x0>;
+				};
+			};
+		};
+	};
+
+	pnand_ecc: ecc@1fa12000 {
+		compatible = "airoha,en7581-nand-ecc";
+		reg = <0x0 0x1fa12000 0x0 0x400>;
+	};
+};
+
+&eth {
+	status = "okay";
+};

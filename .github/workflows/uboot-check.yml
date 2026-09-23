@@ -262,6 +262,8 @@ jobs:
             config: an7581_nokia_xg-040g-tf
           - label: ZN504XG-D (AN7581)
             config: an7581_znxt_zn504xg-d
+          - label: HG5382A (AN7581, parallel NAND)
+            config: an7581_fiberhome_hg5382a
     steps:
       - name: Checkout(检出)
         uses: actions/checkout@v7

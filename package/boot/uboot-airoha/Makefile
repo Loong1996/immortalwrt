@@ -17,6 +17,15 @@ define U-Boot/Default
   HIDDEN:=1
 endef
 
+define U-Boot/an7581_fiberhome_hg5382a
+  NAME:=FiberHome HG5382A
+  UBOOT_CONFIG:=an7581_fiberhome_hg5382a
+  BUILD_DEVICES:=fiberhome_hg5382a-ubi
+  BUILD_SUBTARGET:=an7581
+  BL2_IMAGE:=an7581-pnand-bl2.bin
+  BL31_IMAGE:=an7581-bl31.bin
+endef
+
 define U-Boot/an7581_gemtek_w1700k
   NAME:=Gemtek W1700K (UBI)
   UBOOT_CONFIG:=an7581_w1700k
@@ -100,6 +109,7 @@ define U-Boot/en7523_rfb
 endef
 
 UBOOT_TARGETS := \
+	an7581_fiberhome_hg5382a \
 	an7581_gemtek_w1700k \
 	an7581_nokia_valyrian \
 	an7581_nokia_xg-040g-md \
@@ -117,7 +127,7 @@ UBOOT_CUSTOMIZE_CONFIG := \
 	--enable SERIAL_RX_BUFFER \
 	--set-val SERIAL_RX_BUFFER_SIZE 256
 
-# src/ is copied and patches apply first. The four web-recovery boards
+# src/ is copied and patches apply first. The web-recovery boards
 # then get their defconfig and env from files/web-uboot/, so the version
 # string and the shared menu live in one place. Other boards are untouched.
 define Build/Prepare
