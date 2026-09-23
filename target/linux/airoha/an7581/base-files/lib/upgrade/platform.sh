@@ -38,6 +38,7 @@ platform_do_upgrade() {
 	case "$board" in
 		fiberhome,hg5382a|\
 		gemtek,w1700k-ubi|\
+		gemtek,xr1710g-ubi|\
 		nokia,xg-040g-md-ubi|\
 		nokia,xg-040g-tf-ubi|\
 		quantum,q1000k-ubi|\

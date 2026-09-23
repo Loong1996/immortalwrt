@@ -11,6 +11,18 @@ touch /etc/config/ubootenv
 
 board=$(board_name)
 
+# The XR1710G's recovery U-Boot keeps a 16 KiB environment in the two UBI
+# volumes, as the one before it did: fw_setenv has to agree on the size or
+# U-Boot rejects what it writes over the CRC.
+ubootenv_add_ubi_16k() {
+	. /lib/upgrade/nand.sh
+	local envubi=$(nand_find_ubi ubi)
+	local envdev=/dev/$(nand_find_volume $envubi ubootenv)
+	local envdev2=/dev/$(nand_find_volume $envubi ubootenv2)
+	ubootenv_add_uci_config "$envdev" "0x0" "0x4000" "0x1f000" "1"
+	ubootenv_add_uci_config "$envdev2" "0x0" "0x4000" "0x1f000" "1"
+}
+
 case "$board" in
 fiberhome,hg5382a|\
 gemtek,w1700k-ubi|\
@@ -18,6 +30,9 @@ nokia,xg-040g-md-ubi|\
 nokia,xg-040g-tf-ubi|\
 znxt,zn504xg-d)
 	ubootenv_add_ubi_default
+	;;
+gemtek,xr1710g-ubi)
+	ubootenv_add_ubi_16k
 	;;
 nokia,xg-040g-md)
 	ubootenv_add_mtd "u-boot-env" "0x1c000" "0x4000" "0x4000"
