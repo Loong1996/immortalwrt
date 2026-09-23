@@ -139,6 +139,12 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .r+.r{border-top:1px solid var(--sep)}
 .r span:first-child{color:var(--c2)}
 .r .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* 文件名那一格：.r span:first-child 会连 .vc 里的文件名一起染灰，这里压过它 */
+.r .vc{min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right}
+.r:has(.vc)>span:first-child{flex:none}
+.r .vc .v{max-width:100%;color:var(--fg)}
+.r .vc .md{font-size:.86em;color:var(--c2)}
+.r .vc .ok{color:var(--grn)}.r .vc .bad{color:var(--red)}.r .vc .md.bad{font-weight:500}
 .w{font-size:.9em;color:var(--org);margin-top:.5rem;line-height:1.45}
 .w+.w{margin-top:.3rem}
 .e{font-size:.9em;color:var(--red);margin-top:.5rem;line-height:1.45;font-weight:500}
@@ -1062,11 +1068,28 @@ if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.pu
 var utot=0;rows.forEach(function(r){utot+=r.f.size});
 /* p4 是流式的，没有上限；别的页要先整个进内存才写 */
 if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次上传 '+sz(utot)+'，超过设备单次可接收的 '+sz(INFO.uploadmax)+'：内存不足，设备将拒绝');
-rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' · '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认文件正确')});
+var dev=INFO&&INFO.model;
+if(dev&&rows.some(function(r){return MDK[r.k]}))h+='<div class=r><span>本机</span><span class=v>'+esc(dev)+'</span></div>';
+rows.forEach(function(r){var c=fcheck(r.k,r.f.name,dev);h+='<div class=r><span>'+esc(r.l)+'</span>'+(c?'<span class=vc><span class="v'+(c.c?' '+c.c:'')+'">':'<span class=v>')+esc(r.f.name)+' · '+sz(r.f.size)+'</span>'+(c?'<span class="md'+(c.c?' '+c.c:'')+'">'+c.t+'</span></span>':'')+'</div>'});
 if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';
 E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div class=w>'+x+'</div>'});
 $('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribute('data-on','');return false}
-function nameok(k,n){n=n.toLowerCase();return k=='firmware'?n.indexOf('.itb')>0:k=='bl2'?(n.indexOf('preloader')>=0||n.slice(-4)=='.bin'):k=='fip'?n.slice(-4)=='.fip':k=='stock'?n.slice(-4)=='.bin':true}
+/*
+ * 文件名不是凭据，但选错的人多半连名字都没换过。扩展名先看，对了再从
+ * 文件名里取机型和本机比：immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-…
+ * 取出 XG-040G-MD。比较时两边只留字母数字，看本机 model 里有没有它。
+ * 只上色不拦：有人就是要给别的机型刷。
+ */
+var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1};
+function fmodel(n){var m=/an75\d\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|bl31)/i.exec(n);return m?m[1].toUpperCase():''}
+function mnorm(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}
+function fcheck(k,n,dev){var x=EXT[k],m;if(!x)return null;
+if(n.toLowerCase().slice(-x.length)!=x)return{c:'bad',t:'应为 '+x+' 文件'};
+if(!MDK[k])return null;
+m=fmodel(n);if(!m)return{c:'bad',t:'文件名里没有机型'};
+if(!dev)return{c:'',t:esc(m)};
+if(mnorm(dev).indexOf(mnorm(m))>=0)return{c:'ok',t:esc(m)+' · 与本机一致'};
+return{c:'bad',t:esc(m)+' · 本机是 '+esc(String(dev).replace(/^\S+\s+/,''))}}
 function hide(){$('#mask').removeAttribute('data-on');YES=null}
 function go(){var f=YES;hide();if(f){f();return}send()}
 function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new XMLHttpRequest(),prog=$('.prog',p),bar=$('.pbar',prog),btn=$('button[type=submit]',p),tot=0,i;
@@ -1216,6 +1239,10 @@ document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
  */
 /* i18n-dict begin */
 var I18N={
+"文件名里没有机型":"No model in the file name",
+"应为 .itb 文件":"Expected a .itb file",
+"应为 .bin 文件":"Expected a .bin file",
+"应为 .fip 文件":"Expected a .fip file",
 "日常刷机":"Flash firmware",
 "引导升级":"Bootloader",
 "试跑固件":"Boot from RAM",
@@ -1633,6 +1660,8 @@ var I18N={
 "内存不足，无法分配读取窗口":"Not enough memory for a read window",
 };
 var I18P={
+"与本机一致":"matches this device",
+"本机是 ":"this device is ",
 "。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置":". Widths are each volume's reserved size, ordered by volume ID. UBI volumes are not contiguous in flash, so this is not a physical layout",
 " 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：":" bad, including the block the bl2 partition sits in — the BootROM may fail to read BL2: ",
 " MiB；写入固件时会先删掉 fit 与 rootfs_data，再腾出 ":" MiB; writing firmware deletes fit and rootfs_data first, freeing another ",
@@ -1657,7 +1686,6 @@ var I18P={
 "。引导菜单为旧版本，下次正常启动时自动刷新":". The boot menu is from an older version and refreshes at the next normal boot",
 " 个块读取失败，该部分以 0xff 填充":" block(s) could not be read and were filled with 0xff",
 "。ECC 无法纠正，这些位置的数据已丢失":". ECC could not fix them, so the data there is lost",
-" 的文件名与常规命名不符，请确认文件正确":" has an unusual file name — make sure it is the right file",
 "。不一定装得下一份固件；可先删掉不用的卷":". That may not fit a firmware image; delete volumes you do not need",
 "另一个备份正在传输，请等待传输完成后重试":"Another backup is transferring. Wait for it to finish and try again",
 "设备正在接收上传，请等待写入完成后再备份":"The device is receiving an upload. Wait for the write to finish before backing up",

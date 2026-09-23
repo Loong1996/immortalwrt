@@ -951,6 +951,87 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     w.hide();
   }
 
+  console.log('\n--- 确认框里的扩展名与机型 ---');
+  {
+    const w = await boot();
+    const pick = (p, name, fn, n) => {
+      const i = $(w, '#' + p + ' input[name=' + name + ']');
+      Object.defineProperty(i, 'files',
+        { value: [new w.File([new Uint8Array(n)], fn)], configurable: true });
+      i.onchange();
+    };
+    /* 标签那一格之后的文件名与小字 */
+    const row = lab => [...w.document.querySelectorAll('#abody .r')]
+      .find(r => r.firstElementChild.textContent === lab);
+    const cls = lab => row(lab).querySelector('.vc .v').className;
+    const md = lab => row(lab).querySelector('.md').textContent;
+    const P = 'immortalwrt-airoha-an7581-nokia_xg-040g-';
+
+    /* 预览桩的本机是 Nokia XG-040G-MD */
+    $(w, '.nav[data-p=p1]').click();
+    await sleep(300);
+    pick('p1', 'firmware', P + 'md-ubi-squashfs-sysupgrade.itb', 4096);
+    w.ask();
+    ok('列出本机', /Nokia XG-040G-MD/.test(row('本机').textContent));
+    ok('同机型文件名是绿的', /\bok\b/.test(cls('固件')), cls('固件'));
+    ok('小字说与本机一致', /XG-040G-MD · 与本机一致/.test(md('固件')), md('固件'));
+    ok('原来那句命名提醒没了', !/常规命名/.test(txt(w, '#abody')));
+    w.hide();
+
+    pick('p1', 'firmware', P + 'tf-ubi-squashfs-sysupgrade.itb', 4096);
+    w.ask();
+    ok('别的机型文件名是红的', /\bbad\b/.test(cls('固件')), cls('固件'));
+    ok('小字写出两边机型', md('固件') === 'XG-040G-TF · 本机是 XG-040G-MD', md('固件'));
+    ok('机型不符不拦', !$(w, '#yes').hidden);
+    w.hide();
+
+    pick('p1', 'firmware', 'firmware (1).itb', 4096);
+    w.ask();
+    ok('改过名的也是红的', /\bbad\b/.test(cls('固件')), cls('固件'));
+    ok('说文件名里没有机型', md('固件') === '文件名里没有机型', md('固件'));
+    ok('认不出也不拦', !$(w, '#yes').hidden);
+    w.hide();
+
+    /* 扩展名先看：错了就不再比机型 */
+    pick('p1', 'firmware', P + 'md-ubi-bl31-uboot.fip', 4096);
+    w.ask();
+    ok('扩展名不对是红的', /\bbad\b/.test(cls('固件')), cls('固件'));
+    ok('说应为什么扩展名', md('固件') === '应为 .itb 文件', md('固件'));
+    ok('扩展名不对也不拦', !$(w, '#yes').hidden);
+
+    w.setlang('en');
+    ok('小字有英文', md('Firmware') === 'Expected a .itb file', md('Firmware'));
+    w.setlang('zh');
+    w.hide();
+
+    /* BL2 只认 .bin：名字里带 preloader 不再算数 */
+    $(w, '.nav[data-p=p2]').click();
+    await sleep(300);
+    pick('p2', 'bl2', P + 'md-ubi-preloader.img', 120832);
+    pick('p2', 'fip', P + 'tf-ubi-bl31-uboot.fip', 325632);
+    w.ask();
+    ok('BL2 带 preloader 但不是 .bin 也标出来', md('BL2') === '应为 .bin 文件', md('BL2'));
+    ok('只有选错机型的那格变红', /\bbad\b/.test(cls('U-Boot')), cls('U-Boot'));
+    ok('没有底部的机型提醒', !/其他机型/.test(txt(w, '#abody')));
+
+    w.setlang('en');
+    ok('机型小字有英文', md('U-Boot') === 'XG-040G-TF · this device is XG-040G-MD',
+       md('U-Boot'));
+    ok('确认框里没有中文残留', !/[一-鿿]/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    w.setlang('zh');
+    w.hide();
+
+    /* 刷回原厂只看扩展名，整片备份的名字里本来就没有机型 */
+    $(w, '.nav[data-p=p4]').click();
+    await sleep(300);
+    pick('p4', 'stock', 'all_flash.bin', 4096);
+    w.ask();
+    ok('all_flash.bin 不报没有机型', !/没有机型/.test(txt(w, '#abody')));
+    ok('也不列本机那一行', !row('本机'));
+    w.hide();
+  }
+
   console.log('\n--- 引导菜单预览 ---');
   {
     const w = await boot();
