@@ -56,7 +56,7 @@ airoha_ubi_set_mac() {
 		nokia,xg-040g-md-ubi|nokia,xg-040g-mf-ubi|nokia,xg-040g-tf-ubi) ;;
 		# ri 卷本来就没有，走下面持久化的随机 MAC：不然 airoha_eth 每次
 		# 启动都自己随机一个，网口 MAC 一开机就变。
-		znxt,zn504xg-d) ;;
+		fiberhome,hg5382a|znxt,zn504xg-d) ;;
 		*) return ;;
 	esac
 

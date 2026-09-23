@@ -12,12 +12,13 @@ define Build/an7581-preloader
 endef
 
 # BL2 plus its Trusted Boot FW Certificate, for chips whose BootROM checks it.
+# An optional second word picks another BL2 build: pnand for parallel NAND.
 define Build/an7581-preloader-signed
   $(STAGING_DIR_HOST)/bin/fiptool create \
-		--tb-fw $(STAGING_DIR_IMAGE)/an7581-bl2.bin \
-		--tb-fw-cert $(STAGING_DIR_IMAGE)/an7581-bl2.tb-fw-cert \
-		$(STAGING_DIR_IMAGE)/an7581_$1-bl2-signed.fip
-  cat $(STAGING_DIR_IMAGE)/an7581_$1-bl2-signed.fip >> $@
+		--tb-fw $(STAGING_DIR_IMAGE)/an7581-$(if $(word 2,$1),$(word 2,$1)-)bl2.bin \
+		--tb-fw-cert $(STAGING_DIR_IMAGE)/an7581-$(if $(word 2,$1),$(word 2,$1)-)bl2.tb-fw-cert \
+		$(STAGING_DIR_IMAGE)/an7581_$(word 1,$1)-bl2-signed.fip
+  cat $(STAGING_DIR_IMAGE)/an7581_$(word 1,$1)-bl2-signed.fip >> $@
 endef
 
 define Build/an7581-bl31-uboot
@@ -120,6 +121,24 @@ define Device/airoha_an7581-evb-emmc-kite
   ARTIFACTS := preloader.bin bl31-uboot.fip
 endef
 TARGET_DEVICES += airoha_an7581-evb-emmc-kite
+
+# Parallel NAND.  BL2 is the an7581-pnand-bl2 build; BL31 and the layout
+# after it (FIP, env and fit in UBI) are the same as on the SPI NAND boards.
+# Signed like the XG-040G-TF: whether its key is fused is unknown, and an
+# unfused chip ignores the certificates.
+define Device/fiberhome_hg5382a-ubi
+  DEVICE_VENDOR := FiberHome
+  DEVICE_MODEL := HG5382A
+  DEVICE_DTS := an7581-fiberhome-hg5382a
+  SOC := an7581
+  $(call Device/airoha-ubi)
+  SUPPORTED_DEVICES := fiberhome,hg5382a
+  DEVICE_PACKAGES += kmod-gpio-button-hotplug kmod-leds-gpio \
+	kmod-phy-maxlinear
+  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot-signed fiberhome_hg5382a
+  ARTIFACT/preloader.bin := an7581-preloader-signed fiberhome_hg5382a pnand
+endef
+TARGET_DEVICES += fiberhome_hg5382a-ubi
 
 define Device/gemtek_w1700k-ubi
   DEVICE_VENDOR := Gemtek
