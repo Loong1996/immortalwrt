@@ -2836,6 +2836,7 @@ static u32	up_body;	/* stream offset of the first image byte */
 static u32	up_total;	/* total request length (headers + body) */
 static char	up_bound[80];	/* "\r\n--" + multipart boundary */
 static struct tcp_stream *up_owner;	/* owns the staging area */
+static u32	up_hi;		/* end of the furthest bytes staged */
 static int	up_bound_len;
 static int	flash_pending;	/* flash after net_loop() returns */
 /*
@@ -2954,14 +2955,21 @@ static void wr_reset(void)
 static void wr_printf(const char *fmt, ...)
 {
 	va_list ap;
+	int room = WR_LOG_SZ - wr_used, n;
 
-	if (wr_used >= WR_LOG_SZ - 1)
+	if (room <= 1)
 		return;
 
 	va_start(ap, fmt);
-	/* U-Boot's vsnprintf returns what it wrote, not what it wanted to. */
-	wr_used += vsnprintf(wr_log + wr_used, WR_LOG_SZ - wr_used, fmt, ap);
+	/*
+	 * vsnprintf() returns what it wanted to write (lib/vsprintf.c's
+	 * ADDCH counts past the end), so a cut line is clamped to what
+	 * actually landed.  Adding the raw value let wr_used run past
+	 * WR_LOG_SZ and httpd_wr() copy from beyond wr_log.
+	 */
+	n = vsnprintf(wr_log + wr_used, room, fmt, ap);
 	va_end(ap);
+	wr_used += n < room ? n : room - 1;
 
 	if (fmt[0] == 's' && fmt[1] == ' ') {
 		wr_hold = wr_used;
@@ -3391,6 +3399,11 @@ static void httpd_tick_stop(void)
 #define ENV_NETMODE		"web_uboot_netmode"
 #define ENV_NETIP		"web_uboot_ipaddr"
 #define ENV_NETMASK		"web_uboot_netmask"
+/*
+ * "<ipaddr> <netmask>" as they were before the first unsaved change on a
+ * board with no ENV_NETMODE, "-" for one that was unset.  See netmode_stash().
+ */
+#define ENV_NETPREV		"web_uboot_netprev"
 
 static int	netmode = NET_SERVER;
 /*
@@ -3399,8 +3412,9 @@ static int	netmode = NET_SERVER;
  * "next boot goes back to ..." -- because the two are kept apart by
  * construction rather than by a flag: an unsaved change writes ipaddr and
  * nothing else, and netmode_load() overwrites ipaddr from web_uboot_ipaddr
- * at every boot.  So even a saveenv from somewhere else entirely cannot
- * make an unsaved address outlive the power cycle.
+ * at every boot -- or, on a board that never saved a mode, from the copy
+ * netmode_stash() took.  So even a saveenv from somewhere else entirely
+ * cannot make an unsaved address outlive the power cycle.
  */
 static int	net_unsaved;
 
@@ -3759,23 +3773,25 @@ static void jb_init(struct jbuf *j, char *b, int max)
 }
 
 /*
- * U-Boot's vsnprintf() returns what it actually wrote, not what it would
- * have written if there had been room (lib/vsprintf.c), so the C99 way of
- * spotting truncation -- return value against space left -- never reports
- * anything here.  What can be seen is the buffer running full: a write that
- * ends on the last usable byte had nowhere left to go.  An exact fit counts
- * as an overflow too, which costs only a reply that was already sitting on
- * the very edge of its buffer.
+ * U-Boot's vsnprintf() returns what it would have written had there been
+ * room (lib/vsprintf.c), C99 style, so a return that does not fit the space
+ * left is the truncation.  j->n is clamped to what actually landed so it
+ * never points past the buffer.  An exact fit -- ending on the last usable
+ * byte -- counts as an overflow too, which costs only a reply that was
+ * already sitting on the very edge of its buffer.
  */
 static void jb_printf(struct jbuf *j, const char *fmt, ...)
 {
 	va_list ap;
+	int room, n;
 
 	if (j->overflow)
 		return;
+	room = j->max - j->n;
 	va_start(ap, fmt);
-	j->n += vsnprintf(j->b + j->n, j->max - j->n, fmt, ap);
+	n = vsnprintf(j->b + j->n, room, fmt, ap);
 	va_end(ap);
+	j->n += n < room ? n : room - 1;
 	if (j->n >= j->max - 1)
 		j->overflow = 1;
 }
@@ -5301,10 +5317,9 @@ static int httpd_wr(void)
  * and jb_done()'s own "reply too large" answer is 155, so anything under that
  * cannot report its own overflow either.  At 96 -- what this was -- every
  * single poll was cut mid-"Connection:", header incomplete, body absent.
- * U-Boot's vsnprintf() truncates and returns what it wrote rather than what
- * it wanted to (lib/vsprintf.c), so the length looked right and nothing on
- * the console said otherwise; from the page the board simply never came up
- * as connected.  Built through jb_printf() for the same reason: /ping was
+ * A bare vsnprintf() truncates quietly and nothing checked what it
+ * returned, so nothing on the console said otherwise; from the page the
+ * board simply never came up as connected.  Built through jb_printf() for the same reason: /ping was
  * the one JSON endpoint writing straight into its buffer, which is exactly
  * how it stayed silently truncated across four releases.
  */
@@ -5460,9 +5475,9 @@ static int httpd_envreset(void)
 	/*
 	 * These three text/plain answers go through jb_printf() for one
 	 * reason: jb_done()'s truncation check is the only one available.
-	 * U-Boot's vsnprintf() reports what it wrote rather than what it
-	 * meant to write, so a reply that outgrew its buffer used to go out
-	 * cut in half with nothing said anywhere -- which is exactly how
+	 * A bare vsnprintf() truncates without a word, so a reply that
+	 * outgrew its buffer used to go out cut in half with nothing said
+	 * anywhere -- which is exactly how
 	 * /ping spent four releases answering with half a header.  All three
 	 * fit today with room to spare; the point is that the day one of them
 	 * stops fitting, it says so instead of being quietly wrong.
@@ -5904,12 +5919,60 @@ static void netmode_lease(void)
 		env_set("bootfile", bootfile[0] ? bootfile : NULL);
 }
 
+/*
+ * A board that never saved a mode has nothing for netmode_load() to put
+ * back, so an unsaved address would simply stay in ipaddr -- and the next
+ * saveenv from /dhcpgw, /bootonce or anything else would make it permanent.
+ * Keep what was there before the first unsaved change instead.  RAM only,
+ * like the change itself: if nothing saves, the flash still holds the old
+ * ipaddr anyway; if something does, this goes along with it.
+ */
+static void netmode_stash(void)
+{
+	const char *ip = env_get("ipaddr"), *mask = env_get("netmask");
+	char v[64];
+
+	if (env_get(ENV_NETMODE) || env_get(ENV_NETPREV))
+		return;
+
+	snprintf(v, sizeof(v), "%s %s", ip ? ip : "-", mask ? mask : "-");
+	env_set(ENV_NETPREV, v);
+}
+
+/*
+ * The other half, at boot.  Dropped from RAM once used, so the next saveenv
+ * clears it from flash too and a later ipaddr set by hand is left alone.
+ */
+static void netmode_unstash(void)
+{
+	const char *s = env_get(ENV_NETPREV);
+	char v[64], *mask;
+
+	if (!s)
+		return;
+
+	strlcpy(v, s, sizeof(v));
+	env_set(ENV_NETPREV, NULL);
+
+	mask = strchr(v, ' ');
+	if (!mask)
+		return;
+	*mask++ = '\0';
+
+	env_set("ipaddr", strcmp(v, "-") ? v : NULL);
+	env_set("netmask", strcmp(mask, "-") ? mask : NULL);
+}
+
 /* Apply what /netmode asked for, once the answer is out. */
 static void netmode_apply(void)
 {
 	if (!netmode_pending)
 		return;
 	netmode_pending = 0;
+
+	/* Before ipaddr is touched: it is the old value being kept. */
+	if (!nm_save)
+		netmode_stash();
 
 	netmode = nm_mode;
 	printf("httpd: %s mode%s%s, %s\n", netmode_name(netmode),
@@ -5932,6 +5995,8 @@ static void netmode_apply(void)
 		 */
 		env_set(ENV_NETIP, nm_ip[0] ? nm_ip : NULL);
 		env_set(ENV_NETMASK, nm_mask[0] ? nm_mask : NULL);
+		/* A saved mode is what netmode_load() goes by from now on. */
+		env_set(ENV_NETPREV, NULL);
 		if (run_command("saveenv", 0)) {
 			printf("httpd: saving failed; this lasts until "
 			       "reboot\n");
@@ -5954,14 +6019,18 @@ static void netmode_apply(void)
  * gets server mode -- which is what this whole thing is for, a cable
  * straight from a PC -- and its ipaddr is left exactly as it is: that value
  * may well have been set by hand on the serial console, and there is no
- * reason for this page to have an opinion about it before it is used.
+ * reason for this page to have an opinion about it before it is used.  The
+ * one exception is an unsaved change that some other saveenv carried into
+ * flash, which netmode_unstash() undoes.
  */
 static void netmode_load(void)
 {
 	const char *s = env_get(ENV_NETMODE);
 
-	if (!s)
+	if (!s) {
+		netmode_unstash();
 		return;
+	}
 
 	netmode = netmode_parse(s);
 
@@ -7253,7 +7322,17 @@ static int st_begin(u32 rx_bytes)
 		printf("httpd: /stock: will erase 0x%llx..0x%llx after the "
 		       "image\n", st_wipe_pos, st_wipe_end);
 
-	/* The head already carried some body bytes; move them into slot 0. */
+	/*
+	 * The head already carried some body bytes; move them into slot 0.
+	 * Up to up_hi rather than rx_bytes: a segment that arrived ahead of
+	 * a hole while the head was still incomplete was staged at its
+	 * stream offset, and TCP has already counted it received, so it is
+	 * never sent again.  Left behind, it would sit st_hdr_end bytes away
+	 * from its ring slot and st_put() would write whatever was there.
+	 * The hole in between is moved too and filled later by st_rx().
+	 */
+	if (up_hi > rx_bytes)
+		rx_bytes = up_hi;
 	body_here = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
 	if (body_here > st_nblk * st_blk)
 		body_here = st_nblk * st_blk;
@@ -7595,6 +7674,7 @@ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 			return 0;
 		}
 		up_owner = tcp;
+		up_hi = 0;
 	} else if (up_owner != tcp) {
 		/*
 		 * Somebody else's bytes.  0 is "not accepted, send it again",
@@ -7653,6 +7733,8 @@ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 	}
 
 	memcpy((char *)up_base + rx_offs, buf, len);
+	if (rx_offs + len > up_hi)
+		up_hi = rx_offs + len;
 
 	return len;
 }
