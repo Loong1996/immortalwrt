@@ -104,6 +104,12 @@ jobs:
                    "（gen.py files/httpd/page.html src/net/httpd.c）")
           PY
 
+      # 设备说中文、页面负责翻：httpd.c 里发给页面的每句中文，英文界面都得翻
+      # 得干净；打到串口的一律英文 —— /log 在页面上是原样显示的，TTL 上中文
+      # 多半是乱码。漏一条，英文界面上就露出中文来。
+      - name: I18n Coverage(设备中文都有英文，串口不出中文)
+        run: python3 "$PKG/files/httpd/i18ncheck.py" "$PKG/files/httpd/page.html" "$PKG/src/net/httpd.c"
+
       - name: Patch Hunks(补丁 @@ 计数校验)
         run: |
           set -eu

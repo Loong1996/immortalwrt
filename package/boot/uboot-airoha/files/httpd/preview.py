@@ -58,7 +58,7 @@ INFO = {
     "net": {"ip": "192.168.1.1", "mask": "0.0.0.0",
             "gw": "0.0.0.0", "server": "192.168.1.254",
             "dev": "airoha-gdm1", "offer": 1, "ack": 1,
-            "mode": "server", "ram": 0, "saved": None,
+            "mode": "server", "ram": 0, "saved": None, "dgw": 1,
             "client": "a4:5e:60:11:22:33"},
     "ports": [{"p": 1, "link": 0, "speed": 0, "fd": 0},
               {"p": 2, "link": 1, "speed": 1000, "fd": 1},
@@ -155,13 +155,14 @@ In:    serial
 Out:   serial
 Err:   serial
 Net:   eth0: airoha-gdm1
+httpd: bouncing link on 1 port(s) so the PC asks for an address again
 Airoha Web U-Boot %s by Loong
 Using airoha-gdm1 device, MAC 90:03:2e:12:34:56
 Listening for HTTP on 192.168.1.1 port 80
 Handing out DHCP leases from 192.168.1.1
 Press Ctrl-C to abort
-httpd: DHCP OFFER -> 192.168.1.100
-httpd: DHCP ACK -> 192.168.1.100
+httpd: DHCP OFFER 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
+httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
 """ % MACROS["WEB_VERSION"]
 
 # The stub.  Plain ES5 like the page itself.
@@ -184,7 +185,7 @@ var DBUSY=0,DSENT=0,DTOTAL=0,DTICK=null;
 /* 真设备的日志会一直长，跟随功能不自己长就看不出在跟 */
 var LOGX='',LOGSEQ=0;
 setInterval(function(){LOGSEQ++;
-LOGX+='httpd: DHCP ACK -> 192.168.1.10'+(LOGSEQ%9)+'\n'},3000);
+LOGX+='httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3'+(LOGSEQ%9)+'\n'},3000);
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
@@ -255,6 +256,10 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
+ if(u=='/wipecfg'){var ub=D.info.ubi;if(ub){ub.vols=ub.vols.filter(function(v){
+  if(v.n=='rootfs_data'){ub.avail+=Math.floor(v.s/ub.leb);return false}return true})}
+  return 'ok removed'}
+ if(u.indexOf('/dhcpgw')==0){D.info.net.dgw=/on=1/.test(u)?1:0;return S.dev=='noubi'?'ok':'ok saved'}
  if(u=='/bootonce')return S.dev=='noubi'?'armed, but saving failed':'armed and saved';
  if(u=='/boot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'ok'}
  if(u=='/reboot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'OK'}
