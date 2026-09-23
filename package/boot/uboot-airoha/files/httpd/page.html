@@ -441,7 +441,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div></div>
 </div>
 <script>
-var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;
+var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null,INFOQ=0,CHKQ=0,ENVQ=0;
 var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
 /*
  * 试跑交出去之后，p7 那一页说的比任何遮罩都全：闪存动没动、起不来断电就回
@@ -490,7 +490,7 @@ if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});
 if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}
 if(g=='g5')netpoll(id=='s52')}
 function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}
-function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}
+function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO&&!INFOQ)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'&&!CHK&&!CHKQ)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV&&!ENVQ)getenv()}
 function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
 /*
  * 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；
@@ -523,7 +523,14 @@ function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;
 function stwipe(){var w=$('[name=wipe]');if(w&&!w.dataset.t)w.checked=hex($('[name=stockoff]').value)===0}
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
 function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
-function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}
+/*
+ * 出错的 /info 是一个 JSON 500（{"err":…}），解析得出来但里面没有 ubi ——
+ * 当成读到了，横幅就会叫人在好好的板子上重建 UBI。所以只认 200。
+ * INFOQ：1 正在读，2 读的同时又有人要一份新的（写完之后），回来后再读一次。
+ */
+function info(){if(INFOQ){INFOQ=2;return}INFOQ=1;
+get('/info',function(st,t){var r=null,again=INFOQ==2;INFOQ=0;
+if(st==200)try{r=JSON.parse(t)}catch(e){}INFO=r;fill();if(again)info()})}
 /*
  * 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。
  * 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个
@@ -539,7 +546,6 @@ function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}
 if(!on)return;netget();NETT=setInterval(netget,3000)}
 function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
 var ICON_OFF='<path d="M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20"/>';
-var ICON_WR='<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="9"/>';
 var ICON_RB='<path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/>';
 function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;
 d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}
@@ -567,14 +573,13 @@ MISS++;
  */
 if(LIVE&&MISS>=2&&(!SILENT||MISS>=40)){LIVE=0;SILENT=0;offline(OFFWHY)}
 live(LIVE?1:2)}
-/* 已知会断，而且要立刻说明：写入、重启 */
+/* 已知会断，而且要立刻说明：重启、试跑启动 */
 function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}
 /* 已知会静默，但用户自己发起的：只变点，不弹框 */
 function silent(){SILENT=1;MISS=0}
 /* 设备已经移走、或者页面自己已经把话说完了：通用的「断开」框只会盖掉那条指引 */
 function offline(why){if(GONE||TRYB)return;var i,t,b,r=0;
-if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯流水表示设备还在工作。<b>请勿断电</b>，也不要拔网线。'}
-else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}
+if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}
 else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动。引导成功后<b>本页面不再可用</b>；引导失败则回到本页面。'}
 else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。';r=1}
 $('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;
@@ -582,9 +587,7 @@ $('#offb').innerHTML='<div class=w style="color:inherit">'+b+'</div>'+
 (r?'<div class=hint>每 2 秒自动重试。</div>':'');
 $('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连接';
 $('#off').setAttribute('data-on','')}
-function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');
-if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';
-$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}
+function online(){OFFWHY='';$('#off').removeAttribute('data-on')}
 /* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */
 function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if(!HB)HB=1;ping()}
 /*
@@ -732,7 +735,7 @@ $('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t
 :'已设置。下次开机停在本页面，再下次开机恢复正常引导'})}
 function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
 if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);
-if(!INFO){t.innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
+if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
 if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}
 (INFO.fv||[]).forEach(function(v){fv[v.n]=1});
 (INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;
@@ -825,7 +828,7 @@ DLWHAT=!o&&l===null?'all':'';
 sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+' 起的区段',l)}
 /* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */
 var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|web_uboot_|envver|httpd_|ubi_)/;
-function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
+function getenv(){var b=$('#envb');b.disabled=true;ENVQ=1;get('/env',function(st,t){ENVQ=0;b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
 if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}
 if(!r||!r.env){$('#envt').innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
 ENV=r;envfill();bmfill()})}
@@ -962,7 +965,7 @@ if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar()
 ubibar();
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
 (INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
-function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */
+function check(){var b=$('#chkb'),t=$('#chk');CHKQ=1;silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){CHKQ=0;b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */
 CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+s+'"></span>'+esc(i.n)+'</td><td class="s'+s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
 /*
  * 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码
@@ -1182,7 +1185,11 @@ x.upload.onload=function(){bar.className='pbar ind';var wz=$('[name=wipe]',p),tb
 /* 刷回原厂报不出进度：那条 /stock 连着板子唯一的 tcp_stream，腾不出第二条
    连接去问。别的页写入期间会轮询 /wr，这里给的只是接手之前的一个估计 */
 $('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};
-x.onload=function(){if(x.status==200){done(x.responseText);return}
+x.onload=function(){var r=x.responseText||'';
+/* 200 不一定是收下了：另一个上传还占着时，设备把这个 POST 当 GET 答，回的
+   是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {"ok":1} */
+if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.indexOf('"ok"')>=0)){done(r);return}
+if(x.status==200){fail('设备正忙：另一个上传还没结束，请稍后重试',409);return}
 /* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */
 fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};
 x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
@@ -1268,6 +1275,8 @@ btn=$('button[type=submit]',p),h='';
 if(!WR||WR.fin)return;
 WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;
 HBOFF=0;busy(0);
+/* 横幅要的正是「重新写入成功」，到了就撤；rhide() 重读 /info 时会重画 */
+STUCK='';
 /*
  * 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、
  * ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。
@@ -1536,10 +1545,6 @@ var I18N={
 "首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。":"First migration: on Bootloader, upload BL2, U-Boot and the firmware together and turn on Rebuild UBI.",
 "闪存中没有 U-Boot（fip 卷）。":"There is no U-Boot in flash (the fip volume). ",
 "当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。":"The running U-Boot lives only in RAM and is lost on power-off. Upload a U-Boot file on Bootloader.",
-"设备正在写入":"The device is writing",
-"指示灯流水表示设备还在工作。":"Chasing LEDs mean it is still working. ",
-"请勿断电":"Do not cut the power",
-"，也不要拔网线。":", and do not unplug the cable.",
 "设备正在重启":"The device is rebooting",
 "引导成功即进入系统，":"A successful boot lands in the system and ",
 "本页面不再可用":"this page is gone",
@@ -1550,7 +1555,6 @@ var I18N={
 "与设备的连接已断开":"The connection to the device is down",
 "设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。":"The device is not answering. Check the cable and the power. If the LEDs are still chasing it is alive, so give it a moment.",
 "每 2 秒自动重试。":"Retrying every 2 seconds.",
-"写入完成，HTTP 服务已恢复，可继续写入下一个卷":"Write finished, the HTTP service is back, and the next volume can go in",
 "正在重试…":"Retrying…",
 "闪存内容不受影响":"Flash is not affected",
 "闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。":"There is no mountable UBI in flash and the running U-Boot lives only in RAM. ",
@@ -1606,6 +1610,7 @@ var I18N={
 "长度不是有效的十六进制数":"The length is not a valid hexadecimal number",
 "长度为 0":"The length is 0",
 "设备正在写入，稍后再试":"The device is writing. Try again shortly",
+"设备正忙：另一个上传还没结束，请稍后重试":"The device is busy with another upload. Try again once it is done",
 "没有匹配的变量":"No variable matches",
 "没有 bootmenu_* 条目":"No bootmenu_* entries",
 "环境中没有引导菜单：串口不会停顿，直接执行 bootcmd":"The environment has no boot menu: the console will not pause and bootcmd runs straight away",

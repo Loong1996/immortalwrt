@@ -902,7 +902,7 @@ static const char resp_form[] =
 	"</div></div>\n"
 	"</div>\n"
 	"<script>\n"
-	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
+	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null,INFOQ=0,CHKQ=0,ENVQ=0;\n"
 	"var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;\n"
 	"/*\n"
 	"* 试跑交出去之后，p7 那一页说的比任何遮罩都全：闪存动没动、起不来断电就回\n"
@@ -958,8 +958,8 @@ static const char resp_form[] =
 	"function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}\n"
 	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
 		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
-		"FO)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'"
-		"&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}\n"
+		"FO&&!INFOQ)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if("
+		"id=='p8'&&!CHK&&!CHKQ)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV&&!ENVQ)getenv()}\n"
 	"function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}\n"
 	"/*\n"
 	"* 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；\n"
@@ -1006,7 +1006,14 @@ static const char resp_form[] =
 		" class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}\n"
 	"function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x"
 		".onerror=function(){cb(0,'')};x.open('GET',u);x.send()}\n"
-	"function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}\n"
+	"/*\n"
+	"* 出错的 /info 是一个 JSON 500（{\"err\":…}），解析得出来但里面没有 ubi ——\n"
+	"* 当成读到了，横幅就会叫人在好好的板子上重建 UBI。所以只认 200。\n"
+	"* INFOQ：1 正在读，2 读的同时又有人要一份新的（写完之后），回来后再读一次。\n"
+	"*/\n"
+	"function info(){if(INFOQ){INFOQ=2;return}INFOQ=1;\n"
+	"get('/info',function(st,t){var r=null,again=INFOQ==2;INFOQ=0;\n"
+	"if(st==200)try{r=JSON.parse(t)}catch(e){}INFO=r;fill();if(again)info()})}\n"
 	"/*\n"
 	"* 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。\n"
 	"* 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个\n"
@@ -1027,7 +1034,6 @@ static const char resp_form[] =
 		" $('#ban').setAttribute('hidden','')}\n"
 	"var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1"
 		" 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20\"/>';\n"
-	"var ICON_WR='<path d=\"M12 6v6l4 2\"/><circle cx=\"12\" cy=\"12\" r=\"9\"/>';\n"
 	"var ICON_RB='<path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/>';\n"
 	"function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;\n"
 	"d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}\n"
@@ -1057,14 +1063,13 @@ static const char resp_form[] =
 	"*/\n"
 	"if(LIVE&&MISS>=2&&(!SILENT||MISS>=40)){LIVE=0;SILENT=0;offline(OFFWHY)}\n"
 	"live(LIVE?1:2)}\n"
-	"/* 已知会断，而且要立刻说明：写入、重启 */\n"
+	"/* 已知会断，而且要立刻说明：重启、试跑启动 */\n"
 	"function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}\n"
 	"/* 已知会静默，但用户自己发起的：只变点，不弹框 */\n"
 	"function silent(){SILENT=1;MISS=0}\n"
 	"/* 设备已经移走、或者页面自己已经把话说完了：通用的「断开」框只会盖掉那条指引 */\n"
 	"function offline(why){if(GONE||TRYB)return;var i,t,b,r=0;\n"
-	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯流水表示设备还在工作。<b>请勿断电</b>，也不要拔网线。'}\n"
-	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}\n"
+	"if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}\n"
 	"else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动。引导成功后<b>本页面不再可用</b>；引导失败则回到本页面。'}\n"
 	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。';r=1}\n"
 	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
@@ -1072,9 +1077,7 @@ static const char resp_form[] =
 	"(r?'<div class=hint>每 2 秒自动重试。</div>':'');\n"
 	"$('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连接';\n"
 	"$('#off').setAttribute('data-on','')}\n"
-	"function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');\n"
-	"if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';\n"
-	"$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}\n"
+	"function online(){OFFWHY='';$('#off').removeAttribute('data-on')}\n"
 	"/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */\n"
 	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if"
 		"(!HB)HB=1;ping()}\n"
@@ -1232,7 +1235,8 @@ static const char resp_form[] =
 	":'已设置。下次开机停在本页面，再下次开机恢复正常引导'})}\n"
 	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
 	"if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);\n"
-	"if(!INFO){t.innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
+	"if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td"
+		" class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
 	"if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI"
 		" 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}\n"
 	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
@@ -1333,8 +1337,8 @@ static const char resp_form[] =
 	"/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */\n"
 	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_b"
 		"uttons|web_uboot_|envver|httpd_|ubi_)/;\n"
-	"function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;va"
-		"r r=null;try{r=JSON.parse(t)}catch(e){}\n"
+	"function getenv(){var b=$('#envb');b.disabled=true;ENVQ=1;get('/env',function(st,t){ENVQ=0;b.dis"
+		"abled=false;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 	"if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}\n"
 	"if(!r||!r.env){$('#envt').innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
 	"ENV=r;envfill();bmfill()})}\n"
@@ -1485,12 +1489,12 @@ static const char resp_form[] =
 		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
 		" class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td"
 		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
-	"function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.in"
-		"nerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt"
-		"){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t"
-		".innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.inner"
-		"HTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class"
-		" 之前先当整数看待并夹在 0..2 */\n"
+	"function check(){var b=$('#chkb'),t=$('#chk');CHKQ=1;silent();b.disabled=true;b.textContent='检查中"
+		"…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function"
+		"(st,txt){CHKQ=0;b.disabled=false;b.textContent='重新检查';var"
+		" r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2"
+		" class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2"
+		" class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */\n"
 	"CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var"
 		" s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g"
 		" colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
@@ -1768,7 +1772,11 @@ static const char resp_form[] =
 	"/* 刷回原厂报不出进度：那条 /stock 连着板子唯一的 tcp_stream，腾不出第二条\n"
 	"连接去问。别的页写入期间会轮询 /wr，这里给的只是接手之前的一个估计 */\n"
 	"$('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};\n"
-	"x.onload=function(){if(x.status==200){done(x.responseText);return}\n"
+	"x.onload=function(){var r=x.responseText||'';\n"
+	"/* 200 不一定是收下了：另一个上传还占着时，设备把这个 POST 当 GET 答，回的\n"
+	"是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {\"ok\":1} */\n"
+	"if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.indexOf('\"ok\"')>=0)){done(r);return}\n"
+	"if(x.status==200){fail('设备正忙：另一个上传还没结束，请稍后重试',409);return}\n"
 	"/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */\n"
 	"fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};\n"
 	"x.onerror=function(){fail('连接中断，请检查网线后重试',0)};\n"
@@ -1859,6 +1867,8 @@ static const char resp_form[] =
 	"if(!WR||WR.fin)return;\n"
 	"WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;\n"
 	"HBOFF=0;busy(0);\n"
+	"/* 横幅要的正是「重新写入成功」，到了就撤；rhide() 重读 /info 时会重画 */\n"
+	"STUCK='';\n"
 	"/*\n"
 	"* 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、\n"
 	"* ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。\n"
@@ -2199,10 +2209,6 @@ static const char resp_form[] =
 	"\"闪存中没有 U-Boot（fip 卷）。\":\"There is no U-Boot in flash (the fip volume). \",\n"
 	"\"当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。\":\"The running U-Boot lives only in RAM and is lost"
 		" on power-off. Upload a U-Boot file on Bootloader.\",\n"
-	"\"设备正在写入\":\"The device is writing\",\n"
-	"\"指示灯流水表示设备还在工作。\":\"Chasing LEDs mean it is still working. \",\n"
-	"\"请勿断电\":\"Do not cut the power\",\n"
-	"\"，也不要拔网线。\":\", and do not unplug the cable.\",\n"
 	"\"设备正在重启\":\"The device is rebooting\",\n"
 	"\"引导成功即进入系统，\":\"A successful boot lands in the system and \",\n"
 	"\"本页面不再可用\":\"this page is gone\",\n"
@@ -2214,8 +2220,6 @@ static const char resp_form[] =
 	"\"设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。\":\"The device is not answering. Check the cable and the"
 		" power. If the LEDs are still chasing it is alive, so give it a moment.\",\n"
 	"\"每 2 秒自动重试。\":\"Retrying every 2 seconds.\",\n"
-	"\"写入完成，HTTP 服务已恢复，可继续写入下一个卷\":\"Write finished, the HTTP service is back, and the next volume can"
-		" go in\",\n"
 	"\"正在重试…\":\"Retrying…\",\n"
 	"\"闪存内容不受影响\":\"Flash is not affected\",\n"
 	"\"闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。\":\"There is no mountable UBI in flash and the running U-Boot"
@@ -2289,6 +2293,7 @@ static const char resp_form[] =
 	"\"长度不是有效的十六进制数\":\"The length is not a valid hexadecimal number\",\n"
 	"\"长度为 0\":\"The length is 0\",\n"
 	"\"设备正在写入，稍后再试\":\"The device is writing. Try again shortly\",\n"
+	"\"设备正忙：另一个上传还没结束，请稍后重试\":\"The device is busy with another upload. Try again once it is done\",\n"
 	"\"没有匹配的变量\":\"No variable matches\",\n"
 	"\"没有 bootmenu_* 条目\":\"No bootmenu_* entries\",\n"
 	"\"环境中没有引导菜单：串口不会停顿，直接执行 bootcmd\":\"The environment has no boot menu: the console will not pause"
@@ -5309,8 +5314,21 @@ static int httpd_wr(void)
 
 	room = wr_used - skip;
 	/* Header, the offset line and a NUL all have to fit as well. */
-	if (room > (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16)
-		room = (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16;
+	if (room > (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16) {
+		int cap = (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16;
+
+		/*
+		 * Cut after a whole line: the page decodes each answer on
+		 * its own, so a split in the middle of a Chinese step would
+		 * come out as two U+FFFD for good.  The rest follows on the
+		 * next poll from the offset given here.
+		 */
+		room = cap;
+		while (room > 0 && wr_log[skip + room - 1] != '\n')
+			room--;
+		if (!room)
+			room = cap;
+	}
 
 	n = snprintf(wr_buf, sizeof(wr_buf), "%s%d\n", hdr, skip + room);
 	if (skip + room > wr_sent) {
@@ -8297,6 +8315,13 @@ static void httpd_on_snd_una_update(struct tcp_stream *tcp, u32 tx_bytes)
 			 */
 			flash_pending = 1;
 			flash_running = 1;
+			/*
+			 * FS_START clears the log too, but only on the next
+			 * tick; the page asks /wr?from=0 the moment this 200
+			 * lands, and would read the previous write's "done"
+			 * as this one's.
+			 */
+			wr_reset();
 		}
 	} else {
 		/*

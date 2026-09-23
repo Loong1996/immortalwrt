@@ -400,6 +400,85 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     ok('按钮放回来，能重传', !$(w, '#p1 button[type=submit]').disabled);
   }
 
+  console.log('\n--- /info 回 500 不当成没有 UBI ---');
+  {
+    const w = await boot();
+    setsel(w, 'dev', 'info500');
+    await sleep(800);
+    ok('INFO 作废', w.INFO === null, JSON.stringify(w.INFO));
+    ok('横幅不叫人重建 UBI', !/没有可挂载的 UBI/.test(txt(w, '#bant')), txt(w, '#bant'));
+    ok('设备详情说读取失败', /读取失败/.test(txt(w, '#dev')), txt(w, '#dev'));
+  }
+
+  console.log('\n--- /info 还在路上时 ---');
+  {
+    const w = await boot();
+    let n = 0;
+    const Real = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () {
+      const x = new Real(), open = x.open;
+      x.open = function (m, u) { if (u === '/info') n++; return open.call(x, m, u) };
+      return x;
+    };
+    w.INFO = null;
+    w.info();
+    $(w, '.nav[data-p=p10]').click();
+    ok('下载页说正在读取，不说失败', /正在读取/.test(txt(w, '#dl')), txt(w, '#dl'));
+    $(w, '.nav[data-p=p5]').click();
+    ok('设备详情不再发第二条 /info', n === 1, n);
+    await sleep(800);
+    ok('读回来了', !!w.INFO && !!w.INFO.ubi);
+    w.XMLHttpRequest = Real;
+  }
+
+  console.log('\n--- 另一个上传占着，200 回的是整张页面 ---');
+  {
+    const w = await boot();
+    setsel(w, 'post', 'busy');
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    w.send();
+    await sleep(2500);
+    ok('不当成收下了', $(w, '#p1 .prog').className === 'prog bad',
+       $(w, '#p1 .prog').className);
+    ok('说设备正忙', /设备正忙/.test(txt(w, '#p1 .pwhat')), txt(w, '#p1 .pwhat'));
+    ok('不去轮询 /wr', !w.WR || w.WR.fin === 1);
+    ok('没有结果框', !on(w, '#rmask'));
+    ok('按钮放回来', !$(w, '#p1 button[type=submit]').disabled);
+  }
+  {
+    const w = await boot();
+    setsel(w, 'post', 'busy');
+    $(w, '.nav[data-p=p4]').click();
+    const i = $(w, '#p4 input[name=stock]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'stock.bin')], configurable: true });
+    w.send();
+    await sleep(2500);
+    ok('刷回原厂不跳完成页', !on(w, '#p13') &&
+       $(w, '#p4 .prog').className === 'prog bad', $(w, '#p4 .prog').className);
+    ok('没有留下「写了一半」的红条', !w.STUCK, w.STUCK);
+  }
+
+  console.log('\n--- 重写成功，红条撤掉 ---');
+  {
+    const w = await boot();
+    w.STUCK = '<b>回读校验没通过</b>';
+    w.banner();
+    ok('红条先挂着', /回读校验没通过/.test(txt(w, '#bant')));
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    w.send();
+    for (let k = 0; k < 150 && !on(w, '#rmask'); k++) await sleep(100);
+    ok('写完了', on(w, '#rmask'));
+    ok('STUCK 清掉', !w.STUCK, w.STUCK);
+    w.rhide();
+    await sleep(600);
+    ok('红条不在了', !/回读校验没通过/.test(txt(w, '#bant')), txt(w, '#bant'));
+  }
+
   console.log('\n--- 备份完之后能核对 ---');
   {
     const w = await boot();
