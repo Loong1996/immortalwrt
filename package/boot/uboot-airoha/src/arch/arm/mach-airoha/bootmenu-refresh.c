@@ -105,6 +105,9 @@ static char * const refresh_vars[] = {
 	 * belong here; bootdelay, bootmenu_0 and ethaddr do not.
 	 */
 	"boot_ubi", "web_uboot_boot_forever", "check_buttons",
+	/* The same for a chainloaded board (chainload.env, policy-gemtek.env). */
+	"web_uboot_write_chain", "web_uboot_boot_hook",
+	"web_uboot_luci_trigger", "web_uboot_dsd_sync",
 	/*
 	 * The TFTP file names.  They are not settings either: assemble.py
 	 * builds all four out of the image profile name and refuses to let
@@ -115,7 +118,62 @@ static char * const refresh_vars[] = {
 	 * TFTP server for files that are no longer built under that name.
 	 */
 	"bootfile", "bootfile_bl2", "bootfile_fip", "bootfile_upg",
+	"bootfile_chain",
 };
+
+/*
+ * A chainloaded board does not start from a clean slate: the U-Boot that
+ * sat in its chainloader partition before this one used the same ubootenv
+ * volumes, and left its own environment in them -- on the XR1710G another
+ * project's recovery U-Boot, whose bootcmd calls a command this one does not
+ * have.  Refreshing the menu variables on top of that would leave a hybrid
+ * that runs half of each.
+ *
+ * So a board that says so (web_uboot_foreign_env=reset in its default
+ * environment) starts over from its defaults when the saved environment was
+ * never written by any version of this U-Boot -- no web_uboot_envver, nor
+ * envver, the name it had before.  What the old one knew about this
+ * particular unit is carried across: its MACs, and a one-shot request for
+ * recovery that the firmware may have just set.  So is what this boot has
+ * set up by now and would not set again -- the version string the menu
+ * title is built from, the control FDT address, the console assignment.
+ *
+ * Done here, after preboot, like the refresh below: these boards build
+ * without CONFIG_USE_PREBOOT, so an old environment's preboot never runs
+ * and has nothing to do before this.
+ */
+static char * const foreign_keep[] = {
+	"ethaddr", "eth1addr", "recovery_trigger",
+	"ver", "fdtcontroladdr", "stdin", "stdout", "stderr",
+};
+
+static int adopt_foreign_env(void)
+{
+	char val[ARRAY_SIZE(foreign_keep)][128];
+	char want[16];
+	const char *v;
+	int i;
+
+	if (env_get_default_into("web_uboot_foreign_env", want, sizeof(want)) < 0 ||
+	    strcmp(want, "reset"))
+		return 0;
+	if (env_get(ENVVER) || env_get("envver"))
+		return 0;
+
+	for (i = 0; i < ARRAY_SIZE(foreign_keep); i++) {
+		v = env_get(foreign_keep[i]);
+		strlcpy(val[i], v ? v : "", sizeof(val[i]));
+	}
+
+	printf("Saved environment was not written by this U-Boot; starting over from its defaults\n");
+	env_set_default(NULL, 0);
+
+	for (i = 0; i < ARRAY_SIZE(foreign_keep); i++)
+		if (val[i][0])
+			env_set(foreign_keep[i], val[i]);
+
+	return 1;
+}
 
 /*
  * _bootmenu_update_title is what appends $ver to the title, and it deletes
@@ -145,7 +203,7 @@ static int refresh_boot_menu(void)
 {
 	char want[16];
 	const char *have;
-	int dirty = ethaddr_dropped;
+	int dirty = ethaddr_dropped | adopt_foreign_env();
 
 	if (env_get_default_into(ENVVER, want, sizeof(want)) >= 0 && want[0]) {
 		have = env_get(ENVVER);

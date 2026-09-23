@@ -1,0 +1,138 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/* The vendor bootloader's ATF lives here. */
+/memreserve/ 0x80000000 0x200000;
+
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "en7581.dtsi"
+
+/*
+ * Brightspeed / Gemtek XR1710G.  The vendor BL2 and U-Boot are locked, so
+ * this U-Boot is not the first stage: the vendor U-Boot reads it out of the
+ * chainloader partition with "flash read 0x602100 ...; bootm" and starts it
+ * like a kernel.  Nothing before 0x700000 is ours to write except that
+ * partition; the flash from 0x700000 up to the vendor's BMT pool is one UBI.
+ *
+ * Only the two gigabit ports (LAN3 / LAN4, on the internal switch) come up
+ * here.  The two 10G ports hang off RTL8261 PHYs behind the PCS, which this
+ * U-Boot does not drive; recovery is done over a gigabit port.
+ */
+
+/ {
+	model = "Gemtek XR1710G";
+	compatible = "gemtek,xr1710g-ubi", "airoha,an7581", "airoha,en7581";
+
+	aliases {
+		serial0 = &uart1;
+	};
+
+	chosen {
+		stdout-path = "serial0:115200n8";
+	};
+
+	options {
+		u-boot {
+			compatible = "u-boot,config";
+			/*
+			 * The front has one status LED in four colours, so the
+			 * chase runs through the colours.
+			 */
+			httpd-chase-leds = <&led_status_red &led_status_green
+					    &led_status_blue &led_status_white>;
+		};
+	};
+
+	/* 512 MiB fallback; dram_init() probes the real size (2 GiB). */
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		key-reset {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&en7581_pinctrl 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_status_green: led-status-green {
+			label = "green:status";
+			gpios = <&en7581_pinctrl 17 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_blue: led-status-blue {
+			label = "blue:status";
+			gpios = <&en7581_pinctrl 19 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_white: led-status-white {
+			label = "white:status";
+			gpios = <&en7581_pinctrl 20 GPIO_ACTIVE_LOW>;
+		};
+
+		led_status_red: led-status-red {
+			label = "red:status";
+			gpios = <&en7581_pinctrl 29 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&en7581_pinctrl {
+	gpio-ranges = <&en7581_pinctrl 0 13 47>;
+};
+
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* Vendor BL2, U-Boot, its environment and the DSD at 0x400000. */
+		partition@0 {
+			label = "vendor";
+			reg = <0x0 0x600000>;
+			read-only;
+		};
+
+		/*
+		 * This U-Boot.  The vendor U-Boot reads it through its own
+		 * BMT, so a bad block in here is refused rather than skipped.
+		 */
+		partition@600000 {
+			label = "chainloader";
+			reg = <0x600000 0x100000>;
+		};
+
+		partition@700000 {
+			label = "ubi";
+			reg = <0x700000 0x1b700000>;
+		};
+
+		/* The vendor bootloader's BMT/BBT pool; keep out. */
+		partition@1be00000 {
+			label = "reserved_bmt";
+			reg = <0x1be00000 0x4200000>;
+			read-only;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+&eth {
+	status = "okay";
+};

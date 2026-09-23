@@ -12,7 +12,9 @@
  *
  *   routine flash    "firmware" into the fit volume
  *   bootloader       "bl2" and/or "fip", optionally with the firmware and
- *                    a rebuild of the whole ubi partition ("format")
+ *                    a rebuild of the whole ubi partition ("format"); on a
+ *                    board whose vendor bootloader stays, "chain" into the
+ *                    chainloader partition instead
  *   back to stock    "stock" written to raw flash at "stockoff"
  *                    (CONFIG_CMD_HTTPD_STOCK_RESTORE)
  *   UBI volumes      per-unit factory data volumes named in
@@ -60,7 +62,9 @@
 #include <dm.h>
 #include <env.h>
 #include <env_internal.h>
+#include <image.h>
 #include <led.h>
+#include <malloc.h>
 #include <miiphy.h>
 #include <mtd.h>
 #include <net.h>
@@ -70,6 +74,7 @@
 #include <time.h>
 #include <ubi_uboot.h>
 #include <linux/kernel.h>
+#include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/libfdt.h>
@@ -167,13 +172,42 @@ DECLARE_GLOBAL_DATA_PTR;
 #define ENV_FORMAT_UBI		"web_uboot_format_ubi"
 #define ENV_WRITE_FIP		"web_uboot_write_fip"
 #define ENV_WRITE_FIT		"ubi_write_production"
+#define ENV_WRITE_CHAIN		"web_uboot_write_chain"
 #define ENV_VER			"web_uboot_envver"
 
 #define UBI_PART		"ubi"
 #define CMD_ATTACH_UBI		"ubi part " UBI_PART
 
-#define DEF_WRITE_BL2		"mtd erase bl2 && " \
-				"mtd write bl2 $loadaddr 0x800 $filesize"
+#define BL2_PART		"bl2"
+#define DEF_WRITE_BL2		"mtd erase " BL2_PART " && " \
+				"mtd write " BL2_PART " $loadaddr 0x800 $filesize"
+
+/*
+ * A board whose vendor BL2 and U-Boot are locked keeps them.  The vendor
+ * U-Boot then starts this one out of a partition of its own, the way it
+ * would start a kernel, and that partition is the whole of what there is
+ * to upgrade: no BL2, no FIP.  Its image (files/chainload/mkslot.py) opens
+ * with a legacy uImage and has the FIT at CHAIN_FIT_OFF -- the stock
+ * command reads "flash read 0x602100", 0x2100 into the partition.
+ *
+ * A bad block is refused rather than skipped: the vendor U-Boot reads this
+ * partition through its own BMT, which maps a bad block somewhere else
+ * entirely, so a skipped block would put the rest of the image where the
+ * vendor U-Boot is not looking.
+ */
+#define CHAIN_PART		"chainloader"
+#define CHAIN_FIT_OFF		0x2100	/* also spelled out in chk_chain()'s text */
+#define IH_MAGIC		0x27051956
+#define DEF_WRITE_CHAIN		"mtd erase " CHAIN_PART " && " \
+				"mtd write " CHAIN_PART " $loadaddr 0 $filesize"
+/*
+ * Where the vendor U-Boot keeps its environment on these boards, inside the
+ * read-only "vendor" partition.  Only ever read: its bootcmd says which half
+ * of the slot the board starts.
+ */
+#define VENDOR_PART		"vendor"
+#define VENDOR_ENV_OFF		0x200000
+#define VENDOR_ENV_LEN		0x20000
 #define DEF_FORMAT_UBI		"ubi detach ; mtd erase " UBI_PART " && " \
 				CMD_ATTACH_UBI
 /*
@@ -213,6 +247,7 @@ DECLARE_GLOBAL_DATA_PTR;
 /* Form field names. */
 #define FIELD_BL2		"bl2"
 #define FIELD_FIP		"fip"
+#define FIELD_CHAIN		"chain"
 #define FIELD_FIT		"firmware"
 #define FIELD_FORMAT		"format"
 #define FIELD_STOCK		"stock"
@@ -579,27 +614,36 @@ static const char resp_form[] =
 		" class=pwhat></span><span class=pct></span></div></div>\n"
 	"</div>\n"
 	"<div class=pane id=p2>\n"
-	"<h1>引导升级</h1><p class=sub>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p>\n"
+	"<h1>引导升级</h1><p class=sub data-boot=fip>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级"
+		" U-Boot。</p><p class=sub data-boot=chain hidden>写入 chainloader 分区里的 U-Boot。原厂引导锁着不动，由它从这个分区启动本"
+		" U-Boot。</p>\n"
 	"<div class=box>\n"
-	"<div class=fr><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label"
-		" class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span"
-		" class=fn>未选择</span></label></div>\n"
-	"<div class=fr><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label"
-		" class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span"
-		" class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=fip><span class=fl>BL2<small"
+		" class=mono>…-preloader.bin</small></span><label class=fc><input type=file name=bl2"
+		" data-l=BL2><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=fip><span class=fl>U-Boot<small"
+		" class=mono>…-bl31-uboot.fip</small></span><label class=fc><input type=file name=fip"
+		" data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=chain hidden><span class=fl>U-Boot<small"
+		" class=mono>…-chainloader-slot.bin</small></span><label class=fc><input type=file name=chain"
+		" data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"<div class=fr><span class=fl>固件<small>可选，同时写入</small></span><label class=fc><input type=file"
 		" name=firmware data-l=固件><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"</div>\n"
-	"<p class=bh>首次迁移</p>\n"
+	"<p class=bh><span data-boot=fip>首次迁移</span><span data-boot=chain hidden>首次安装</span></p>\n"
 	"<div class=box>\n"
-	"<div class=\"fr wide\"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot"
-		" 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class=\"fc end\"><input type=checkbox"
-		" class=sw name=format value=1></span></div>\n"
+	"<div class=\"fr wide\"><span class=fl>重建 UBI<small data-boot=fip>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot"
+		" 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small><small data-boot=chain hidden>擦除 ubi"
+		" 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。<b>必须同时上传固件</b></small></span><span"
+		" class=\"fc end\"><input type=checkbox class=sw name=format value=1></span></div>\n"
 	"</div>\n"
 	"<p class=note><b>重建 UBI 前先备份。</b>请先在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。</p>\n"
-	"<p class=note><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占"
-		" 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot"
-		" 一起传。</p>\n"
+	"<p class=note data-boot=chain hidden><b>U-Boot 写在 chainloader 分区（flash 0x600000，1"
+		" MiB）</b>，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过 bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份"
+		" U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。</p>\n"
+	"<p class=note data-boot=fip><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是"
+		" 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2"
+		" 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>\n"
 	"<p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>\n"
 	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 		" pri\">上传并刷写</button></div>\n"
@@ -656,6 +700,8 @@ static const char resp_form[] =
 	"<div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile"
 		" data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"</div>\n"
+	"<p class=note data-boot=chain hidden>factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory"
+		" 的内容下次开机就被它换掉。</p>\n"
 	"<p class=note>写完由你决定是否重启，所以可以连着写好几个卷。</p>\n"
 	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 		" pri\">上传并刷写</button></div>\n"
@@ -1027,11 +1073,19 @@ static const char resp_form[] =
 	"netfill()})}\n"
 	"function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}\n"
 	"if(!on)return;netget();NETT=setInterval(netget,3000)}\n"
-	"function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的"
-		" UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有"
-		" U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot"
-		" 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else"
-		" $('#ban').setAttribute('hidden','')}\n"
+	"/*\n"
+	"* 原厂引导锁着的板子（XR1710G）：U-Boot 在 chainloader 分区里，由原厂 U-Boot\n"
+	"* 启动，没有 BL2，也没有 fip 卷。/info 带 chain 字段时，引导升级那一页换成\n"
+	"* 那一个文件，横幅、确认框里讲 fip 的话也都不说了。\n"
+	"*/\n"
+	"function chain(){return !!(INFO&&INFO.chain)}\n"
+	"function bootmode(){var c=chain()?'chain':'fip';\n"
+	"$$('[data-boot]').forEach(function(e){e.hidden=e.getAttribute('data-boot')!=c})}\n"
+	"function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t=chain()?'<b>闪存中没有可挂载的"
+		" UBI。</b>首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。':'<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot"
+		" 与固件，并启用「重建 UBI」。';else if(!chain()&&!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot"
+		" 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidde"
+		"n');else $('#ban').setAttribute('hidden','')}\n"
 	"var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1"
 		" 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20\"/>';\n"
 	"var ICON_RB='<path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/>';\n"
@@ -1087,10 +1141,10 @@ static const char resp_form[] =
 	"* 顶部红条已经在报同一件事，这里把它的后果直接写进确认框。\n"
 	"*/\n"
 	"function askreboot(){var w='<div class=w>闪存内容不受影响</div>';\n"
-	"if(INFO&&!INFO.ubi)w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入"
-		" U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';\n"
-	"else if(INFO&&INFO.ubi&&!INFO.ubi.fip)w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot"
-		" 仅存于内存。</b>重启后本页面将无法再打开</div>';\n"
+	"if(INFO&&!INFO.ubi&&!chain())w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot"
+		" 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';\n"
+	"else if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain())w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前"
+		" U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>';\n"
 	"$('#atitle').textContent='重启';\n"
 	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;\n"
 	"var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-o"
@@ -1468,8 +1522,8 @@ static const char resp_form[] =
 	"/* 体检「可写空间」那行取整到 MiB，这里照做，免得两处差 0.7 */\n"
 	"+(av==null?'':'。刷机可用 '+Math.floor(room/1048576)+' MiB：当前空闲 '\n"
 	"+sz(av)+'，加上写入时会腾出的 fit 与 rootfs_data')}\n"
-	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<"
-		"tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
+	"function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;bootmode();banner();netfill();if(!INFO){d.i"
+		"nnerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}\n"
 	"var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?IN"
 		"FO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页"
 		" '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+'"
@@ -1671,17 +1725,35 @@ static const char resp_form[] =
 		"[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+'"
 		" 不存在时按文件长度创建')}\n"
 	"if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return"
-		" r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择"
-		" U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000"
-		" 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有"
-		" U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建"
-		" UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');\n"
+		" r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'}),hc=rows.some(function(r){return"
+		" r.k=='chain'}),hw=rows.some(function(r){return r.k=='firmware'}),bc=chain()&&INFO.chain.bootcmd"
+		";\n"
+	"if(chain()){if(fmt&&!hw)E.push('打开了「重建 UBI」却没有选择固件：重建之后闪存里没有系统可以启动');if(INFO&&!INFO.ubi&&hw&&!fm"
+		"t)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传固件');if(fmt)W.push('重建 UBI 将清除 U-Boot 环境与用户配置；factory"
+		" 卷随即从原厂 DSD 区重新生成');\n"
+	"/* 原厂 bootcmd 决定它从哪一半启动：0x602100 是 FIT，0x600000 是前面的 shim */\n"
+	"if(hc){W.push('U-Boot 写入 chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救');\n"
+	"if(bc&&!/0x60(0000|2100)(?![0-9a-fA-F])/.test(bc))W.push('原厂 bootcmd 不读 0x600000 或"
+		" 0x602100，原厂引导不会启动写进去的 U-Boot：'+esc(bc));\n"
+	"else if(bc&&!/0x602100(?![0-9a-fA-F])/.test(bc))W.push('原厂 bootcmd 从 0x600000 读，要经前缀 shim"
+		" 启动，这条路没有实机验证过：'+esc(bc));\n"
+	"/* 还得读得全：从 0x602100 读要盖住 FIT，从 0x600000 读要盖住整个文件，而且得读到 shim 认的 0x81800000 */\n"
+	"var rd=INFO.chain.rd,sf=rows.filter(function(r){return r.k=='chain'})[0].f,nd=0;\n"
+	"if(rd){nd=rd[0]==0x600000?sf.size:rd[0]==0x602100?sf.size-0x2100:0;\n"
+	"if(nd&&rd[1]<nd)E.push('原厂 bootcmd 只读 '+sz(rd[1])+'，这份 U-Boot 要 '+sz(nd)+'：读不全，原厂引导起不来它');\n"
+	"if(rd[0]==0x600000&&rd[2]!=0x81800000)E.push('原厂 bootcmd 读到 0x'+rd[2].toString(16)+'，前缀 shim 只认"
+		" 0x81800000')}}}\n"
+	"else{if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
+		" 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot"
+		" 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传"
+		" U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot"
+		" 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置')}\n"
 	"/* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */\n"
 	"if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '\n"
 	"+'<a href=\"#\" onclick=\"gobk();return false\">整片下载</a>')}\n"
 	"else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '\n"
-	"+'<a href=\"#\" onclick=\"gobk();return false\">去备份</a>')}}if(!rows.some(function(r){return"
-		" r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}\n"
+	"+'<a href=\"#\" onclick=\"gobk();return false\">去备份</a>')}}\n"
+	"if(chain()?!hc:!hb&&!hf)W.push(chain()?'未选择 U-Boot，本次只写入固件':'未选择 BL2 或 U-Boot，本次只写入固件')}\n"
 	"/*\n"
 	"* BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件\n"
 	"* 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在\n"
@@ -1699,10 +1771,12 @@ static const char resp_form[] =
 	"E.push('BL2 文件 '+sz(r.f.size)+'，超过 bl2 分区自 0x800 起可写的 '\n"
 	"+sz(bl2p.s-2048));\n"
 	"if(r.k=='fip'&&fipcap&&r.f.size>fipcap)\n"
-	"E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 fip 卷的 '+sz(fipcap))});\n"
+	"E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 fip 卷的 '+sz(fipcap));\n"
+	"if(r.k=='chain'&&chain()&&r.f.size>INFO.chain.s)\n"
+	"E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 chainloader 分区的 '+sz(INFO.chain.s))});\n"
 	"if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');\n"
 	"/* 写完不再自动重启，所以这不再是拦下的理由，只是别急着重启 */\n"
-	"if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip)W.push('闪存里没有 U-Boot（fip"
+	"if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain())W.push('闪存里没有 U-Boot（fip"
 		" 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');\n"
 	"if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data"
 		" 将被清空');\n"
@@ -1728,9 +1802,10 @@ static const char resp_form[] =
 	"* 取出 XG-040G-MD。比较时两边只留字母数字，看本机 model 里有没有它。\n"
 	"* 只上色不拦：有人就是要给别的机型刷。\n"
 	"*/\n"
-	"var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1};\n"
+	"var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',chain:'.bin',stock:'.bin'},MDK={firmware:1,bl2:1,"
+		"fip:1,chain:1};\n"
 	"function fmodel(n){var m=/an75\\d\\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|"
-		"bl31)/i.exec(n);return m?m[1].toUpperCase():''}\n"
+		"bl31|chainloader)/i.exec(n);return m?m[1].toUpperCase():''}\n"
 	"function mnorm(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}\n"
 	"function fcheck(k,n,dev){var x=EXT[k],m;if(!x)return null;\n"
 	"if(n.toLowerCase().slice(-x.length)!=x)return{c:'bad',t:'应为 '+x+' 文件'};\n"
@@ -1884,7 +1959,7 @@ static const char resp_form[] =
 	"if(WR.secs)h+='<div class=r><span>用时</span><span class=v>'+dur(WR.secs)+'</span></div>';\n"
 	"if(!h)h='<div class=r><span>设备已写入完成</span></div>';\n"
 	"h+='<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>';\n"
-	"if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!WR.rows.some(function(r){return r.n=='U-Boot'}))\n"
+	"if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain()&&!WR.rows.some(function(r){return r.n=='U-Boot'}))\n"
 	"h+='<div class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>';\n"
 	"$('#rbody').innerHTML=h;$('#rmask').setAttribute('data-on','')}\n"
 	"function rhide(){$('#rmask').removeAttribute('data-on');info()}\n"
@@ -1981,6 +2056,51 @@ static const char resp_form[] =
 	"\"擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。\":\"Erases the ubi partition and recreates every"
 		" volume. The factory MAC, the U-Boot environment and user settings are lost. \",\n"
 	"\"必须同时上传 BL2 与 U-Boot\":\"BL2 and U-Boot must both be uploaded\",\n"
+	"\"写入 chainloader 分区里的 U-Boot。原厂引导锁着不动，由它从这个分区启动本 U-Boot。\":\"Writes the U-Boot in the chainloader"
+		" partition. The stock bootloader is locked and stays; it starts this U-Boot out of that"
+		" partition.\",\n"
+	"\"首次安装\":\"First install\",\n"
+	"\"擦除 ubi 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。\":\"Erases the ubi partition and"
+		" recreates every volume. The U-Boot environment and user settings are lost; the factory volume"
+		" is rebuilt from the stock DSD area right away. \",\n"
+	"\"必须同时上传固件\":\"The firmware must be uploaded with it\",\n"
+	"\"factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory 的内容下次开机就被它换掉。\":\"The factory volume is"
+		" checked against the stock DSD area and rebuilt on every boot: while the DSD reads back valid"
+		" data, whatever is written to factory here is replaced by it at the next boot.\",\n"
+	"\"U-Boot 写在 chainloader 分区（flash 0x600000，1 MiB）\":\"U-Boot lives in the chainloader partition"
+		" (flash 0x600000, 1 MiB)\",\n"
+	"\"，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过 bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份"
+		" U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。\":\", and the stock bootloader starts it from there: the stock"
+		" bootcmd reads the FIT at 0x602100, a changed one the prefix at 0x600000. A bad write leaves"
+		" the stock bootloader unable to start this U-Boot and only a serial console gets you out, so"
+		" the file's headers are checked before the upload and the write is read back afterwards.\",\n"
+	"\"首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。\":\"First install: on Bootloader, upload the firmware and turn on"
+		" Rebuild UBI.\",\n"
+	"\"打开了「重建 UBI」却没有选择固件：重建之后闪存里没有系统可以启动\":\"Rebuild UBI is on but no firmware was picked: after the"
+		" rebuild there would be no system in flash to start\",\n"
+	"\"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传固件\":\"There is no mountable UBI in flash: turn on Rebuild UBI"
+		" and upload the firmware with it\",\n"
+	"\"重建 UBI 将清除 U-Boot 环境与用户配置；factory 卷随即从原厂 DSD 区重新生成\":\"Rebuilding UBI clears the U-Boot"
+		" environment and user settings; the factory volume is rebuilt from the stock DSD area right"
+		" away\",\n"
+	"\"U-Boot 写入 chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救\":\"U-Boot goes into the chainloader"
+		" partition and is read back afterwards; a bad write leaves the stock bootloader unable to start"
+		" it, and only a serial console gets you out\",\n"
+	"\"未选择 U-Boot，本次只写入固件\":\"No U-Boot was picked; only the firmware goes in this time\",\n"
+	"\"chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT\":\"chainloader partition: a uImage prefix at 0x0"
+		" and a FIT at 0x2100\",\n"
+	"\"chainloader 分区只有 0x2100 处的 FIT，从 0x600000 启动的 bootcmd 起不来\":\"The chainloader partition only has"
+		" the FIT at 0x2100; a bootcmd that starts from 0x600000 will not come up\",\n"
+	"\"chainloader 分区为空。断电后原厂引导找不到 U-Boot，请在「引导升级」页上传\":\"The chainloader partition is empty. After a"
+		" power-off the stock bootloader finds no U-Boot — upload one on Bootloader\",\n"
+	"\"chainloader 分区 0x2100 处没有 FIT，原厂引导起不来这份 U-Boot，请在「引导升级」页重新上传\":\"There is no FIT at 0x2100 in"
+		" the chainloader partition, so the stock bootloader cannot start this U-Boot — upload it again"
+		" on Bootloader\",\n"
+	"\"原厂 bootcmd\":\"Stock bootcmd\",\n"
+	"\"没有保存过，原厂引导用默认的 flash read 0x602100 启动 FIT\":\"Never saved; the stock bootloader uses its"
+		" default, flash read 0x602100, and starts the FIT\",\n"
+	"\"无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件\":\"Cannot be mounted; there is no usable UBI in"
+		" flash. For the first install, turn on Rebuild UBI on Bootloader and upload the firmware\",\n"
 	"\"重建 UBI 前先备份。\":\"Back up before rebuilding UBI. \",\n"
 	"\"请先在「\":\"Export everything from \",\n"
 	"\"」中导出。\":\" first.\",\n"
@@ -2477,6 +2597,29 @@ static const char resp_form[] =
 	"\"内存不足，无法分配读取窗口\":\"Not enough memory for a read window\",\n"
 	"};\n"
 	"var I18P={\n"
+	"\"原厂 bootcmd 只读 \":\"The stock bootcmd reads only \",\n"
+	"\"，这份 U-Boot 要 \":\", and this U-Boot needs \",\n"
+	"\"：读不全，原厂引导起不来它\":\": read short, the stock bootloader cannot start it\",\n"
+	"\"原厂 bootcmd 读到 0x\":\"The stock bootcmd loads to 0x\",\n"
+	"\"，前缀 shim 只认 0x81800000\":\", but the prefix shim only looks at 0x81800000\",\n"
+	"\"（只读 0x\":\" (reads only 0x\",\n"
+	"\" 字节，U-Boot 要 0x\":\" bytes, U-Boot needs 0x\",\n"
+	"\"，读不全就起不来）\":\" — read short, it cannot start)\",\n"
+	"\"（读到 0x\":\" (loads to 0x\",\n"
+	"\"，前缀 shim 只认 0x81800000）\":\", but the prefix shim only looks at 0x81800000)\",\n"
+	"\"，超过 chainloader 分区的 \":\", more than the chainloader partition's \",\n"
+	"\"原厂 bootcmd 不读 0x600000 或 0x602100，原厂引导不会启动写进去的 U-Boot：\":\"The stock bootcmd reads neither"
+		" 0x600000 nor 0x602100, so the stock bootloader will not start the U-Boot written here: \",\n"
+	"\"原厂 bootcmd 从 0x600000 读，要经前缀 shim 启动，这条路没有实机验证过：\":\"The stock bootcmd reads from 0x600000,"
+		" which starts through the prefix shim — a path not yet tried on real hardware: \",\n"
+	"\"（经 0x0 处的前缀 shim 启动，这条路没有实机验证过；原厂的 0x602100 直接启动 FIT）\":\" (starts through the prefix shim at"
+		" 0x0, a path not yet tried on real hardware; the stock 0x602100 starts the FIT directly)\",\n"
+	"\"（不读 0x600000 或 0x602100，原厂引导不会启动 chainloader 分区）\":\" (reads neither 0x600000 nor 0x602100, so"
+		" the stock bootloader will not start the chainloader partition)\",\n"
+	"\" 个，其中 chainloader 分区有坏块：原厂引导按它自己的 BMT 读这个分区，U-Boot 写不进去：\":\" bad, including one in the"
+		" chainloader partition: the stock bootloader reads that partition through its own BMT, so"
+		" U-Boot cannot be written there: \",\n"
+	"\"chainloader 分区读取失败（\":\"Reading the chainloader partition failed (\",\n"
 	"\" 未备份 · \":\" not backed up · \",\n"
 	"\"与本机一致\":\"matches this device\",\n"
 	"\"本机是 \":\"this device is \",\n"
@@ -3715,6 +3858,140 @@ static struct mtd_info *flash_master(void)
 	return NULL;
 }
 
+/*
+ * The partition this U-Boot is started from on a board whose vendor
+ * bootloader stays -- see CHAIN_PART -- or NULL on a board where it is
+ * the second stage of our own BL2.  Asked of the partition table rather
+ * than configured: a board with both would be a contradiction, and one
+ * with a bl2 partition is the kind this page has always served.  The
+ * caller puts the reference back.
+ */
+static struct mtd_info *chain_part(void)
+{
+	struct mtd_info *m;
+
+	mtd_probe_devices();
+	m = get_mtd_device_nm(BL2_PART);
+	if (!IS_ERR_OR_NULL(m)) {
+		put_mtd_device(m);
+		return NULL;
+	}
+	m = get_mtd_device_nm(CHAIN_PART);
+
+	return IS_ERR_OR_NULL(m) ? NULL : m;
+}
+
+static int chain_board(void)
+{
+	struct mtd_info *m = chain_part();
+
+	if (!m)
+		return 0;
+	put_mtd_device(m);
+
+	return 1;
+}
+
+/*
+ * The bootcmd the vendor U-Boot has saved, which decides the half of the
+ * slot it starts: "flash read 0x602100 ...; bootm" (the stock one) boots
+ * the FIT, "flash read 0x600000 ...; bootm" the prefix shim in front of
+ * it.  Found by name in the vendor environment, whose exact framing is the
+ * vendor's business: "bootcmd=" at the start of an entry -- after a NUL, or
+ * right behind the CRC (and the flag byte of a redundant copy).  1 with the
+ * value in out, 0 when there is none: the vendor U-Boot then runs its
+ * built-in default, which is the stock command.
+ */
+static int chain_vendor_env(const char *name, char *out, int outsz)
+{
+	char key[32];
+	int klen = snprintf(key, sizeof(key), "%s=", name);
+	struct mtd_info *m;
+	size_t rl = 0;
+	char *buf;
+	int i, n, ret, found = 0;
+
+	mtd_probe_devices();
+	m = get_mtd_device_nm(VENDOR_PART);
+	if (IS_ERR_OR_NULL(m))
+		return 0;
+	buf = malloc(VENDOR_ENV_LEN);
+	if (!buf) {
+		put_mtd_device(m);
+		return 0;
+	}
+	ret = mtd_read(m, VENDOR_ENV_OFF, VENDOR_ENV_LEN, &rl, (u8 *)buf);
+	put_mtd_device(m);
+	if (ret && ret != -EUCLEAN)
+		rl = 0;
+
+	for (i = 0; !found && i + klen < (int)rl; i++) {
+		int start = !i || !buf[i - 1] || i == 4 || i == 5;
+
+		if (!start || memcmp(buf + i, key, klen))
+			continue;
+		i += klen;
+		for (n = 0; n < outsz - 1 && i + n < (int)rl; n++) {
+			unsigned char c = buf[i + n];
+
+			if (c < 0x20 || c > 0x7e)
+				break;
+			out[n] = c;
+		}
+		out[n] = '\0';
+		found = n > 0;
+	}
+	free(buf);
+
+	return found;
+}
+
+static int chain_vendor_bootcmd(char *out, int outsz)
+{
+	return chain_vendor_env("bootcmd", out, outsz);
+}
+
+/*
+ * What the vendor bootcmd reads: "flash read <offset> <length> <address>".
+ * 1 with the three filled in, the address resolved through the vendor's own
+ * $loadaddr (0x81800000 when it has none saved, as in its built-in default);
+ * 0 when the command is not of that shape.
+ */
+static int chain_vendor_read(const char *cmd, ulong *off, ulong *len,
+			     ulong *addr)
+{
+	const char *p = strstr(cmd, "flash read");
+	char *e;
+	char la[24];
+
+	if (!p)
+		return 0;
+	p += strlen("flash read");
+	while (*p == ' ')
+		p++;
+	*off = simple_strtoul(p, &e, 16);
+	if (e == p)
+		return 0;
+	for (p = e; *p == ' '; p++)
+		;
+	*len = simple_strtoul(p, &e, 16);
+	if (e == p)
+		return 0;
+	for (p = e; *p == ' '; p++)
+		;
+	if (!strncmp(p, "$loadaddr", 9) || !strncmp(p, "${loadaddr}", 11)) {
+		*addr = 0x81800000;
+		if (chain_vendor_env("loadaddr", la, sizeof(la)))
+			*addr = simple_strtoul(la, NULL, 16);
+	} else {
+		*addr = simple_strtoul(p, &e, 16);
+		if (e == p)
+			return 0;
+	}
+
+	return 1;
+}
+
 /* One value out of "a=1&b=2"; 0 when the key is not there. */
 static int qs_get(const char *qs, const char *key, char *out, int max)
 {
@@ -4166,6 +4443,35 @@ static int httpd_info(void)
 	P(",\"stock\":%d", IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE) ? 1 : 0);
 	P(",\"log\":%d", IS_ENABLED(CONFIG_CONSOLE_RECORD) ? 1 : 0);
 
+	/*
+	 * On a board whose vendor bootloader stays, U-Boot lives in a partition
+	 * of its own and the page offers that in place of BL2 and FIP.  The
+	 * vendor bootcmd goes along: it is what decides whether a slot written
+	 * there is ever started.
+	 */
+	{
+		struct mtd_info *cp = chain_part();
+		char cmd[160];
+
+		if (cp) {
+			P(",\"chain\":{\"o\":%llu,\"s\":%llu,\"bootcmd\":",
+			  (unsigned long long)cp->offset,
+			  (unsigned long long)cp->size);
+			put_mtd_device(cp);
+			if (chain_vendor_bootcmd(cmd, sizeof(cmd))) {
+				ulong o, l, a;
+
+				S(cmd);
+				/* What it reads, for the page to hold a slot to. */
+				if (chain_vendor_read(cmd, &o, &l, &a))
+					P(",\"rd\":[%lu,%lu,%lu]", o, l, a);
+			} else {
+				P("null");
+			}
+			P("}");
+		}
+	}
+
 	P(",\"fv\":[");
 	for (i = 0; i < nfvols; i++) {
 		P("%s{\"n\":", i ? "," : "");
@@ -4271,7 +4577,6 @@ static int httpd_net(void)
  * Where the BootROM expects the BL2 container inside the bl2 partition; the
  * 2 KiB before it are left erased (see web_uboot_write_bl2 in the defenv).
  */
-#define BL2_PART	"bl2"
 #define BL2_IMAGE_OFF	0x800
 /*
  * What ubi_write_fip creates the volume as when there is none yet
@@ -4564,13 +4869,18 @@ static void chk_parts(struct jbuf *jb, int *first, struct mtd_info *m)
 
 static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
 {
-	struct mtd_info *bl2 = get_mtd_device_nm(BL2_PART);
+	/* Whichever of the two this board boots U-Boot from. */
+	struct mtd_info *bl2 = chain_part();
+	int chain = !!bl2;
 	char list[80];
 	int n = 0, nbad = 0, inbl2 = 0;
 	loff_t off;
 
-	if (IS_ERR(bl2))
-		bl2 = NULL;
+	if (!bl2) {
+		bl2 = get_mtd_device_nm(BL2_PART);
+		if (IS_ERR(bl2))
+			bl2 = NULL;
+	}
 
 	for (off = 0; off < m->size; off += m->erasesize) {
 		if (!mtd_block_isbad(m, off))
@@ -4585,7 +4895,11 @@ static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
 	if (bl2)
 		put_mtd_device(bl2);
 
-	if (inbl2)
+	if (inbl2 && chain)
+		chk_item(jb, first, "坏块", CHK_FAIL,
+			 "%d 个，其中 chainloader 分区有坏块：原厂引导按它自己的 BMT 读这个分区，U-Boot 写不进去：%s",
+			 nbad, list);
+	else if (inbl2)
 		chk_item(jb, first, "坏块", CHK_FAIL,
 			 "%d 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：%s",
 			 nbad, list);
@@ -4625,6 +4939,101 @@ static void chk_bl2(struct jbuf *jb, int *first, u8 *buf)
 	else
 		chk_item(jb, first, "BL2", CHK_WARN,
 			 "0x%x 处无 BL2 镜像头，可能为原厂或第三方引导程序", BL2_IMAGE_OFF);
+}
+
+/*
+ * The chainloader partition of a board whose vendor bootloader stays: the
+ * uImage in front (the 0x600000 entry) and the FIT at CHAIN_FIT_OFF (the
+ * stock 0x602100 one), then which of the two the vendor bootcmd takes.
+ */
+/* addr in cmd as a whole number: 0x600000 is not in "0x6000000". */
+static int cmd_has_addr(const char *cmd, const char *addr)
+{
+	const char *p = cmd;
+	int n = strlen(addr);
+
+	while ((p = strstr(p, addr))) {
+		if (!isxdigit(p[n]))
+			return 1;
+		p += n;
+	}
+
+	return 0;
+}
+
+static void chk_chain(struct jbuf *jb, int *first, u8 *buf)
+{
+	struct mtd_info *m = chain_part();
+	char cmd[160];
+	size_t rl = 0;
+	ulong off, len, addr;
+	int ret, pre, fit;
+
+	if (!m)
+		return;
+	ret = mtd_read(m, 0, CHAIN_FIT_OFF + 64, &rl, buf);
+	put_mtd_device(m);
+
+	if (ret && ret != -EUCLEAN) {
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区读取失败（%d）", ret);
+		return;
+	}
+	pre = get_unaligned_be32(buf) == IH_MAGIC;
+	fit = get_unaligned_be32(buf + CHAIN_FIT_OFF) == FIT_MAGIC;
+	if (pre && fit)
+		chk_item(jb, first, "U-Boot", CHK_OK,
+			 "chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT");
+	else if (fit)
+		chk_item(jb, first, "U-Boot", CHK_WARN,
+			 "chainloader 分区只有 0x2100 处的 FIT，从 0x600000 启动的 bootcmd 起不来");
+	else if (all_ff(buf, CHAIN_FIT_OFF + 64))
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区为空。断电后原厂引导找不到 U-Boot，请在「引导升级」页上传");
+	else
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区 0x2100 处没有 FIT，原厂引导起不来这份 U-Boot，请在「引导升级」页重新上传");
+
+	if (!chain_vendor_bootcmd(cmd, sizeof(cmd))) {
+		chk_item(jb, first, "原厂 bootcmd", CHK_OK,
+			 "没有保存过，原厂引导用默认的 flash read 0x602100 启动 FIT");
+		return;
+	}
+	if (!cmd_has_addr(cmd, "0x602100") && !cmd_has_addr(cmd, "0x600000")) {
+		chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+			 "%s（不读 0x600000 或 0x602100，原厂引导不会启动 chainloader 分区）",
+			 cmd);
+		return;
+	}
+	/*
+	 * It also has to read all of what it starts: the FIT from 0x602100,
+	 * or the whole slot from 0x600000 -- and for the latter to 0x81800000,
+	 * the one place the shim looks.  Only checkable with a FIT in place.
+	 */
+	if (fit && chain_vendor_read(cmd, &off, &len, &addr)) {
+		ulong need = get_unaligned_be32(buf + CHAIN_FIT_OFF + 4);
+
+		if (off == 0x600000)
+			need += CHAIN_FIT_OFF;
+		if ((off == 0x600000 || off == 0x602100) && len < need) {
+			chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+				 "%s（只读 0x%lx 字节，U-Boot 要 0x%lx，读不全就起不来）",
+				 cmd, len, need);
+			return;
+		}
+		if (off == 0x600000 && addr != 0x81800000) {
+			chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+				 "%s（读到 0x%lx，前缀 shim 只认 0x81800000）",
+				 cmd, addr);
+			return;
+		}
+	}
+	if (cmd_has_addr(cmd, "0x602100"))
+		chk_item(jb, first, "原厂 bootcmd", CHK_OK, "%s", cmd);
+	else
+		chk_item(jb, first, "原厂 bootcmd", CHK_WARN,
+			 "%s（经 0x0 处的前缀 shim 启动，这条路没有实机验证过；原厂的 0x602100 直接启动 FIT）",
+			 cmd);
 }
 
 /*
@@ -4989,7 +5398,7 @@ static int httpd_check(void)
 	ulong max = upload_max();
 	u32 __maybe_unused e1 = 0, __maybe_unused e2 = 0;
 	int __maybe_unused e1ok = 0;
-	int first = 1, i;
+	int first = 1, i, chain = chain_board();
 
 	jb_init(&jb, check_buf, sizeof(check_buf));
 
@@ -5023,13 +5432,20 @@ static int httpd_check(void)
 	chk_badblocks(&jb, &first, master);
 
 	chk_group("引导");
-	chk_bl2(&jb, &first, buf);
+	if (chain)
+		chk_chain(&jb, &first, buf);
+	else
+		chk_bl2(&jb, &first, buf);
 	chk_env_defaults(&jb, &first);
 
 	chk_group("UBI");
 	if (ubi_part(part_name, NULL)) {
-		chk_item(&jb, &first, "UBI", CHK_FAIL,
-			 "无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
+		if (chain)
+			chk_item(&jb, &first, "UBI", CHK_FAIL,
+				 "无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件");
+		else
+			chk_item(&jb, &first, "UBI", CHK_FAIL,
+				 "无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
 	} else {
 		struct ubi_device *ubi = ubi_get_device(0);
 
@@ -5043,7 +5459,8 @@ static int httpd_check(void)
 
 		chk_avail(&jb, &first, ubi);
 		chk_wear(&jb, &first, ubi);
-		chk_fip(&jb, &first, ubi, buf, max);
+		if (!chain)
+			chk_fip(&jb, &first, ubi, buf, max);
 		chk_fit(&jb, &first, ubi, buf);
 		chk_firmware(&jb, &first, ubi, buf, max);
 
@@ -6325,6 +6742,81 @@ static struct fvol *fvol_find(const char *field)
 }
 
 /*
+ * A chainloader slot before it goes anywhere near the partition: it fits,
+ * it has the uImage and the FIT where the two vendor bootcmds look, and no
+ * block it would land in is bad (see CHAIN_PART for why not skip one).
+ */
+static ulong part_align(struct up_part *part);
+
+static int chain_check(struct up_part *p)
+{
+	struct mtd_info *m = chain_part();
+	const u8 *d;
+	const struct legacy_img_hdr *h;
+	const void *fit;
+	u64 size;
+	loff_t off;
+
+	if (!m) {
+		httpd_reject("the " CHAIN_PART " partition is gone");
+		return -1;
+	}
+	size = m->size;
+	for (off = 0; off < p->size && off < size; off += m->erasesize)
+		if (mtd_block_isbad(m, off) > 0)
+			break;
+	put_mtd_device(m);
+
+	if (p->size > size) {
+		httpd_reject("the U-Boot slot is %u bytes; the " CHAIN_PART
+			     " partition holds %llu", p->size,
+			     (unsigned long long)size);
+		return -1;
+	}
+	/*
+	 * The write erases the partition first, so a slot that would not
+	 * start has to be refused here, not found out at the next power-on.
+	 * Both halves are checked the way the vendor bootm will check them:
+	 * the uImage by its two CRCs, the FIT by its structure and hashes.
+	 * Aligned first -- libfdt wants its blob on an 8-byte boundary, and
+	 * CHAIN_FIT_OFF keeps the FIT on one.
+	 */
+	d = (const u8 *)part_align(p);
+	h = (const struct legacy_img_hdr *)d;
+	fit = d + CHAIN_FIT_OFF;
+	if (p->size < CHAIN_FIT_OFF + 64 || get_unaligned_be32(d) != IH_MAGIC ||
+	    get_unaligned_be32(d + CHAIN_FIT_OFF) != FIT_MAGIC) {
+		httpd_reject("not a chainloader slot: it needs a uImage at 0 "
+			     "and a FIT at 0x%x", CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (!image_check_hcrc(h) ||
+	    image_get_header_size() + image_get_data_size(h) > CHAIN_FIT_OFF ||
+	    !image_check_dcrc(h)) {
+		httpd_reject("the uImage at 0 is damaged (header or data CRC, or "
+			     "it runs into the FIT at 0x%x)", CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (fit_check_format(fit, p->size - CHAIN_FIT_OFF) ||
+	    fdt_totalsize(fit) > p->size - CHAIN_FIT_OFF ||
+	    !fit_all_image_verify(fit)) {
+		httpd_reject("the FIT at 0x%x is damaged or cut short (see the "
+			     "serial log)", CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (off < p->size) {
+		httpd_reject("block 0x%llx of the " CHAIN_PART " partition is "
+			     "bad, and the vendor U-Boot reads the partition "
+			     "through its own BMT: an image written around it "
+			     "is not the one it would read",
+			     (unsigned long long)off);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
  * Everything that can be checked before answering is checked here, so a
  * refused upload is refused while the browser is still listening.  Once the
  * response is out the page has already said "done"; a failure after that
@@ -6337,6 +6829,7 @@ static int httpd_validate(void)
 	struct up_part *p;
 	int nvols = 0;
 	int needs_ubi;
+	int chain = chain_board();
 	int i;
 
 	for (i = 0; i < up_nparts; i++) {
@@ -6380,6 +6873,40 @@ static int httpd_validate(void)
 	}
 
 	/*
+	 * A board has one boot chain or the other: BL2 and FIP where this
+	 * U-Boot came in with its own BL2, the chainloader partition where
+	 * the vendor's stays.  Writing the wrong kind would put a file where
+	 * nothing will ever look for it -- or, for a BL2, over a vendor
+	 * bootloader that nothing here can put back.
+	 */
+	if (chain && (part_find(FIELD_BL2) || part_find(FIELD_FIP))) {
+		httpd_reject("this board boots U-Boot out of the " CHAIN_PART
+			     " partition; it has no BL2 or FIP to write");
+		return -1;
+	}
+	if (!chain && part_find(FIELD_CHAIN)) {
+		httpd_reject("this board has no " CHAIN_PART " partition to "
+			     "write");
+		return -1;
+	}
+
+	p = part_find(FIELD_CHAIN);
+	if (p && chain_check(p))
+		return -1;
+
+	/*
+	 * On a chainloaded board the U-Boot is outside UBI, so a rebuild
+	 * takes nothing it cannot put back -- except the system, which is
+	 * the one thing the upload then has to bring.  The FIP and BL2 rules
+	 * below are about a boot chain this board does not have.
+	 */
+	if (chain && part_find(FIELD_FORMAT) && !part_find(FIELD_FIT)) {
+		httpd_reject("rebuilding UBI without a firmware image would "
+			     "leave nothing to boot");
+		return -1;
+	}
+
+	/*
 	 * Rebuilding ubi erases the fip volume with everything else, so the
 	 * upload has to bring back both halves of the boot chain.  The page
 	 * refuses this too, but the page is not the only client.
@@ -6401,12 +6928,12 @@ static int httpd_validate(void)
 	 * UBI rebuilt.  The guide has always said to send all three for a
 	 * migration; this makes the page say the same thing.
 	 */
-	if (part_find(FIELD_FORMAT) && !part_find(FIELD_FIP)) {
+	if (!chain && part_find(FIELD_FORMAT) && !part_find(FIELD_FIP)) {
 		httpd_reject("rebuilding UBI without a U-Boot FIP would leave "
 			     "nothing to boot");
 		return -1;
 	}
-	if (part_find(FIELD_FORMAT) && !part_find(FIELD_BL2)) {
+	if (!chain && part_find(FIELD_FORMAT) && !part_find(FIELD_BL2)) {
 		httpd_reject("rebuilding UBI erases what a factory BL2 loads "
 			     "after itself; upload the BL2 preloader too");
 		return -1;
@@ -6445,7 +6972,8 @@ static int httpd_validate(void)
 	 */
 	if ((nvols || part_find(FIELD_UBIVOL_FILE)) &&
 	    (part_find(FIELD_BL2) || part_find(FIELD_FIP) ||
-	     part_find(FIELD_FIT) || part_find(FIELD_FORMAT))) {
+	     part_find(FIELD_CHAIN) || part_find(FIELD_FIT) ||
+	     part_find(FIELD_FORMAT))) {
 		httpd_reject("volumes and the boot chain are written by two "
 			     "different paths; send them as two uploads");
 		return -1;
@@ -6553,9 +7081,14 @@ static int httpd_validate(void)
 		    part_find(FIELD_UBIVOL_FILE) || nvols;
 
 	if (ubi_part(part_name, NULL) && needs_ubi) {
-		httpd_reject("no usable UBI on the flash to write into: "
-			     "tick \"rebuild UBI\" and upload BL2, U-Boot "
-			     "and firmware together");
+		if (chain)
+			httpd_reject("no usable UBI on the flash to write into: "
+				     "tick \"rebuild UBI\" and upload the "
+				     "firmware with it");
+		else
+			httpd_reject("no usable UBI on the flash to write into: "
+				     "tick \"rebuild UBI\" and upload BL2, "
+				     "U-Boot and firmware together");
 		return -1;
 	}
 
@@ -8755,6 +9288,7 @@ static int flash_part(const char *what, struct up_part *part, const char *var,
 #define VF_NONE		0
 #define VF_VOL		1
 #define VF_BL2		2
+#define VF_CHAIN	3
 
 enum {
 	FS_START = 0,
@@ -8762,6 +9296,7 @@ enum {
 	FS_ATTACH,
 	FS_VOLS,
 	FS_BL2,
+	FS_CHAIN,
 	FS_UBI,
 	FS_FIP,
 	FS_FIT,
@@ -8776,7 +9311,7 @@ static void flash_label(struct up_part *p, char *buf, int n)
 
 	if (!strcmp(p->name, FIELD_BL2))
 		strlcpy(buf, "BL2", n);
-	else if (!strcmp(p->name, FIELD_FIP))
+	else if (!strcmp(p->name, FIELD_FIP) || !strcmp(p->name, FIELD_CHAIN))
 		strlcpy(buf, "U-Boot", n);
 	else if (!strcmp(p->name, FIELD_FIT))
 		strlcpy(buf, "固件", n);
@@ -8797,6 +9332,8 @@ static int vf_target(struct up_part *p, char *vol, int voln)
 
 	if (!strcmp(p->name, FIELD_BL2))
 		return VF_BL2;
+	if (!strcmp(p->name, FIELD_CHAIN))
+		return VF_CHAIN;
 
 	if (!strcmp(p->name, FIELD_FIP))
 		strlcpy(vol, "fip", voln);
@@ -8869,15 +9406,17 @@ static int vf_ubi_read(const char *name, ulong off, ulong len)
 /* One window of what was just written, back off the flash. */
 static int vf_read(int kind, char *vol, ulong off, ulong len)
 {
-	if (kind == VF_BL2) {
-		struct mtd_info *m = get_mtd_device_nm(BL2_PART);
+	if (kind == VF_BL2 || kind == VF_CHAIN) {
+		struct mtd_info *m = kind == VF_BL2 ?
+			get_mtd_device_nm(BL2_PART) : chain_part();
 		size_t rl = 0;
 		int ret;
 
-		if (IS_ERR(m))
+		if (IS_ERR_OR_NULL(m))
 			return -1;
 
-		ret = mtd_read(m, BL2_IMAGE_OFF + off, len, &rl, vf_buf);
+		ret = mtd_read(m, (kind == VF_BL2 ? BL2_IMAGE_OFF : 0) + off,
+			       len, &rl, vf_buf);
 		put_mtd_device(m);
 
 		/* A corrected bit-flip is a read that worked. */
@@ -8900,6 +9439,7 @@ static int httpd_flash_step(void)
 {
 	struct up_part *bl2 = part_find(FIELD_BL2);
 	struct up_part *fip = part_find(FIELD_FIP);
+	struct up_part *chain = part_find(FIELD_CHAIN);
 	struct up_part *fit = part_find(FIELD_FIT);
 	struct up_part *ubifile = part_find(FIELD_UBIVOL_FILE);
 	int format = part_find(FIELD_FORMAT) != NULL;
@@ -9062,7 +9602,7 @@ static int httpd_flash_step(void)
 
 	case FS_BL2:
 		if (!bl2) {
-			flash_stage = FS_UBI;
+			flash_stage = FS_CHAIN;
 
 			return FLASH_MORE;
 		}
@@ -9081,6 +9621,33 @@ static int httpd_flash_step(void)
 		flash_wrote += bl2->size;
 		wr_printf("r BL2 %u %08x\n", bl2->size,
 			  crc32(0, (const u8 *)part_align(bl2), bl2->size));
+		flash_stage = FS_CHAIN;
+
+		return FLASH_MORE;
+
+	/* Before the firmware, like BL2: the board has to come back up. */
+	case FS_CHAIN:
+		if (!chain) {
+			flash_stage = FS_UBI;
+
+			return FLASH_MORE;
+		}
+		if (!flash_said) {
+			wr_printf("s 写入 U-Boot %u\n", chain->size);
+			flash_said = 1;
+
+			return FLASH_MORE;
+		}
+		flash_said = 0;
+		if (flash_part("U-Boot slot", chain, ENV_WRITE_CHAIN,
+			       DEF_WRITE_CHAIN)) {
+			wr_printf("f 写入 U-Boot 失败，详见串口日志\n");
+
+			return FLASH_FAIL;
+		}
+		flash_wrote += chain->size;
+		wr_printf("r U-Boot %u %08x\n", chain->size,
+			  crc32(0, (const u8 *)part_align(chain), chain->size));
 		flash_stage = FS_UBI;
 
 		return FLASH_MORE;
@@ -9461,8 +10028,8 @@ U_BOOT_CMD(
 	"start the web recovery server",
 	"\n"
 	"    - serve the recovery page on port 80 and hand out one DHCP lease;\n"
-	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
-	"      flashed by " ENV_WRITE_BL2 " / " ENV_WRITE_FIP " / \n"
-	"      " ENV_WRITE_FIT ", or by a built-in equivalent when those\n"
-	"      are not defined"
+	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\", \"" FIELD_CHAIN "\" and\n"
+	"      \"" FIELD_FIT "\" fields are flashed by " ENV_WRITE_BL2 " /\n"
+	"      " ENV_WRITE_FIP " / " ENV_WRITE_CHAIN " / " ENV_WRITE_FIT ",\n"
+	"      or by a built-in equivalent when those are not defined"
 );

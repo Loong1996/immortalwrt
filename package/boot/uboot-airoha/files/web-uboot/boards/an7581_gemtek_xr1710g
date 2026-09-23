@@ -1,0 +1,15 @@
+# Locked vendor bootloader: the vendor U-Boot starts this one out of the
+# chainloader partition, so there is no BL2 or FIP to write -- the recovery
+# page writes that partition instead.  The factory volume (MACs, Wi-Fi
+# EEPROM) is rebuilt from the vendor DSD, so a UBI rebuild does not lose it.
+soc=an7581
+profile=gemtek_xr1710g-ubi
+dts=airoha/an7581-gemtek-xr1710g
+fdt=airoha/an7581-gemtek-xr1710g.dtb
+led=red:status
+bundle=an7581_chain_defconfig
+fragments=menu.env chainload.env
+policy=gemtek
+factory_vols=factory:0x6006
+factory_mac=factory:0x6000
+extra_defconfig=fragments/gemtek_dsd.config
