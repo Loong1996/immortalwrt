@@ -257,6 +257,7 @@ define Device/znxt_zn504xg-d-ubi
   DEVICE_DTS := an7581-znxt-zn504xg-d
   SOC := an7581
   $(call Device/airoha-ubi)
+  SUPPORTED_DEVICES := znxt,zn504xg-d
   DEVICE_PACKAGES += kmod-gpio-button-hotplug kmod-leds-gpio \
 	kmod-phy-airoha-en8811h
   ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot znxt_zn504xg-d
