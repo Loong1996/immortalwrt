@@ -1074,6 +1074,155 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     w.hide();
   }
 
+  console.log('\n--- 重建 UBI 前提醒先备份 ---');
+  {
+    const w = await boot();
+    const pick = (name, fn, n) => {
+      const i = $(w, '#p2 input[name=' + name + ']');
+      Object.defineProperty(i, 'files',
+        { value: [new w.File([new Uint8Array(n)], fn)], configurable: true });
+      i.onchange();
+    };
+    const warn = () => [...w.document.querySelectorAll('#abody .w')]
+      .map(e => e.textContent);
+    $(w, '.nav[data-p=p2]').click();
+    await sleep(300);
+    pick('bl2', 'x-preloader.bin', 120832);
+    pick('fip', 'x-bl31-uboot.fip', 325632);
+
+    w.ask();
+    ok('不重建就不提备份', !warn().some(t => /备份/.test(t)), warn().join(' | '));
+    w.hide();
+
+    $(w, '#p2 [name=format]').checked = true;
+    w.ask();
+    ok('重建时先说出厂卷没备份', warn()[0] === 'ri、bosa 未备份 · 去备份', warn()[0]);
+    ok('提醒不拦', !$(w, '#yes').hidden);
+    w.hide();
+
+    /* 下载完一个少一个；记在浏览器里，按 MAC 分开 */
+    w.dlvol('ri');
+    await sleep(9000);
+    const bk = JSON.parse(w.localStorage.getItem('xgbk') || '{}');
+    ok('记下了 ri', !!(bk['90:03:2e:12:34:56'] || {}).ri, JSON.stringify(bk));
+    $(w, '.nav[data-p=p2]').click();
+    w.ask();
+    ok('只剩 bosa', warn()[0] === 'bosa 未备份 · 去备份', warn()[0]);
+
+    $(w, '#abody .w a').click();
+    await sleep(300);
+    ok('去备份就到备份下载', $(w, '.nav[aria-current=true]').getAttribute('data-p') === 'p10');
+    ok('确认框关掉了', !on(w, '#mask'));
+
+    w.dlvol('bosa');
+    await sleep(9000);
+    $(w, '.nav[data-p=p2]').click();
+    w.ask();
+    ok('都备份过就不再提', !warn().some(t => /未备份/.test(t)), warn().join(' | '));
+    w.hide();
+
+    /* 原厂系统：没有 UBI 卷可下，只有整片备份算数 */
+    setsel(w, 'dev', 'noubi');
+    await sleep(1500);
+    $(w, '.nav[data-p=p2]').click();
+    pick('firmware', 'x-squashfs-sysupgrade.itb', 4096);
+    w.ask();
+    ok('原厂系统说整片备份', warn()[0] === '原厂系统请先整片备份 · 整片下载', warn()[0]);
+    $(w, '#abody .w a').click();
+    await sleep(300);
+    ok('跳到原始区段', $(w, '[data-s=s102]').getAttribute('aria-selected') === 'true');
+    ok('停在整片下载上', w.document.activeElement === $(w, '#dumpallb'));
+
+    w.setlang('en');
+    $(w, '.nav[data-p=p2]').click();
+    w.ask();
+    await sleep(50);
+    ok('英文也有', warn()[0] ===
+       'Stock firmware: back up the whole flash first · Download whole chip', warn()[0]);
+    w.setlang('zh');
+    w.hide();
+  }
+
+  console.log('\n--- 清空系统设置 ---');
+  {
+    const w = await boot();
+    const ubiNames = () => [...w.document.querySelectorAll('#ubi tr td:nth-child(2)')]
+      .map(e => e.textContent);
+    $(w, '.nav[data-p=p12]').click();
+    await sleep(300);
+    ok('有 rootfs_data 时能点', !$(w, '#wcb').disabled);
+
+    w.askwipe();
+    const ws = [...w.document.querySelectorAll('#abody .w')].map(e => e.textContent);
+    ok('没备份过先说一声', ws[0] === 'rootfs_data 未备份 · 去备份', ws[0]);
+    ok('后果一句话', ws[1] === 'OpenWrt 的设置和软件包全部清空，下次启动为全新系统', ws[1]);
+    ok('按钮写清空', txt(w, '#yes') === '清空');
+
+    w.go();
+    await sleep(2500);
+    ok('按钮变成已清空并灰掉', txt(w, '#wcb') === '已清空' && $(w, '#wcb').disabled);
+    ok('说下次启动是全新系统', txt(w, '#wch') === '已清空。下次启动为全新系统', txt(w, '#wch'));
+    ok('UBI 卷表跟着更新', ubiNames().length > 0 && ubiNames().indexOf('rootfs_data') < 0,
+       ubiNames().join(','));
+    ok('备份下载的卷列表也更新',
+       !w.document.querySelector('#dl .dlb[data-v=rootfs_data]'));
+    ok('诊断缓存作废', w.CHK === null);
+
+    /* 没有 UBI 就没什么可清 */
+    const w2 = await boot();
+    setsel(w2, 'dev', 'noubi');
+    await sleep(1500);
+    $(w2, '.nav[data-p=p12]').click();
+    ok('没有 UBI 时按钮灰掉', $(w2, '#wcb').disabled);
+    ok('并说明为什么', txt(w2, '#wch') === '闪存上没有 UBI，没有可清空的设置', txt(w2, '#wch'));
+  }
+
+  console.log('\n--- 下发网关开关 ---');
+  {
+    const w = await boot();
+    $(w, '.nav[data-p=p5]').click();
+    await sleep(300);
+    $(w, '[data-s=s52]').click();
+    await sleep(1200);
+    ok('DHCP 服务器模式下有开关', !$(w, '#dgwbox').hidden);
+    ok('默认下发', $(w, '#ndgw').checked);
+    ok('说明是一句话', txt(w, '#dgwbox .fl small') === '关掉后路由器不下发网关');
+
+    $(w, '#ndgw').checked = false;
+    $(w, '#ndgw').onchange();
+    await sleep(800);
+    ok('关掉就存', txt(w, '#dgwh') === '已关闭。电脑重新插拔网线后生效', txt(w, '#dgwh'));
+    await sleep(3500);
+    ok('轮询不会把它拨回去', !$(w, '#ndgw').checked);
+
+    /* 跟着模式选择框走，不跟设备当前模式 */
+    $(w, '#amode').value = 'static'; $(w, '#amode').onchange();
+    ok('选静态地址就藏起来', $(w, '#dgwbox').hidden);
+    await sleep(3500);
+    ok('轮询之后还藏着', $(w, '#dgwbox').hidden);
+    $(w, '#amode').value = 'client'; $(w, '#amode').onchange();
+    ok('选客户端也藏', $(w, '#dgwbox').hidden);
+    $(w, '#amode').value = 'server'; $(w, '#amode').onchange();
+    ok('选回服务器又出来', !$(w, '#dgwbox').hidden);
+
+    $(w, '#nip').value = '192.168.1.1';
+    w.applyaddr();
+    const rows = [...w.document.querySelectorAll('#abody .r')].map(e => e.textContent);
+    ok('应用时带上网关这一行', rows.indexOf('网关不下发') >= 0, rows.join(' | '));
+    w.hide();
+
+    $(w, '#ndgw').checked = true;
+    $(w, '#ndgw').onchange();
+    await sleep(800);
+    ok('打开也存', txt(w, '#dgwh') === '已打开。电脑重新插拔网线后生效', txt(w, '#dgwh'));
+
+    w.setlang('en');
+    await sleep(50);
+    ok('英文说明', txt(w, '#dgwbox .fl small') === 'Off: the router hands out no gateway',
+       txt(w, '#dgwbox .fl small'));
+    w.setlang('zh');
+  }
+
   console.log('\n--- 引导菜单预览 ---');
   {
     const w = await boot();

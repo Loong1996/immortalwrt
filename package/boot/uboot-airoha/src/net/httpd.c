@@ -33,8 +33,11 @@
  *   network          GET /net for the address and the link state of each
  *                    port (polled while that tab is open); GET
  *                    /netmode?mode=server|static|client&ip=&mask=&save= to
- *                    change it
+ *                    change it; GET /dhcpgw?on=0|1 for whether a lease
+ *                    carries this board as the gateway
  *   environment      GET /env read-only, GET /envreset for the defaults
+ *   settings         GET /wipecfg removes rootfs_data: OpenWrt's settings
+ *                    and packages, gone on the next boot
  *   reboot           GET /reboot
  *
  * The page also polls GET /ping.  That answer is the only thing telling
@@ -147,6 +150,8 @@ DECLARE_GLOBAL_DATA_PTR;
  * have to be taken off it -- see httpd_on_snd_una_update().
  */
 #define CONN_DRAIN		((void *)22)
+#define CONN_WIPECFG		((void *)23)
+#define CONN_DHCPGW		((void *)24)
 
 /*
  * Commands run after the response has been flushed and net_loop() returned.
@@ -188,6 +193,15 @@ DECLARE_GLOBAL_DATA_PTR;
 #define DEF_WRITE_FIP		"if ubi check fip ; then " \
 				"ubi write $loadaddr fip $filesize ; " \
 				"else run ubi_write_fip ; fi"
+/*
+ * Clearing OpenWrt's settings is removing its overlay.  The next normal boot
+ * runs ubi_prepare_rootfs, which creates an empty rootfs_data again, and UBIFS
+ * formats an empty volume on its first mount -- the same thing a flash does
+ * to it.  The board's ubi_remove_rootfs is used when it is there so the
+ * serial menu and this page take the same path.
+ */
+#define ENV_REMOVE_ROOTFS	"ubi_remove_rootfs"
+#define DEF_REMOVE_ROOTFS	"ubi check rootfs_data && ubi remove rootfs_data"
 #define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
 				"ubi check rootfs_data && ubi remove rootfs_data ; " \
 				"ubi create fit $filesize dynamic && " \
@@ -669,8 +683,8 @@ static const char resp_form[] =
 	"<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>\n"
 	"<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部"
 		" <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>\n"
-	"<div class=row><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button"
-		" class=\"pb pri\" onclick=dumpraw()>下载区段</button></div>\n"
+	"<div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button"
+		" type=button class=\"pb pri\" onclick=dumpraw()>下载区段</button></div>\n"
 	"</div>\n"
 	"<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div"
 		" class=box><table class=kv id=dll></table></div></div>\n"
@@ -710,6 +724,11 @@ static const char resp_form[] =
 	"<div class=row><button type=button class=\"pb pri\" onclick=applyaddr()>应用</button></div>\n"
 	"<p class=note id=nboot></p>\n"
 	"<p class=note id=dhsum hidden></p>\n"
+	"<div id=dgwbox hidden><p class=bh>DHCP 服务器</p>\n"
+	"<div class=box><div class=\"fr wide\"><span class=fl>下发网关<small>关掉后路由器不下发网关</small></span><span"
+		" class=\"fc end\"><input type=checkbox class=sw id=ndgw checked"
+		" onchange=dgwset()></span></div></div>\n"
+	"<p class=note id=dgwh></p></div>\n"
 	"</div>\n"
 	"<div class=sp data-g=g5 id=s53>\n"
 	"<div class=vbar id=vbar hidden></div>\n"
@@ -795,6 +814,13 @@ static const char resp_form[] =
 		" end\"><button type=button class=pb id=bob onclick=bootonce()>设置</button></span></div>\n"
 	"</div>\n"
 	"<p class=note id=boh>设置后下次开机停在本页面，再下次开机恢复正常引导。</p>\n"
+	"<p class=bh>清空设置</p>\n"
+	"<div class=box>\n"
+	"<div class=\"fr wide\"><span class=fl>清空系统设置<small>删掉 OpenWrt"
+		" 的设置和装过的软件包，固件与出厂数据不动</small></span><span class=\"fc end\"><button type=button class=\"pb red\""
+		" id=wcb onclick=askwipe()>清空</button></span></div>\n"
+	"</div>\n"
+	"<p class=note id=wch></p>\n"
 	"</div>\n"
 	"<div class=pane id=p6>\n"
 	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
@@ -886,7 +912,7 @@ static const char resp_form[] =
 	"*/\n"
 	"var TRYB=0;\n"
 	"var RT=0,RN=0,RATE=0;\n"
-	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
+	"var DLSEQ=0,DLBAD=0,STUCK='',DLWHAT='';\n"
 	"var LOGN=0,LOGT=null,LOGGEN=0;\n"
 	"/* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */\n"
 	"var NETINIT=0;\n"
@@ -1078,12 +1104,13 @@ static const char resp_form[] =
 	"*/\n"
 	"var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};\n"
 	"function amodesw(){var m=$('#amode').value;\n"
+	"$('#dgwbox').hidden=m!='server';\n"
 	"$('#arow1').hidden=m=='client';\n"
 	"$('#arow2').hidden=m!='static';\n"
 	"$('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'\n"
 	":'IP<small>设备的接口地址</small>';\n"
 	"$('#nh').innerHTML=m=='server'\n"
-	"?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，网关指向本设备且不带"
+	"?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，不带"
 		" DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'\n"
 	":m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'\n"
 	":'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';\n"
@@ -1114,7 +1141,9 @@ static const char resp_form[] =
 	"h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'\n"
 	"+(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)\n"
 	"+(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');\n"
-	"if(m=='server')h+='<div class=w>本机开始发地址：电脑将拿到 <b>'\n"
+	"if(m=='server')h+='<div class=r><span>网关</span><span class=v>'\n"
+	"+($('#ndgw').checked?'下发':'不下发')+'</span></div>'\n"
+	"+'<div class=w>本机开始发地址：电脑将拿到 <b>'\n"
 	"+esc(ip.replace(/\\.\\d+$/,'.100'))+'</b></div>';\n"
 	"if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';\n"
 	"if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'\n"
@@ -1150,6 +1179,40 @@ static const char resp_form[] =
 	"+(url?'<div class=hint>10 秒后自动跳转。</div>':'');\n"
 	"$('#offr').hidden=true;$('#off').setAttribute('data-on','');\n"
 	"if(url)setTimeout(function(){location.href=url},10000)}\n"
+	"/*\n"
+	"* 下发网关：默认发，电脑插上就把本机当出口；关掉之后电脑的外网还走它原来\n"
+	"* 那条（Wi-Fi），救砖时照样能查教程、下固件。只管之后拿地址的电脑，已经\n"
+	"* 拿过的要重新插一下网线。拨了就存，不走「应用」—— 那条路要断开重开页面。\n"
+	"*/\n"
+	"function dgwset(){var c=$('#ndgw'),on=c.checked?1:0;c.disabled=true;\n"
+	"get('/dhcpgw?on='+on,function(st,t){c.disabled=false;t=(t||'').trim();\n"
+	"if(st!=200||!/^ok/.test(t)){c.checked=!on;$('#dgwh').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'"
+		"+(t||st);return}\n"
+	"var n=(NET&&NET.net)||(INFO&&INFO.net);if(n)n.dgw=on;\n"
+	"$('#dgwh').textContent=(on?'已打开':'已关闭')+(t.indexOf('saved')<0?'，但未能保存到闪存':'')+'。电脑重新插拔网线后生效'})}\n"
+	"/*\n"
+	"* 清空系统设置 = 删掉 rootfs_data。下次正常启动时 ubi_prepare_rootfs 建一个\n"
+	"* 空的，UBIFS 挂上去自己格式化，OpenWrt 就当第一次开机。日常刷机本来就走\n"
+	"* 这一步，这里只是把它单拿出来。\n"
+	"*/\n"
+	"function wcvol(){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n=='roo"
+		"tfs_data')v=x});return v}\n"
+	"function wcfill(){var b=$('#wcb'),h=$('#wch');if(!INFO||b.textContent=='已清空')return;\n"
+	"b.disabled=!INFO.ubi||!wcvol();\n"
+	"h.textContent=!INFO.ubi?'闪存上没有 UBI，没有可清空的设置':!wcvol()?'没有 rootfs_data 卷，下次启动就是全新系统':''}\n"
+	"function askwipe(){var b=bkall(),h;$('#atitle').textContent='清空系统设置';\n"
+	"h='<div class=r><span>删除</span><span class=v>rootfs_data 卷</span></div>'\n"
+	"+'<div class=w>OpenWrt 的设置和软件包全部清空，下次启动为全新系统</div>';\n"
+	"if(!b.rootfs_data&&!b.all)h='<div class=w>rootfs_data 未备份 · <a href=\"#\" onclick=\"gobk();return"
+		" false\">去备份</a></div>'+h;\n"
+	"$('#abody').innerHTML=h;var y=$('#yes');y.hidden=false;y.textContent='清空';\n"
+	"YES=dowipe;$('#mask').setAttribute('data-on','')}\n"
+	"function dowipe(){var b=$('#wcb');b.disabled=true;$('#wch').textContent='正在清空…';\n"
+	"get('/wipecfg',function(st,t){t=(t||'').trim();\n"
+	"if(st!=200||!/^ok/.test(t)){b.disabled=false;$('#wch').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受"
+		"：'+(t||st);return}\n"
+	"CHK=null;b.textContent='已清空';$('#wch').textContent='已清空。下次启动为全新系统';\n"
+	"info()})}\n"
 	"function askboot(){$('#atitle').textContent='启动系统';\n"
 	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+\n"
 	"'<div class=w>闪存内容不受影响；引导失败回到本页面</div>';\n"
@@ -1229,15 +1292,30 @@ static const char resp_form[] =
 	"$('.pct',pg).textContent=''}\n"
 	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
-	"function dlrow(r){var t=$('#dll'),h=r.holes|0;\n"
+	"/*\n"
+	"* 备份过什么记在浏览器里，按本机 MAC 分开：重建 UBI 之前要问的就是「这台\n"
+	"* 的出厂卷存过没有」。只记完整传完、没有读取失败的；整片备份算全都存过。\n"
+	"* 浏览器不让存也不要紧，那就每次都提醒。\n"
+	"*/\n"
+	"function bkall(){var m=INFO&&INFO.mac,a={};if(!m)return{};\n"
+	"try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}return a[m]||{}}\n"
+	"function bkmark(w){var m=INFO&&INFO.mac,a={};if(!m||!w)return;\n"
+	"try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();\n"
+	"localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}}\n"
+	"/* 重建会清掉的出厂卷里，这台还没备份过的；整片备份过就一个都不缺 */\n"
+	"function bkmissing(){var b=bkall();if(b.all)return[];\n"
+	"return FV.map(function(v){return v.n}).filter(function(n){return !b[n]})}\n"
+	"function gobk(){hide();nav($('.nav[data-p=p10]'));\n"
+	"if(!INFO||!INFO.ubi){seg($('[data-s=s102]'));$('#dumpallb').focus()}}\n"
+	"function dlrow(r){var t=$('#dll'),h=r.holes|0;if(!h)bkmark(DLWHAT);\n"
 	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
 		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 	"$('#dllh').hidden=false;\n"
 	"dlstop(h?'':'ok');\n"
 	"$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';\n"
 	"$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志':'传输完成'}\n"
-	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
-		"=x});\n"
+	"function dlvol(n){var v=null;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if"
+		"(x.n==n)v=x});\n"
 	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
 	"/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */\n"
 	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}\n"
@@ -1249,6 +1327,7 @@ static const char resp_form[] =
 	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
 	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
 	"if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
+	"DLWHAT=!o&&l===null?'all':'';\n"
 	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
 		" 起的区段',l)}\n"
 	"/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */\n"
@@ -1323,6 +1402,7 @@ static const char resp_form[] =
 	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
 	"/* 发地址这本账只有在真的在发的时候才有意义 */\n"
 	"$('#dhsum').hidden=m!='server';\n"
+	"if(!$('#ndgw').disabled)$('#ndgw').checked=n.dgw!==0;\n"
 	"$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'\n"
 	"+(n.client?'，最近一次分配给 '+n.client:'')\n"
 	"+'。当前打开本页面的主机用的就是设备发的地址。'\n"
@@ -1397,7 +1477,7 @@ static const char resp_form[] =
 	"$('#logtab').hidden=!INFO.log;\n"
 	"if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});\n"
 	"dlfill();\n"
-	"FV=INFO.fv||[];fvrows();\n"
+	"FV=INFO.fv||[];fvrows();wcfill();\n"
 	"if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}\n"
 	"ubibar();\n"
 	"h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
@@ -1591,9 +1671,13 @@ static const char resp_form[] =
 		" U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000"
 		" 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有"
 		" U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建"
-		" UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot"
-		" 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或"
-		" U-Boot，本次只写入固件')}\n"
+		" UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');\n"
+	"/* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */\n"
+	"if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '\n"
+	"+'<a href=\"#\" onclick=\"gobk();return false\">整片下载</a>')}\n"
+	"else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '\n"
+	"+'<a href=\"#\" onclick=\"gobk();return false\">去备份</a>')}}if(!rows.some(function(r){return"
+		" r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}\n"
 	"/*\n"
 	"* BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件\n"
 	"* 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在\n"
@@ -1822,6 +1906,31 @@ static const char resp_form[] =
 	"*/\n"
 	"/* i18n-dict begin */\n"
 	"var I18N={\n"
+	"\"清空设置\":\"Clear settings\",\n"
+	"\"清空系统设置\":\"Clear system settings\",\n"
+	"\"删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动\":\"Removes OpenWrt's settings and installed packages; firmware"
+		" and factory data stay\",\n"
+	"\"清空\":\"Clear\",\n"
+	"\"已清空\":\"Cleared\",\n"
+	"\"正在清空…\":\"Clearing…\",\n"
+	"\"删除\":\"Delete\",\n"
+	"\"OpenWrt 的设置和软件包全部清空，下次启动为全新系统\":\"All OpenWrt settings and packages are erased; the next boot"
+		" starts fresh\",\n"
+	"\"闪存上没有 UBI，没有可清空的设置\":\"No UBI on the flash, so there are no settings to clear\",\n"
+	"\"没有 rootfs_data 卷，下次启动就是全新系统\":\"There is no rootfs_data volume; the next boot starts fresh\",\n"
+	"\"已清空。下次启动为全新系统\":\"Cleared. The next boot starts fresh\",\n"
+	"\"下发网关\":\"Hand out a gateway\",\n"
+	"\"下发\":\"Yes\",\n"
+	"\"不下发\":\"No\",\n"
+	"\"关掉后路由器不下发网关\":\"Off: the router hands out no gateway\",\n"
+	"\"已打开。电脑重新插拔网线后生效\":\"On. Replug the computer's cable for it to take effect\",\n"
+	"\"已关闭。电脑重新插拔网线后生效\":\"Off. Replug the computer's cable for it to take effect\",\n"
+	"\"已打开，但未能保存到闪存。电脑重新插拔网线后生效\":\"On, but not saved to flash. Replug the computer's cable for it to"
+		" take effect\",\n"
+	"\"已关闭，但未能保存到闪存。电脑重新插拔网线后生效\":\"Off, but not saved to flash. Replug the computer's cable for it to"
+		" take effect\",\n"
+	"\"原厂系统请先整片备份 · \":\"Stock firmware: back up the whole flash first · \",\n"
+	"\"去备份\":\"Back up now\",\n"
 	"\"写入 固件…\":\"Writing firmware…\",\n"
 	"\"回读校验 固件…\":\"Verifying firmware…\",\n"
 	"\"文件名里没有机型\":\"No model in the file name\",\n"
@@ -2125,7 +2234,7 @@ static const char resp_form[] =
 	"\"电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 \":\"With a computer plugged straight into this device, it"
 		" gets an address on connect and needs no manual IP. The mask is fixed at \",\n"
 	"\"，电脑拿到的是本网段 \":\", the computer gets \",\n"
-	"\"，网关指向本设备且不带 DNS。\":\" on this subnet, and the gateway points at this device with no DNS. \",\n"
+	"\"，不带 DNS。\":\" on this subnet, with no DNS. \",\n"
 	"\"接入已有网络前不要用这一档\":\"Do not use this mode on an existing network\",\n"
 	"\"：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。\":\": it answers every request and races that network's"
 		" router to hand out addresses, knocking whichever machines it wins off the network.\",\n"
@@ -2363,6 +2472,7 @@ static const char resp_form[] =
 	"\"内存不足，无法分配读取窗口\":\"Not enough memory for a read window\",\n"
 	"};\n"
 	"var I18P={\n"
+	"\" 未备份 · \":\" not backed up · \",\n"
 	"\"与本机一致\":\"matches this device\",\n"
 	"\"本机是 \":\"this device is \",\n"
 	"\"。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置\":\". Widths are each volume's reserved size,"
@@ -3311,6 +3421,22 @@ static int netmode_parse(const char *s)
 	return NET_SERVER;
 }
 
+/*
+ * Whether a lease names this board as the gateway.  On by default, which is
+ * what it has always done; off leaves a PC that is also on Wi-Fi with its
+ * own way out, so it can still read the guide and fetch images while it
+ * talks to this page.  Stored only when off, and read per packet so the
+ * switch takes effect with the next lease.
+ */
+#define ENV_DHCPGW		"web_uboot_dhcp_gw"
+
+static int dhcp_gw_on(void)
+{
+	const char *s = env_get(ENV_DHCPGW);
+
+	return !(s && !strcmp(s, "0"));
+}
+
 static u32	dhcp_offers;
 static u32	dhcp_acks;
 static u8	dhcp_last_mac[6];
@@ -3493,7 +3619,8 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	o = dhcp_put(o, 54, 4, &net_ip.s_addr);		/* server id */
 	if (reply != DHCP_NAK) {
 		o = dhcp_put(o, 1, 4, &mask);		/* subnet mask */
-		o = dhcp_put(o, 3, 4, &net_ip.s_addr);	/* router */
+		if (dhcp_gw_on())
+			o = dhcp_put(o, 3, 4, &net_ip.s_addr);	/* router */
 		o = dhcp_put(o, 51, 4, &lease);		/* lease time */
 	}
 	*o++ = 255;
@@ -3880,8 +4007,8 @@ static void info_net(struct jbuf *jb)
 		  "\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
 		  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
 	jb_str(jb, eth_get_name());
-	jb_printf(jb, ",\"mode\":\"%s\",\"ram\":%d", netmode_name(netmode),
-		  net_unsaved);
+	jb_printf(jb, ",\"mode\":\"%s\",\"ram\":%d,\"dgw\":%d",
+		  netmode_name(netmode), net_unsaved, dhcp_gw_on());
 	jb_printf(jb, ",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
 	if (dhcp_offers || dhcp_acks)
 		jb_printf(jb, ",\"client\":\"%pM\"", dhcp_last_mac);
@@ -5429,6 +5556,104 @@ out:
 	bootonce_len = jb_done(&jb, "/bootonce");
 
 	return bootonce_len;
+}
+
+/*
+ * ---- GET /wipecfg --------------------------------------------------------
+ *
+ * Clear OpenWrt's settings: remove rootfs_data, see ENV_REMOVE_ROOTFS.  Done
+ * in the request, like /envreset; removing a volume erases what it held, a
+ * few seconds on a full-size overlay, which the page's heartbeat rides out.
+ * Checked afterwards rather than trusted: a recipe somebody edited can
+ * return success without having removed anything.
+ */
+static char wipecfg_buf[160];
+static int wipecfg_len;
+
+static int rootfs_data_there(void)
+{
+	struct ubi_device *ubi = ubi_get_device(0);
+	int there;
+
+	if (!ubi)
+		return -1;
+	there = !!ubi_vol_find(ubi, "rootfs_data");
+	ubi_put_device(ubi);
+
+	return there;
+}
+
+static int httpd_wipecfg(void)
+{
+	static char part_name[] = UBI_PART;
+	struct jbuf jb;
+	const char *msg;
+	int there;
+
+	if (ubi_part(part_name, NULL)) {
+		msg = "no UBI to clear";
+		goto out;
+	}
+	there = rootfs_data_there();
+	if (there < 0) {
+		msg = "UBI attached but not accessible";
+		goto out;
+	}
+	if (!there) {
+		msg = "ok, there was no rootfs_data";
+		goto out;
+	}
+
+	printf("httpd: removing rootfs_data; OpenWrt starts fresh on the next "
+	       "boot\n");
+	run_command(env_get(ENV_REMOVE_ROOTFS) ? "run " ENV_REMOVE_ROOTFS :
+		    DEF_REMOVE_ROOTFS, 0);
+	msg = rootfs_data_there() ? "rootfs_data is still there" :
+				    "ok removed";
+
+out:
+	printf("httpd: /wipecfg: %s\n", msg);
+	jb_init(&jb, wipecfg_buf, sizeof(wipecfg_buf));
+	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
+	wipecfg_len = jb_done(&jb, "/wipecfg");
+
+	return wipecfg_len;
+}
+
+/*
+ * ---- GET /dhcpgw?on=0|1 --------------------------------------------------
+ *
+ * The gateway switch, saved on the spot: it changes nothing about the
+ * address, so it does not go through /netmode and the page stays where it
+ * is.  Leases already handed out keep what they got until the cable is
+ * replugged.
+ */
+static char dhcpgw_qs[16];
+static char dhcpgw_buf[160];
+static int dhcpgw_len;
+
+static int httpd_dhcpgw(void)
+{
+	struct jbuf jb;
+	const char *msg;
+	char v[4];
+	int on = 1;
+
+	if (qs_get(dhcpgw_qs, "on", v, sizeof(v)))
+		on = v[0] != '0';
+
+	if (env_set(ENV_DHCPGW, on ? NULL : "0"))
+		msg = "could not set the environment";
+	else
+		msg = run_command("saveenv", 0) ? "ok, but saving failed" :
+						  "ok saved";
+	printf("httpd: DHCP gateway %s: %s\n", on ? "on" : "off", msg);
+
+	jb_init(&jb, dhcpgw_buf, sizeof(dhcpgw_buf));
+	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
+	dhcpgw_len = jb_done(&jb, "/dhcpgw");
+
+	return dhcpgw_len;
 }
 
 /*
@@ -7508,6 +7733,19 @@ static void *httpd_classify_get(const char *req, u32 rx_bytes)
 		return CONN_BOOT;
 	if (plen == 9 && !memcmp(path, "/bootonce", 9))
 		return CONN_BOOTONCE;
+	if (plen == 8 && !memcmp(path, "/wipecfg", 8))
+		return CONN_WIPECFG;
+	if (plen == 7 && !memcmp(path, "/dhcpgw", 7)) {
+		int k = qlen;
+
+		if (k > (int)sizeof(dhcpgw_qs) - 1)
+			k = sizeof(dhcpgw_qs) - 1;
+		if (k > 0)
+			memcpy(dhcpgw_qs, q + 1, k);
+		dhcpgw_qs[k > 0 ? k : 0] = '\0';
+
+		return CONN_DHCPGW;
+	}
 	if (plen == 8 && !memcmp(path, "/netmode", 8)) {
 		int k = qlen;
 
@@ -7638,7 +7876,8 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 			if (flash_running &&
 			    (cls == CONN_ENVRESET || cls == CONN_BOOTONCE ||
 			     cls == CONN_NETMODE || cls == CONN_REBOOT ||
-			     cls == CONN_BOOT)) {
+			     cls == CONN_BOOT || cls == CONN_WIPECFG ||
+			     cls == CONN_DHCPGW)) {
 				tcp->priv = CONN_WRBUSY;
 
 				return;
@@ -7676,6 +7915,10 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 				envreset_len = httpd_envreset();
 			else if (cls == CONN_BOOTONCE)
 				bootonce_len = httpd_bootonce();
+			else if (cls == CONN_WIPECFG)
+				wipecfg_len = httpd_wipecfg();
+			else if (cls == CONN_DHCPGW)
+				dhcpgw_len = httpd_dhcpgw();
 			else if (cls == CONN_NETMODE)
 				netmode_len = httpd_netmode();
 			else if (cls == CONN_DUMPINFO)
@@ -7758,6 +8001,12 @@ static const char *httpd_response(struct tcp_stream *tcp, int *len)
 	} else if (tcp->priv == CONN_BOOTONCE) {
 		*len = bootonce_len;
 		return bootonce_buf;
+	} else if (tcp->priv == CONN_WIPECFG) {
+		*len = wipecfg_len;
+		return wipecfg_buf;
+	} else if (tcp->priv == CONN_DHCPGW) {
+		*len = dhcpgw_len;
+		return dhcpgw_buf;
 	} else if (tcp->priv == CONN_NETMODE) {
 		*len = netmode_len;
 		return netmode_buf;

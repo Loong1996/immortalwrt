@@ -293,7 +293,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 <p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>
 <p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
-<div class=row><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
+<div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
 </div>
 <div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
 <div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span></div>
@@ -321,6 +321,9 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=row><button type=button class="pb pri" onclick=applyaddr()>应用</button></div>
 <p class=note id=nboot></p>
 <p class=note id=dhsum hidden></p>
+<div id=dgwbox hidden><p class=bh>DHCP 服务器</p>
+<div class=box><div class="fr wide"><span class=fl>下发网关<small>关掉后路由器不下发网关</small></span><span class="fc end"><input type=checkbox class=sw id=ndgw checked onchange=dgwset()></span></div></div>
+<p class=note id=dgwh></p></div>
 </div>
 <div class=sp data-g=g5 id=s53>
 <div class=vbar id=vbar hidden></div>
@@ -382,6 +385,11 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class="fr wide"><span class=fl>下次开机进恢复页<small>仅生效一次，进入后自动还原</small></span><span class="fc end"><button type=button class=pb id=bob onclick=bootonce()>设置</button></span></div>
 </div>
 <p class=note id=boh>设置后下次开机停在本页面，再下次开机恢复正常引导。</p>
+<p class=bh>清空设置</p>
+<div class=box>
+<div class="fr wide"><span class=fl>清空系统设置<small>删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动</small></span><span class="fc end"><button type=button class="pb red" id=wcb onclick=askwipe()>清空</button></span></div>
+</div>
+<p class=note id=wch></p>
 </div>
 
 <div class=pane id=p6>
@@ -443,7 +451,7 @@ var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
  */
 var TRYB=0;
 var RT=0,RN=0,RATE=0;
-var DLSEQ=0,DLBAD=0,STUCK='';
+var DLSEQ=0,DLBAD=0,STUCK='',DLWHAT='';
 var LOGN=0,LOGT=null,LOGGEN=0;
 /* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */
 var NETINIT=0;
@@ -602,12 +610,13 @@ function doreboot(){get('/reboot',function(){});expect('reboot')}
  */
 var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};
 function amodesw(){var m=$('#amode').value;
+$('#dgwbox').hidden=m!='server';
 $('#arow1').hidden=m=='client';
 $('#arow2').hidden=m!='static';
 $('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'
 :'IP<small>设备的接口地址</small>';
 $('#nh').innerHTML=m=='server'
-?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，网关指向本设备且不带 DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'
+?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，不带 DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'
 :m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'
 :'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';
 ippv();bootline()}
@@ -637,7 +646,9 @@ $('#atitle').textContent='改网络模式';
 h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'
 +(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)
  +(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');
-if(m=='server')h+='<div class=w>本机开始发地址：电脑将拿到 <b>'
+if(m=='server')h+='<div class=r><span>网关</span><span class=v>'
+ +($('#ndgw').checked?'下发':'不下发')+'</span></div>'
+ +'<div class=w>本机开始发地址：电脑将拿到 <b>'
  +esc(ip.replace(/\.\d+$/,'.100'))+'</b></div>';
 if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';
 if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'
@@ -673,6 +684,36 @@ $('#offb').innerHTML='<div class=w style="color:inherit">'+body+'</div>'
 +(url?'<div class=hint>10 秒后自动跳转。</div>':'');
 $('#offr').hidden=true;$('#off').setAttribute('data-on','');
 if(url)setTimeout(function(){location.href=url},10000)}
+/*
+ * 下发网关：默认发，电脑插上就把本机当出口；关掉之后电脑的外网还走它原来
+ * 那条（Wi-Fi），救砖时照样能查教程、下固件。只管之后拿地址的电脑，已经
+ * 拿过的要重新插一下网线。拨了就存，不走「应用」—— 那条路要断开重开页面。
+ */
+function dgwset(){var c=$('#ndgw'),on=c.checked?1:0;c.disabled=true;
+get('/dhcpgw?on='+on,function(st,t){c.disabled=false;t=(t||'').trim();
+if(st!=200||!/^ok/.test(t)){c.checked=!on;$('#dgwh').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'+(t||st);return}
+var n=(NET&&NET.net)||(INFO&&INFO.net);if(n)n.dgw=on;
+$('#dgwh').textContent=(on?'已打开':'已关闭')+(t.indexOf('saved')<0?'，但未能保存到闪存':'')+'。电脑重新插拔网线后生效'})}
+/*
+ * 清空系统设置 = 删掉 rootfs_data。下次正常启动时 ubi_prepare_rootfs 建一个
+ * 空的，UBIFS 挂上去自己格式化，OpenWrt 就当第一次开机。日常刷机本来就走
+ * 这一步，这里只是把它单拿出来。
+ */
+function wcvol(){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n=='rootfs_data')v=x});return v}
+function wcfill(){var b=$('#wcb'),h=$('#wch');if(!INFO||b.textContent=='已清空')return;
+b.disabled=!INFO.ubi||!wcvol();
+h.textContent=!INFO.ubi?'闪存上没有 UBI，没有可清空的设置':!wcvol()?'没有 rootfs_data 卷，下次启动就是全新系统':''}
+function askwipe(){var b=bkall(),h;$('#atitle').textContent='清空系统设置';
+h='<div class=r><span>删除</span><span class=v>rootfs_data 卷</span></div>'
++'<div class=w>OpenWrt 的设置和软件包全部清空，下次启动为全新系统</div>';
+if(!b.rootfs_data&&!b.all)h='<div class=w>rootfs_data 未备份 · <a href="#" onclick="gobk();return false">去备份</a></div>'+h;
+$('#abody').innerHTML=h;var y=$('#yes');y.hidden=false;y.textContent='清空';
+YES=dowipe;$('#mask').setAttribute('data-on','')}
+function dowipe(){var b=$('#wcb');b.disabled=true;$('#wch').textContent='正在清空…';
+get('/wipecfg',function(st,t){t=(t||'').trim();
+if(st!=200||!/^ok/.test(t)){b.disabled=false;$('#wch').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'+(t||st);return}
+CHK=null;b.textContent='已清空';$('#wch').textContent='已清空。下次启动为全新系统';
+info()})}
 function askboot(){$('#atitle').textContent='启动系统';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+
 '<div class=w>闪存内容不受影响；引导失败回到本页面</div>';
@@ -747,14 +788,29 @@ $('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';
 $('.pct',pg).textContent=''}
 /* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
 /* 传完了才有 crc32：它算的是真正发出去的那些字节 */
-function dlrow(r){var t=$('#dll'),h=r.holes|0;
+/*
+ * 备份过什么记在浏览器里，按本机 MAC 分开：重建 UBI 之前要问的就是「这台
+ * 的出厂卷存过没有」。只记完整传完、没有读取失败的；整片备份算全都存过。
+ * 浏览器不让存也不要紧，那就每次都提醒。
+ */
+function bkall(){var m=INFO&&INFO.mac,a={};if(!m)return{};
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}return a[m]||{}}
+function bkmark(w){var m=INFO&&INFO.mac,a={};if(!m||!w)return;
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();
+localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}}
+/* 重建会清掉的出厂卷里，这台还没备份过的；整片备份过就一个都不缺 */
+function bkmissing(){var b=bkall();if(b.all)return[];
+return FV.map(function(v){return v.n}).filter(function(n){return !b[n]})}
+function gobk(){hide();nav($('.nav[data-p=p10]'));
+if(!INFO||!INFO.ubi){seg($('[data-s=s102]'));$('#dumpallb').focus()}}
+function dlrow(r){var t=$('#dll'),h=r.holes|0;if(!h)bkmark(DLWHAT);
 t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
 $('#dllh').hidden=false;
 dlstop(h?'':'ok');
 $('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';
 $('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志':'传输完成'}
 
-function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
+function dlvol(n){var v=null;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
 sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}
 /* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */
 function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}
@@ -765,6 +821,7 @@ if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';r
 if(l===0){$('#dlh').textContent='长度为 0';return}
 if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}
 if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}
+DLWHAT=!o&&l===null?'all':'';
 sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+' 起的区段',l)}
 /* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */
 var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|web_uboot_|envver|httpd_|ubi_)/;
@@ -831,6 +888,7 @@ if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td
 h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
 /* 发地址这本账只有在真的在发的时候才有意义 */
 $('#dhsum').hidden=m!='server';
+if(!$('#ndgw').disabled)$('#ndgw').checked=n.dgw!==0;
 $('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
 +(n.client?'，最近一次分配给 '+n.client:'')
 +'。当前打开本页面的主机用的就是设备发的地址。'
@@ -899,7 +957,7 @@ if(INFO.uboot)$('#based').textContent=INFO.uboot;
 $('#logtab').hidden=!INFO.log;
 if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});
 dlfill();
-FV=INFO.fv||[];fvrows();
+FV=INFO.fv||[];fvrows();wcfill();
 if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}
 ubibar();
 h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
@@ -1049,7 +1107,12 @@ y.textContent='启动它'}
 $('#atitle').textContent=$('h1',p).textContent;
 if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-rows[0].f.size:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
-if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
+if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');
+/* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */
+if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '
++'<a href="#" onclick="gobk();return false">整片下载</a>')}
+else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '
++'<a href="#" onclick="gobk();return false">去备份</a>')}}if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
 /*
  * BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件
  * 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在
@@ -1246,6 +1309,27 @@ document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
  */
 /* i18n-dict begin */
 var I18N={
+"清空设置":"Clear settings",
+"清空系统设置":"Clear system settings",
+"删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动":"Removes OpenWrt's settings and installed packages; firmware and factory data stay",
+"清空":"Clear",
+"已清空":"Cleared",
+"正在清空…":"Clearing…",
+"删除":"Delete",
+"OpenWrt 的设置和软件包全部清空，下次启动为全新系统":"All OpenWrt settings and packages are erased; the next boot starts fresh",
+"闪存上没有 UBI，没有可清空的设置":"No UBI on the flash, so there are no settings to clear",
+"没有 rootfs_data 卷，下次启动就是全新系统":"There is no rootfs_data volume; the next boot starts fresh",
+"已清空。下次启动为全新系统":"Cleared. The next boot starts fresh",
+"下发网关":"Hand out a gateway",
+"下发":"Yes",
+"不下发":"No",
+"关掉后路由器不下发网关":"Off: the router hands out no gateway",
+"已打开。电脑重新插拔网线后生效":"On. Replug the computer's cable for it to take effect",
+"已关闭。电脑重新插拔网线后生效":"Off. Replug the computer's cable for it to take effect",
+"已打开，但未能保存到闪存。电脑重新插拔网线后生效":"On, but not saved to flash. Replug the computer's cable for it to take effect",
+"已关闭，但未能保存到闪存。电脑重新插拔网线后生效":"Off, but not saved to flash. Replug the computer's cable for it to take effect",
+"原厂系统请先整片备份 · ":"Stock firmware: back up the whole flash first · ",
+"去备份":"Back up now",
 "写入 固件…":"Writing firmware…",
 "回读校验 固件…":"Verifying firmware…",
 "文件名里没有机型":"No model in the file name",
@@ -1480,7 +1564,7 @@ var I18N={
 "设备的接口地址":"The device's interface address",
 "电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 ":"With a computer plugged straight into this device, it gets an address on connect and needs no manual IP. The mask is fixed at ",
 "，电脑拿到的是本网段 ":", the computer gets ",
-"，网关指向本设备且不带 DNS。":" on this subnet, and the gateway points at this device with no DNS. ",
+"，不带 DNS。":" on this subnet, with no DNS. ",
 "接入已有网络前不要用这一档":"Do not use this mode on an existing network",
 "：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。":": it answers every request and races that network's router to hand out addresses, knocking whichever machines it wins off the network.",
 "接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。":"Use this mode on an existing network: give it a free address on that subnet. The device stops handing out addresses, and once applied this page opens from any machine on the network.",
@@ -1669,6 +1753,7 @@ var I18N={
 "内存不足，无法分配读取窗口":"Not enough memory for a read window",
 };
 var I18P={
+" 未备份 · ":" not backed up · ",
 "与本机一致":"matches this device",
 "本机是 ":"this device is ",
 "。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置":". Widths are each volume's reserved size, ordered by volume ID. UBI volumes are not contiguous in flash, so this is not a physical layout",
