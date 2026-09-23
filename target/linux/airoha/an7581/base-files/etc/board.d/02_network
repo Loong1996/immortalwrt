@@ -22,15 +22,13 @@ an7581_setup_interfaces()
 		;;
 	nokia,xg-040g-md |\
 	nokia,xg-040g-md-ubi |\
-	nokia,xg-040g-tf-ubi)
+	nokia,xg-040g-tf-ubi |\
+	znxt,zn504xg-d)
 		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
 		;;
 	quantum,q1000k-ubi)
 		# Both copper ports are LAN; the upstream connection is PON.
 		ucidef_set_interface_lan "lan1 lan2"
-		;;
-	znxt,zn504xg-d)
-		ucidef_set_interface_lan "lan1 lan2 lan3 lan4"
 		;;
 	*)
 		echo "Unsupported hardware. Network interfaces not initialized"
