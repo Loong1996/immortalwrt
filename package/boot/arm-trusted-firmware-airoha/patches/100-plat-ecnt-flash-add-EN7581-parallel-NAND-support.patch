@@ -1,0 +1,895 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Loong <1031313955@qq.com>
+Date: Thu, 24 Sep 2026 01:35:43 +0800
+Subject: [PATCH] plat: ecnt: flash: add EN7581 parallel NAND support to BL2
+
+Import the parallel NAND protocol frontend and ID table from
+pbs05/uboot-an758x (tf-a/) and wire them into the build:
+
+- flash.mk: pass -DTCSUPPORT_PARALLEL_NAND -DTCSUPPORT_LITTLE_ENDIAN to
+  BL2 and build the in-tree parallel_nand_flash{,_table}.c instead of the
+  vendor kernel-tree sources (KERNEL_EXT_SPI_NAND_DIR).
+- ecnt_spi_controller.h: include ecnt_spi_nfi.h (spi/spi_nfi.h does not
+  exist in this tree).
+- flashhal/spi_nand_flash: select the parallel protocol from the
+  reset-latched HW trap instead of the live SNF_NFI_CNFG mode bit.
+- spi_nand_flash: pick the NFI spare stride from the physical OOB size so
+  BL2 reads pages written by Linux/U-Boot on 128-byte-OOB chips.
+- W29N02KVSIAF runs the controller at ECC8 (spare 28), as the FiberHome
+  HG5382A stock loader does ("ECC ability:8, NFI spare area size:28"), so
+  BL2 and the BootROM-facing layout match what the stock firmware wrote.
+
+Everything is guarded by TCSUPPORT_PARALLEL_NAND, SPI-NAND builds are
+unchanged.
+---
+ plat/ecnt/common/drivers/flash/flash.mk       |  11 +-
+ plat/ecnt/common/drivers/flash/flashhal.c     |  11 +
+ .../drivers/flash/parallel_nand_flash.c       | 548 ++++++++++++++++++
+ .../drivers/flash/parallel_nand_flash_table.c | 142 +++++
+ .../common/drivers/flash/spi_nand_flash.c     |  36 +-
+ .../ecnt/en7523/include/ecnt_spi_controller.h |   2 +-
+ .../ecnt/en7523/include/ecnt_spi_nand_flash.h |   8 +
+ 7 files changed, 749 insertions(+), 9 deletions(-)
+ create mode 100644 plat/ecnt/common/drivers/flash/parallel_nand_flash.c
+ create mode 100644 plat/ecnt/common/drivers/flash/parallel_nand_flash_table.c
+
+diff --git a/plat/ecnt/common/drivers/flash/flash.mk b/plat/ecnt/common/drivers/flash/flash.mk
+index 0c78ec5..86d86d2 100644
+--- a/plat/ecnt/common/drivers/flash/flash.mk
++++ b/plat/ecnt/common/drivers/flash/flash.mk
+@@ -24,15 +24,14 @@ FLASH_SRCS	+= $(addprefix plat/ecnt/common/drivers/flash/,	\
+ 				spi_nfi.c)
+ 
+ ifneq ($(TCSUPPORT_PARALLEL_NAND),)
+-ifeq ($(TCSUPPORT_ATF_RELEASE),)
+-FLASH_SRCS	+=	$(KERNEL_EXT_SPI_NAND_DIR)/parallel_nand_flash.c	\
+-				$(KERNEL_EXT_SPI_NAND_DIR)/parallel_nand_flash_table.c
+-else
+-FLASH_SRCS	+=	$(addprefix drivers/mtd/chips/,	\
++# EN7581 executes BL21, BL22, and BL23 in little-endian AArch32 state.  The
++# vendor NFI register unions use this definition to place command, address,
++# page-format, DMA, and ECC fields at their hardware bit positions.
++BL2_CFLAGS	+= -DTCSUPPORT_PARALLEL_NAND -DTCSUPPORT_LITTLE_ENDIAN
++FLASH_SRCS	+=	$(addprefix plat/ecnt/common/drivers/flash/,	\
+ 				parallel_nand_flash.c			\
+ 				parallel_nand_flash_table.c)
+ endif
+-endif
+ 
+ ifeq ($(TCSUPPORT_ATF_RELEASE),)
+ FLASH_REBUILD_SRCS += $(KERNEL_EXT_SPI_NAND_DIR)/spi_nand_flash_table.c
+diff --git a/plat/ecnt/common/drivers/flash/flashhal.c b/plat/ecnt/common/drivers/flash/flashhal.c
+index 588b715..196e447 100644
+--- a/plat/ecnt/common/drivers/flash/flashhal.c
++++ b/plat/ecnt/common/drivers/flash/flashhal.c
+@@ -17,6 +17,9 @@
+ #include <ecnt_spi_nand_flash.h>
+ #include <ecnt_spi_controller.h>
+ #include "spi_nor_flash.h"
++#if defined(TCSUPPORT_PARALLEL_NAND)
++#include <ecnt_spi_nfi.h>
++#endif
+ #include <assert.h>
+ #define NANDFLASH_HWTRAP	(mmio_read_32(EN7523_SFC_STRAP) & 0x2)
+ #ifdef TCSUPPORT_EMMC
+@@ -97,10 +100,18 @@ FLASH_INIT_T flash_init(hw_trap_t *hw_trap)
+ {
+ 	hwtrap = hw_trap;
+ #if defined (TCSUPPORT_CPU_EN7581) || defined(TCSUPPORT_CPU_AN7583) || defined (TCSUPPORT_CPU_AN7552)
++#if defined(TCSUPPORT_PARALLEL_NAND)
++	/* The reset-latched source remains authoritative across NFI reconfiguration. */
++	nandflash_set_parallel_mode(hwtrap->is_parallel_nand);
++#endif
+ 	if (hwtrap->is_spi_nand_device_ecc ||
+ 		hwtrap->is_spi_nand_ctrl_ecc ||
+ 		hwtrap->is_parallel_nand) {
+ 		if (nandflash_init(0) != 0) {
++#if defined(TCSUPPORT_PARALLEL_NAND)
++			ERROR("NAND initialization failed: selected=%s\n",
++			      hwtrap->is_parallel_nand ? "parallel" : "spi");
++#endif
+ 			return FLASH_INIT_FAIL;
+ 		}
+ 	}
+diff --git a/plat/ecnt/common/drivers/flash/parallel_nand_flash.c b/plat/ecnt/common/drivers/flash/parallel_nand_flash.c
+new file mode 100644
+index 0000000..077a75a
+--- /dev/null
++++ b/plat/ecnt/common/drivers/flash/parallel_nand_flash.c
+@@ -0,0 +1,548 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/*
++ * Airoha EN75xx parallel NAND protocol frontend
++ *
++ * The NFI register backend in spi_nfi.c is shared with SPI NAND.  Parallel
++ * NAND differs at the wire protocol boundary: commands and row/column address
++ * cycles are issued directly and page data moves through the NFI DMA engine.
++ */
++
++#include <stdint.h>
++#include <string.h>
++
++#include <arch_helpers.h>
++#include <common/debug.h>
++#include <lib/mmio.h>
++
++#include <ecnt_spi_ecc.h>
++#include <ecnt_spi_nand_flash.h>
++#include <ecnt_spi_nfi.h>
++
++#define PNAND_CHIP_COUNT	2
++#define PNAND_ID_LEN		5
++#define PNAND_STATUS_LEN	1
++#define PNAND_COLUMN_CYCLES	2
++#define PNAND_STATUS_FAIL	0x01
++
++#if defined(TCSUPPORT_CPU_EN7581)
++#define EN7581_CHIP_SCU_GPIO_PON_MODE	0x1fa2021c
++#define EN7581_GPIO_PARALLEL_NAND_MODE	(1U << 14)
++#define EN7581_NFI_MODE			0x1fa1155c
++#define EN7581_NFI_SERIAL_MODE		(1U << 2)
++#define EN7581_NFI_CNFG			0x1fa11000
++#define EN7581_NFI_CNFG_OP_MODE		(7U << 12)
++#define EN7581_NFI_CNFG_OP_SINGLE_READ	(2U << 12)
++#define EN7581_NFI_CNFG_AUTO_FMT		(1U << 9)
++#define EN7581_NFI_CNFG_HW_ECC		(1U << 8)
++#define EN7581_NFI_CNFG_BYTE_RW		(1U << 6)
++#define EN7581_NFI_CNFG_ECC_DATA_INV	(1U << 5)
++#define EN7581_NFI_CNFG_DMA_BURST	(1U << 2)
++#define EN7581_NFI_CNFG_READ_MODE	(1U << 1)
++#define EN7581_NFI_CNFG_AHB		(1U << 0)
++#define EN7581_NFI_CON			0x1fa11008
++#define EN7581_NFI_CON_NOB_SHIFT		5
++#define EN7581_NFI_CON_SRD		(1U << 4)
++#define EN7581_NFI_INTR_EN		0x1fa11010
++#define EN7581_NFI_INTR			0x1fa11014
++#define EN7581_NFI_CMD			0x1fa11020
++#define EN7581_NFI_CNRNB			0x1fa11044
++#define EN7581_NFI_DATAR			0x1fa11054
++#define EN7581_NFI_PIO_DIRDY		0x1fa11058
++#define EN7581_NFI_PIO_READY		(1U << 0)
++#define EN7581_NFI_STA			0x1fa11060
++#define EN7581_NFI_STA_CMD		(1U << 0)
++#define EN7581_NFI_RESET			0x00000003
++#define EN7581_NFI_AHB_DONE_INTR		(1U << 6)
++#define EN7581_NFI_FSM_BUSY		0x0000000f
++#define EN7581_NFI_RESET_TIMEOUT		1000000U
++#endif
++
++extern struct SPI_NAND_FLASH_INFO_T _current_flash_info_t;
++extern SPI_NAND_FLASH_RTN_T
++parallel_nand_scan_flash_table(struct SPI_NAND_FLASH_INFO_T *info);
++
++static struct SPI_NAND_FLASH_INFO_T *pnand_info(void)
++{
++	return &_current_flash_info_t;
++}
++
++static void pnand_select_chip(uint8_t chip)
++{
++	PARALLEL_NFI_SET_CHIP_SELECT(chip);
++}
++
++static void pnand_select_page(uint32_t *page)
++{
++	struct SPI_NAND_FLASH_INFO_T *info = pnand_info();
++	uint32_t pages_per_chip;
++	uint8_t chip = 0;
++
++	/* Dual-CE devices split capacity evenly and restart row addressing on CE1. */
++	if (info->feature & PARALLEL_NAND_FLASH_2CE) {
++		pages_per_chip = info->device_size / info->page_size / 2;
++		if (*page >= pages_per_chip) {
++			*page -= pages_per_chip;
++			chip = 1;
++		}
++	}
++
++	pnand_select_chip(chip);
++}
++
++static SPI_NFI_RTN_T pnand_reset_controller(void)
++{
++#if defined(TCSUPPORT_CPU_EN7581)
++	uint32_t timeout = EN7581_NFI_RESET_TIMEOUT;
++
++	/*
++	 * CON resets the FIFO and parallel state machine together.  Waiting for
++	 * the command/address state bits to clear prevents READID from observing
++	 * the reset transaction's data phase.
++	 */
++	mmio_write_32(EN7581_NFI_CON, EN7581_NFI_RESET);
++	while ((mmio_read_32(EN7581_NFI_STA) & EN7581_NFI_FSM_BUSY) && --timeout)
++		;
++	if (!timeout) {
++		ERROR("parallel NAND controller reset timeout: sta=%08x\n",
++		      mmio_read_32(EN7581_NFI_STA));
++		return SPI_NFI_RTN_WAIT_TIMEOUT;
++	}
++
++	/* The second reset edge drains FIFO state left by the completed reset. */
++	mmio_write_32(EN7581_NFI_CON, EN7581_NFI_RESET);
++#else
++	SPI_NFI_Reset();
++#endif
++
++	return SPI_NFI_RTN_NO_ERROR;
++}
++
++static void pnand_hw_init(void)
++{
++
++#if defined(TCSUPPORT_CPU_EN7581)
++	/*
++	 * BL21 performs SoC setup after BootROM has read the first NAND block.
++	 * Restoring the PNAND mux here keeps CLE, ALE, CE, RE, WE, R/B and the
++	 * eight-bit data bus connected to NFI when BL23 begins independent I/O.
++	 */
++	mmio_setbits_32(EN7581_CHIP_SCU_GPIO_PON_MODE,
++			EN7581_GPIO_PARALLEL_NAND_MODE);
++	/* Bit 2 selects the serial frontend sharing this NFI register bank. */
++	mmio_clrbits_32(EN7581_NFI_MODE, EN7581_NFI_SERIAL_MODE);
++
++	/*
++	 * The reset-ready checker uses CNRNB, while page DMA uses AHB_DONE.  Reading
++	 * INTR consumes completion state inherited from BootROM before BL23 starts
++	 * its first NAND transaction.
++	 */
++	mmio_write_32(EN7581_NFI_CNRNB, 0x000000f1);
++	pnand_reset_controller();
++	(void)mmio_read_32(EN7581_NFI_INTR);
++	mmio_write_32(EN7581_NFI_INTR_EN, EN7581_NFI_AHB_DONE_INTR);
++#else
++	pnand_reset_controller();
++	PARALLEL_NFI_INIT();
++#endif
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_transfer(unsigned long *data, uint8_t dir)
++{
++	if (PARALLEL_NFI_START_DMA(data, dir) != SPI_NFI_RTN_NO_ERROR)
++		return SPI_NAND_FLASH_RTN_NFI_FAIL;
++
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_read_bytes(uint8_t len, uint8_t *data)
++{
++#if defined(TCSUPPORT_CPU_EN7581)
++	uint32_t timeout;
++	uint32_t pio;
++	uint8_t remaining = len;
++
++	if (!len || len > 7 || !data)
++		return SPI_NAND_FLASH_RTN_NFI_FAIL;
++
++	/*
++	 * CON still contains the FIFO-reset edge after pnand_reset_controller().
++	 * A full register write starts the short-read state machine with only SRD
++	 * and its byte count asserted, matching the transaction used by U-Boot.
++	 */
++	mmio_write_32(EN7581_NFI_CON,
++		      ((uint32_t)len << EN7581_NFI_CON_NOB_SHIFT) |
++		      EN7581_NFI_CON_SRD);
++
++	while (remaining) {
++		uint32_t value;
++
++		timeout = EN7581_NFI_RESET_TIMEOUT;
++		do {
++			pio = mmio_read_32(EN7581_NFI_PIO_DIRDY);
++		} while (!(pio & EN7581_NFI_PIO_READY) && --timeout);
++		if (!timeout) {
++			ERROR("parallel NAND PIO read timeout: con=%08x sta=%08x\n",
++			      mmio_read_32(EN7581_NFI_CON),
++			      mmio_read_32(EN7581_NFI_STA));
++			mmio_write_32(EN7581_NFI_CON, 0);
++			return SPI_NAND_FLASH_RTN_NFI_FAIL;
++		}
++
++		/*
++		 * Reading DATAR consumes one FIFO byte.  Completing that device access
++		 * before the next PIO_DIRDY poll lets NFI expose the following byte.
++		 */
++		value = mmio_read_32(EN7581_NFI_DATAR);
++		dsb();
++		*data++ = value & 0xff;
++		remaining--;
++	}
++
++	mmio_write_32(EN7581_NFI_CON, 0);
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++#else
++	if (PARALLEL_NFI_START_BYTE_READ(len, data) != SPI_NFI_RTN_NO_ERROR)
++		return SPI_NAND_FLASH_RTN_NFI_FAIL;
++
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++#endif
++}
++
++#if defined(TCSUPPORT_CPU_EN7581)
++static SPI_NFI_RTN_T pnand_issue_short_read_command(uint8_t command)
++{
++	uint32_t config;
++	uint32_t timeout = EN7581_NFI_RESET_TIMEOUT;
++
++	/*
++	 * BL21 and BootROM leave NFI configured for their final transfer.  The
++	 * opening command owns the next transaction, so every short read replaces
++	 * all direction, DMA, formatter, and ECC controls before CMD is asserted.
++	 */
++	config = mmio_read_32(EN7581_NFI_CNFG);
++	config &= ~(EN7581_NFI_CNFG_OP_MODE |
++		    EN7581_NFI_CNFG_AUTO_FMT |
++		    EN7581_NFI_CNFG_HW_ECC |
++		    EN7581_NFI_CNFG_BYTE_RW |
++		    EN7581_NFI_CNFG_ECC_DATA_INV |
++		    EN7581_NFI_CNFG_DMA_BURST |
++		    EN7581_NFI_CNFG_READ_MODE |
++		    EN7581_NFI_CNFG_AHB);
++	config |= EN7581_NFI_CNFG_OP_SINGLE_READ |
++		  EN7581_NFI_CNFG_BYTE_RW |
++		  EN7581_NFI_CNFG_READ_MODE;
++	mmio_write_32(EN7581_NFI_CNFG, config);
++	mmio_write_32(EN7581_NFI_CMD, command);
++
++	while ((mmio_read_32(EN7581_NFI_STA) & EN7581_NFI_STA_CMD) && --timeout)
++		;
++	if (!timeout) {
++		ERROR("parallel NAND command 0x%02x timeout: cnfg=%08x sta=%08x\n",
++		      command, mmio_read_32(EN7581_NFI_CNFG),
++		      mmio_read_32(EN7581_NFI_STA));
++		return SPI_NFI_RTN_WAIT_TIMEOUT;
++	}
++
++	return SPI_NFI_RTN_NO_ERROR;
++}
++#endif
++
++static SPI_NAND_FLASH_RTN_T pnand_send_address(uint32_t column,
++						uint32_t row,
++						uint8_t column_cycles,
++						uint8_t row_cycles)
++{
++	SPI_NFI_RTN_T ret;
++
++	/* EN7581 latches column, row and both cycle counts as one address phase. */
++	ret = PARALLEL_NFI_ISSUE_ADDR(column, row, column_cycles, row_cycles);
++	if (ret == SPI_NFI_RTN_ACCESS_LOCK)
++		return SPI_NAND_FLASH_RTN_CMD_ABORT;
++	if (ret != SPI_NFI_RTN_NO_ERROR)
++		return SPI_NAND_FLASH_RTN_NFI_FAIL;
++
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_send_command(uint8_t command)
++{
++	SPI_NFI_RTN_T ret = SPI_NFI_RTN_NO_ERROR;
++
++	switch (command) {
++	case NAND_CMD_READID:
++	case NAND_CMD_STATUS:
++	case NAND_CMD_ERASE1:
++		/* A new transaction starts after clearing command, address, DMA, and IRQ state. */
++		ret = pnand_reset_controller();
++		if (ret != SPI_NFI_RTN_NO_ERROR)
++			break;
++		/* fall through */
++	case NAND_CMD_READ:
++	case NAND_CMD_SEQIN:
++#if defined(TCSUPPORT_CPU_EN7581)
++		if (command == NAND_CMD_READID || command == NAND_CMD_STATUS)
++			ret = pnand_issue_short_read_command(command);
++		else
++			PARALLEL_NFI_ISSUE_CMD_1(command);
++#else
++		PARALLEL_NFI_ISSUE_CMD_1(command);
++#endif
++		break;
++	case NAND_CMD_RESET:
++	case NAND_CMD_ERASE2:
++	case NAND_CMD_PAGEPROG:
++	case NAND_CMD_READSTART:
++		ret = PARALLEL_NFI_ISSUE_CMD_2(command);
++		break;
++	default:
++		ERROR("parallel NAND: unsupported command 0x%x\n", command);
++		return SPI_NAND_FLASH_RTN_NFI_FAIL;
++	}
++
++	return ret == SPI_NFI_RTN_NO_ERROR ? SPI_NAND_FLASH_RTN_NO_ERROR :
++						  SPI_NAND_FLASH_RTN_NFI_FAIL;
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_read_page(uint32_t column, uint32_t page,
++					     unsigned long *data)
++{
++	SPI_NAND_FLASH_RTN_T ret;
++
++	ret = pnand_send_command(NAND_CMD_READ);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_send_address(column, page, PNAND_COLUMN_CYCLES,
++				  pnand_info()->addr_cycle - PNAND_COLUMN_CYCLES);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_send_command(NAND_CMD_READSTART);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	return pnand_transfer(data, SPI_NFI_READ_DATA);
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_program_page(uint32_t column,
++						uint32_t page,
++						unsigned long *data)
++{
++	SPI_NAND_FLASH_RTN_T ret;
++
++	ret = pnand_send_command(NAND_CMD_SEQIN);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_send_address(column, page, PNAND_COLUMN_CYCLES,
++				  pnand_info()->addr_cycle - PNAND_COLUMN_CYCLES);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_transfer(data, SPI_NFI_WRITE_DATA);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	return pnand_send_command(NAND_CMD_PAGEPROG);
++}
++
++SPI_NAND_FLASH_RTN_T parallel_nand_protocol_get_status(uint8_t *status)
++{
++	uint8_t value[8] = { 0 };
++	SPI_NAND_FLASH_RTN_T ret;
++
++	ret = pnand_send_command(NAND_CMD_STATUS);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_read_bytes(PNAND_STATUS_LEN, value);
++	if (ret == SPI_NAND_FLASH_RTN_NO_ERROR)
++		*status = value[0];
++
++	return ret;
++}
++
++static SPI_NAND_FLASH_RTN_T pnand_erase_block(uint32_t page)
++{
++	SPI_NAND_FLASH_RTN_T ret;
++
++	ret = pnand_send_command(NAND_CMD_ERASE1);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	ret = pnand_send_address(0, page, 0,
++				  pnand_info()->addr_cycle - PNAND_COLUMN_CYCLES);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		return ret;
++
++	return pnand_send_command(NAND_CMD_ERASE2);
++}
++
++static SPI_NAND_FLASH_RTN_T
++pnand_read_id(struct SPI_NAND_FLASH_INFO_T *id)
++{
++	uint8_t value[8] = { 0 };
++	SPI_NAND_FLASH_RTN_T ret;
++
++	ret = pnand_send_command(NAND_CMD_READID);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR) {
++		ERROR("parallel NAND READID command failed: status=%d\n", ret);
++		return ret;
++	}
++
++	ret = pnand_send_address(0, 0, 1, 0);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR) {
++		ERROR("parallel NAND READID address failed: status=%d\n", ret);
++		return ret;
++	}
++
++	ret = pnand_read_bytes(PNAND_ID_LEN, value);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR) {
++		ERROR("parallel NAND READID data failed: status=%d\n", ret);
++		return ret;
++	}
++
++	id->mfr_id = value[0];
++	id->dev_id = value[1];
++	id->ext_id = value[2] | (value[3] << 8) | (value[4] << 16);
++
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++}
++
++SPI_NAND_FLASH_RTN_T parallel_nand_protocol_reset(void)
++{
++	return pnand_send_command(NAND_CMD_RESET);
++}
++
++SPI_NAND_FLASH_RTN_T
++parallel_nand_probe(struct SPI_NAND_FLASH_INFO_T *result)
++{
++	struct SPI_NAND_FLASH_INFO_T detected[PNAND_CHIP_COUNT];
++	SPI_NAND_FLASH_RTN_T ret = SPI_NAND_FLASH_RTN_PROBE_ERROR;
++	unsigned int chip;
++
++	memset(detected, 0, sizeof(detected));
++	pnand_hw_init();
++
++	for (chip = 0; chip < PNAND_CHIP_COUNT; chip++) {
++		pnand_select_chip(chip);
++		ret = parallel_nand_protocol_reset();
++		if (ret != SPI_NAND_FLASH_RTN_NO_ERROR) {
++			ERROR("parallel NAND CE%u reset failed: status=%d\n",
++			      chip, ret);
++			continue;
++		}
++		ret = pnand_read_id(&detected[chip]);
++		if (ret == SPI_NAND_FLASH_RTN_NO_ERROR &&
++		    detected[chip].mfr_id != 0 && detected[chip].mfr_id != 0xff &&
++		    detected[chip].dev_id != 0 && detected[chip].dev_id != 0xff &&
++		    detected[chip].ext_id != 0 && detected[chip].ext_id != 0xffffff)
++			break;
++	}
++
++	if (chip == PNAND_CHIP_COUNT) {
++		ERROR("parallel NAND probe exhausted all chip selects\n");
++		return SPI_NAND_FLASH_RTN_PROBE_ERROR;
++	}
++
++	memcpy(result, &detected[chip], sizeof(*result));
++	ret = parallel_nand_scan_flash_table(result);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR) {
++		ERROR("parallel NAND: unsupported ID %02x:%02x:%06x\n",
++		      detected[chip].mfr_id, detected[chip].dev_id,
++		      detected[chip].ext_id);
++		return ret;
++	}
++
++	if (result->soc_ecc_ability < result->min_ecc_req) {
++		ERROR("parallel NAND: ECC%d is below device requirement ECC%d\n",
++		      result->soc_ecc_ability, result->min_ecc_req);
++		return SPI_NAND_FLASH_RTN_PROBE_ERROR;
++	}
++
++	NOTICE("Parallel NAND: %s, ID %02x:%02x:%06x, page %u, erase %u, ECC%u/512\n",
++	       result->ptr_name, result->mfr_id, result->dev_id, result->ext_id,
++	       result->page_size, result->erase_size, result->soc_ecc_ability);
++
++	return SPI_NAND_FLASH_RTN_NO_ERROR;
++}
++
++SPI_NAND_FLASH_RTN_T parallel_nand_dma_read(uint32_t column,
++					     uint32_t page,
++					     unsigned long *data)
++{
++	uint32_t requested_page = page;
++	SPI_NAND_FLASH_RTN_T ret;
++
++	pnand_select_page(&page);
++	ret = pnand_read_page(column, page, data);
++	if (ret != SPI_NAND_FLASH_RTN_NO_ERROR)
++		ERROR("parallel NAND page read failed: requested-page=0x%x "
++		      "selected-page=0x%x column=0x%x status=%d\n",
++		      requested_page, page, column, ret);
++	return ret;
++}
++
++SPI_NAND_FLASH_RTN_T parallel_nand_dma_write(uint32_t column,
++					      uint32_t page,
++					      unsigned long *data,
++					      uint32_t oob_len,
++					      uint8_t *oob)
++{
++	SPI_ECC_ENCODE_CONF_T ecc;
++	SPI_NFI_CONF_T nfi;
++	SPI_NAND_FLASH_RTN_T ret;
++	uint8_t status;
++
++	/*
++	 * Program operations must restart the encoder for every page.  Auto-FDM
++	 * copies the logical OOB bytes into FDM registers before DMA consumes them.
++	 */
++	SPI_NFI_Reset();
++	SPI_NFI_Get_Configure(&nfi);
++	SPI_NFI_Set_Configure(&nfi);
++	SPI_ECC_Encode_Get_Configure(&ecc);
++	SPI_ECC_Encode_Set_Configure(&ecc);
++
++	if (nfi.hw_ecc_t == SPI_NFI_CON_HW_ECC_Enable &&
++	    ecc.encode_en == SPI_ECC_ENCODE_ENABLE) {
++		ecc.encode_block_size = nfi.fdm_ecc_num + 512;
++		SPI_ECC_Encode_Set_Configure(&ecc);
++		SPI_ECC_Encode_Disable();
++		SPI_ECC_Decode_Disable();
++		SPI_ECC_Encode_Enable();
++	}
++
++	if (nfi.auto_fdm_t == SPI_NFI_CON_AUTO_FDM_Enable)
++		SPI_NFI_Write_SPI_NAND_FDM(oob, oob_len);
++
++	pnand_select_page(&page);
++	ret = pnand_program_page(column, page, data);
++	if (ret == SPI_NAND_FLASH_RTN_NO_ERROR)
++		ret = parallel_nand_protocol_get_status(&status);
++	if (ret == SPI_NAND_FLASH_RTN_NO_ERROR && (status & PNAND_STATUS_FAIL))
++		ret = SPI_NAND_FLASH_RTN_PROGRAM_FAIL;
++
++	/* Access protection reports a transaction that left the media unchanged. */
++	if (ret == SPI_NAND_FLASH_RTN_CMD_ABORT)
++		ret = SPI_NAND_FLASH_RTN_NO_ERROR;
++
++	return ret;
++}
++
++SPI_NAND_FLASH_RTN_T parallel_nand_erase(uint32_t page)
++{
++	SPI_NAND_FLASH_RTN_T ret;
++	uint8_t status;
++
++	pnand_select_page(&page);
++	ret = pnand_erase_block(page);
++	if (ret == SPI_NAND_FLASH_RTN_NO_ERROR)
++		ret = parallel_nand_protocol_get_status(&status);
++	if (ret == SPI_NAND_FLASH_RTN_NO_ERROR && (status & PNAND_STATUS_FAIL))
++		ret = SPI_NAND_FLASH_RTN_ERASE_FAIL;
++	if (ret == SPI_NAND_FLASH_RTN_CMD_ABORT)
++		ret = SPI_NAND_FLASH_RTN_NO_ERROR;
++
++	return ret;
++}
+diff --git a/plat/ecnt/common/drivers/flash/parallel_nand_flash_table.c b/plat/ecnt/common/drivers/flash/parallel_nand_flash_table.c
+new file mode 100644
+index 0000000..7b5c930
+--- /dev/null
++++ b/plat/ecnt/common/drivers/flash/parallel_nand_flash_table.c
+@@ -0,0 +1,142 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Airoha EN75xx parallel NAND identification table. */
++
++#include <stdint.h>
++#include <string.h>
++
++#include <ecnt_spi_nand_flash.h>
++
++#define PNAND_ID(_mfr, _dev, _name, _size, _page, _erase, _oob, _feature, \
++		  _ext, _timing, _required_ecc, _cycles, _controller_ecc) { \
++	.mfr_id = (_mfr), \
++	.dev_id = (_dev), \
++	.ptr_name = (const uint8_t *)(_name), \
++	.device_size = (_size), \
++	.page_size = (_page), \
++	.erase_size = (_erase), \
++	.oob_size = (_oob), \
++	.oob_free_layout = &ooblayout_spi_controller_ecc, \
++	.feature = (_feature), \
++	.ext_id = (_ext), \
++	.timing_setting = (_timing), \
++	.min_ecc_req = (_required_ecc), \
++	.addr_cycle = (_cycles), \
++	.soc_ecc_ability = (_controller_ecc), \
++}
++
++static const struct SPI_NAND_FLASH_INFO_T parallel_nand_flash_table[] = {
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MXIC, 0xf1, "MX30LF1G18AC",
++		  _SPI_NAND_CHIP_SIZE_1GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x029580, PARALLEL_NAND_FLASH_TIMING, 4, 4, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MXIC, 0xda, "MX30LF2G18AC",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x069590, PARALLEL_NAND_FLASH_TIMING, 4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MXIC, 0xf1, "MX30LF1G08AA",
++		  _SPI_NAND_CHIP_SIZE_1GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0xc21d80,
++		  PARALLEL_NAND_FLASH_TIMING, 1, 4, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_ESMT, 0xda, "F59L2G81A",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x449590, PARALLEL_NAND_FLASH_TIMING, 4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_ESMT, 0xdc, "F59L4G81A",
++		  _SPI_NAND_CHIP_SIZE_4GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x549590, PARALLEL_NAND_FLASH_TIMING, 4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_WINBOND, 0xdc, "W29N08GVSIAD",
++		  _SPI_NAND_CHIP_SIZE_8GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  PARALLEL_NAND_FLASH_2CE, 0x549590, PARALLEL_NAND_FLASH_TIMING, 1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_WINBOND, 0xd3, "W29N08GVSIAA",
++		  _SPI_NAND_CHIP_SIZE_8GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x589591, PARALLEL_NAND_FLASH_TIMING, 1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_WINBOND, 0xda, "W29N02KVSIAF",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x069510, PARALLEL_NAND_FLASH_TIMING, 4, 5, 8),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_WINBOND, 0xda, "W29N02KVSIAE",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x079510, PARALLEL_NAND_FLASH_TIMING, 8, 5, 8),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_WINBOND, 0xda, "W29N02GV",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x049590, PARALLEL_NAND_FLASH_TIMING,
++		  1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xda,
++		  "S34ML02G300TFI00", _SPI_NAND_CHIP_SIZE_2GBIT,
++		  _SPI_NAND_PAGE_SIZE_2KBYTE, _SPI_NAND_BLOCK_SIZE_128KBYTE,
++		  _SPI_NAND_OOB_SIZE_128BYTE, SPI_NAND_FLASH_FEATURE_NONE,
++		  0x469500, 0x44333, 1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xf1, "S34ML01G1",
++		  _SPI_NAND_CHIP_SIZE_1GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x1d00, PARALLEL_NAND_FLASH_TIMING,
++		  1, 4, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xda, "S34ML02G1",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x449590, PARALLEL_NAND_FLASH_TIMING,
++		  1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xdc, "S34ML04G1",
++		  _SPI_NAND_CHIP_SIZE_4GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x549590, PARALLEL_NAND_FLASH_TIMING,
++		  1, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xda, "S34ML02G2",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x469590, PARALLEL_NAND_FLASH_TIMING,
++		  4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_SKYHIGH, 0xda, "S34ML02G2 (alt ID)",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x909546, PARALLEL_NAND_FLASH_TIMING,
++		  4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MICRON, 0xf1, "MT29F01G08ABAEA",
++		  _SPI_NAND_CHIP_SIZE_1GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_64BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x049580, PARALLEL_NAND_FLASH_TIMING, 4, 5, 4),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MICRON, 0xda, "MT29F02G08ABAGA",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x069590, PARALLEL_NAND_FLASH_TIMING, 8, 5, 12),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_MICRON, 0xd3, "MT29F08G08ABACA",
++		  _SPI_NAND_CHIP_SIZE_8GBIT, _SPI_NAND_PAGE_SIZE_4KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_256KBYTE, 0xe0,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x64a690, PARALLEL_NAND_FLASH_TIMING, 8, 5, 12),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_TOSHIBA, 0xd3, "TC58NVG4S0HTA20",
++		  _SPI_NAND_CHIP_SIZE_16GBIT, _SPI_NAND_PAGE_SIZE_4KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_256KBYTE, _SPI_NAND_OOB_SIZE_256BYTE,
++		  PARALLEL_NAND_FLASH_2CE, 0x762691, PARALLEL_NAND_FLASH_TIMING, 8, 5, 12),
++	PNAND_ID(_SPI_NAND_MANUFACTURER_ID_TOSHIBA, 0xda, "TC58NVG1S3HTAI0",
++		  _SPI_NAND_CHIP_SIZE_2GBIT, _SPI_NAND_PAGE_SIZE_2KBYTE,
++		  _SPI_NAND_BLOCK_SIZE_128KBYTE, _SPI_NAND_OOB_SIZE_128BYTE,
++		  SPI_NAND_FLASH_FEATURE_NONE, 0x761590, PARALLEL_NAND_FLASH_TIMING, 8, 5, 8),
++};
++
++SPI_NAND_FLASH_RTN_T
++parallel_nand_scan_flash_table(struct SPI_NAND_FLASH_INFO_T *result)
++{
++	unsigned int i;
++
++	for (i = 0; i < sizeof(parallel_nand_flash_table) /
++			    sizeof(parallel_nand_flash_table[0]); i++) {
++		const struct SPI_NAND_FLASH_INFO_T *entry =
++			&parallel_nand_flash_table[i];
++
++		/* Extended ID selects the exact geometry among devices sharing two bytes. */
++		if (result->mfr_id == entry->mfr_id &&
++		    result->dev_id == entry->dev_id &&
++		    result->ext_id == entry->ext_id) {
++			memcpy(result, entry, sizeof(*result));
++			return SPI_NAND_FLASH_RTN_NO_ERROR;
++		}
++	}
++
++	return SPI_NAND_FLASH_RTN_PROBE_ERROR;
++}
+diff --git a/plat/ecnt/common/drivers/flash/spi_nand_flash.c b/plat/ecnt/common/drivers/flash/spi_nand_flash.c
+index 04651ea..13b2a65 100644
+--- a/plat/ecnt/common/drivers/flash/spi_nand_flash.c
++++ b/plat/ecnt/common/drivers/flash/spi_nand_flash.c
+@@ -516,6 +516,14 @@ unsigned char _die_id = 0;
+ struct SPI_NAND_FLASH_INFO_T	_current_flash_info_t;			/* Store the current flash information */
+ 
+ unsigned char _parallel_nand_mode = 0;
++#if defined(TCSUPPORT_PARALLEL_NAND)
++void nandflash_set_parallel_mode(u8 enable)
++{
++	/* Probe and all later transfers share this reset-latched protocol state. */
++	_parallel_nand_mode = !!enable;
++}
++#endif
++
+ SPI_NAND_FLASH_RTN_T (*nand_probe)( struct SPI_NAND_FLASH_INFO_T *ptr_rtn_device_t ) = NULL;
+ SPI_NAND_FLASH_RTN_T (*arht_nand_reset)(void) = NULL;
+ 
+@@ -4728,15 +4736,17 @@ static int nand_probe_init(void)
+ 	}
+ #endif
+ #if defined(TCSUPPORT_PARALLEL_NAND)
+-	if (isParallelNAND)
++	if (_parallel_nand_mode)
+ 	{
+-		_parallel_nand_mode = 1;
+ 		nand_probe = parallel_nand_probe;
+ 		arht_nand_reset = parallel_nand_protocol_reset;
+ 	}
+ 	else
+ #endif
+ 	{
++#if defined(TCSUPPORT_PARALLEL_NAND)
++		_parallel_nand_mode = 0;
++#endif
+ 		nand_probe = spi_nand_probe;
+ 		arht_nand_reset = spi_nand_protocol_reset;
+ 	}
+@@ -4976,6 +4986,28 @@ SPI_NAND_FLASH_RTN_T SPI_NAND_Flash_Init(u32 rom_base)
+ 						_SPI_NAND_PRINTF("Error, unknow flash oob size:%u.\n", _current_flash_info_t.soc_ecc_ability);
+ 						return -1;
+ 				}
++#if defined(TCSUPPORT_PARALLEL_NAND)
++				/*
++				 * Parallel NAND stores one formatted spare area after every
++				 * 512-byte sector.  Its physical OOB geometry therefore selects
++				 * the NFI sector stride independently from BCH strength.  Keeping
++				 * this choice equal to Linux and U-Boot lets BL2 read their UBI
++				 * pages on ECC4 devices with 128-byte OOB.
++				 */
++				if (_parallel_nand_mode) {
++					u32 spare_per_sector =
++						_current_flash_info_t.oob_size / sec_num;
++
++					if (spare_per_sector >= 28)
++						spare_size_t = SPI_NFI_CONF_SPARE_SIZE_28BYTE;
++					else if (spare_per_sector >= 27)
++						spare_size_t = SPI_NFI_CONF_SPARE_SIZE_27BYTE;
++					else if (spare_per_sector >= 26)
++						spare_size_t = SPI_NFI_CONF_SPARE_SIZE_26BYTE;
++					else
++						spare_size_t = SPI_NFI_CONF_SPARE_SIZE_16BYTE;
++				}
++#endif
+ 			} else {
+ 				/* en7526c */
+ 				spare_size_t		= SPI_NFI_CONF_SPARE_SIZE_16BYTE;
+diff --git a/plat/ecnt/en7523/include/ecnt_spi_controller.h b/plat/ecnt/en7523/include/ecnt_spi_controller.h
+index a0fc080..71d9078 100644
+--- a/plat/ecnt/en7523/include/ecnt_spi_controller.h
++++ b/plat/ecnt/en7523/include/ecnt_spi_controller.h
+@@ -78,7 +78,7 @@
+ #define	_SPI_CONTROLLER_VAL_OP_ODNID				(0x1A)
+ 
+ #if defined(TCSUPPORT_PARALLEL_NAND)
+-#include <spi/spi_nfi.h>
++#include <ecnt_spi_nfi.h>
+ #define isParallelNAND				((nfi_type() == SPI_NFI_PARALLEL))
+ #else
+ #define isParallelNAND				0
+diff --git a/plat/ecnt/en7523/include/ecnt_spi_nand_flash.h b/plat/ecnt/en7523/include/ecnt_spi_nand_flash.h
+index a2de683..f8457c6 100644
+--- a/plat/ecnt/en7523/include/ecnt_spi_nand_flash.h
++++ b/plat/ecnt/en7523/include/ecnt_spi_nand_flash.h
+@@ -529,6 +529,14 @@ typedef struct
+  */
+ SPI_NAND_FLASH_RTN_T SPI_NAND_Flash_Init( u32   rom_base );
+ 
++#if defined(TCSUPPORT_PARALLEL_NAND)
++/*
++ * The reset-latched HW trap provides a stable protocol choice across
++ * BL21/BL22 updates to the live SNF_NFI_CNFG mode bits.
++ */
++void nandflash_set_parallel_mode(u8 enable);
++#endif
++
+ /*------------------------------------------------------------------------------------
+  * FUNCTION: SPI_NAND_FLASH_RTN_T SPI_NAND_Flash_Get_Flash_Info( struct SPI_NAND_FLASH_INFO_T    *ptr_rtn_into_t )
+  * PURPOSE : To get system current flash info.

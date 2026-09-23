@@ -1,0 +1,67 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Loong <1031313955@qq.com>
+Date: Thu, 24 Sep 2026 09:30:00 +0800
+Subject: [PATCH] plat: ecnt: bl2: room for a larger BL33 on parallel NAND
+
+BL2 loads the LZMA-compressed BL33 into EN7523_IMAGE_BUF (0x58000) and
+unpacks it below BL33_LIMIT (1 MiB).  The compressed image and the LZMA
+decoder's ~16 KiB of probabilities share that buffer, so U-Boot has to
+stay under about 344 KiB packed and 1 MiB unpacked.  With the raw NAND
+stack the FiberHome HG5382A U-Boot is over both, and BL2 stops with
+
+  ERROR:   BL2: Failed to load image id 5 (-27)
+
+(-EFBIG from load_image(), whose size check the pre-image-load hook
+points at the decompression buffer).
+
+For the parallel NAND BL2 only, widen the buffer to 0x80000 and let BL33
+unpack up to 2 MiB.  The buffer still ends at 0x81900000, far below
+BL33_BASE; up to 0x82000000 nothing else is in use while BL2 runs.
+SPI-NAND builds are unchanged, so their limits still match the BL2s
+already out in the field.
+---
+ plat/ecnt/en7523/include/platform_def.h | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/plat/ecnt/en7523/include/platform_def.h b/plat/ecnt/en7523/include/platform_def.h
+--- a/plat/ecnt/en7523/include/platform_def.h
++++ b/plat/ecnt/en7523/include/platform_def.h
+@@ -177,7 +177,16 @@
+ #define TZRAM2_LIMIT		(TZRAM2_BASE + TZRAM2_SIZE)
+ 
+ #define	BL33_BASE			(EN7523_MEM_BASE + UL(0x1E00000))
++#if defined(TCSUPPORT_PARALLEL_NAND)
++/*
++ * U-Boot with the raw NAND stack unpacks to more than 1 MiB.  Nothing else
++ * lives up to 0x82000000 while BL2 runs; U-Boot's own early stack sits there
++ * afterwards anyway.
++ */
++#define BL33_LIMIT			(BL33_BASE + UL(0x200000))
++#else
+ #define BL33_LIMIT			(BL33_BASE + UL(0x100000))
++#endif
+ 
+ #ifdef TCSUPPORT_OPTEE
+ //#define BL32_BASE           (BL31_LIMIT + UL(0x1000))
+@@ -216,9 +225,18 @@
+ #else
+ #define EN7523_IMAGE_BUF_OFFSET		(PLAT_ECNT_FIP_BASE + UL(0x80000))
+ #endif
++#if defined(TCSUPPORT_PARALLEL_NAND)
++/*
++ * Holds the LZMA BL33 as read from the FIP plus the decoder's ~16 KiB of
++ * state; 0x58000 leaves no room for the parallel NAND U-Boot.  The buffer
++ * still ends far below BL33_BASE.
++ */
++#define EN7523_IMAGE_BUF_SIZE		UL(0x80000)
++#else
+ #define EN7523_IMAGE_BUF_SIZE		UL(0x58000)
+ #endif
+ #endif
++#endif
+ 
+ #ifdef TCSUPPORT_BL2_OPTIMIZATION
+ #ifdef IMAGE_BL21
+-- 
+2.43.0
+
