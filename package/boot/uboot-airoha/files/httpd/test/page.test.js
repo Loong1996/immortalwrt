@@ -807,6 +807,48 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     ok('按钮也放开了', !$(w, '#logb').disabled);
   }
 
+  console.log('\n--- 串口日志原样显示，英文界面也不翻 ---');
+  {
+    const w = await boot(null, 'en-US');
+    $(w, '.nav[data-p=p8]').click();
+    $(w, '#logtab').click();
+    await sleep(600);
+    ok('读到的日志就是串口原文', /probing by address aliasing/.test(txt(w, '#log')));
+    ok('日志框标成原样', $(w, '#log').hasAttribute('data-raw'));
+
+    /* 串口上万一有中文（用户自己的菜单标题之类），照原样摆着 */
+    const raw = 'bootmenu_1=启动 固件\nhttpd: 写入 固件 回读校验\n';
+    w.logset(raw, 1);
+    await sleep(50);
+    ok('整段设进去不被翻', txt(w, '#log') === raw, txt(w, '#log'));
+    $(w, '#log').textContent += '追加 固件\n';
+    await sleep(50);
+    ok('跟随追加的也不被翻', txt(w, '#log') === raw + '追加 固件\n', txt(w, '#log'));
+    w.setlang('zh'); w.setlang('en');
+    ok('来回切语言也不动它', txt(w, '#log') === raw + '追加 固件\n', txt(w, '#log'));
+
+    /* 页面自己的话还是跟着语言走 */
+    w.logset('读取失败（500）', 0);
+    await sleep(50);
+    ok('读取失败是英文', !/[一-鿿]/.test(txt(w, '#log')), txt(w, '#log'));
+    ok('这时不标原样', !$(w, '#log').hasAttribute('data-raw'));
+  }
+
+  console.log('\n--- 英文界面的写入进度 ---');
+  {
+    const w = await boot(null, 'en-US');
+    $(w, '.nav[data-p=p1]').click();
+    const i = $(w, '#p1 input[name=firmware]');
+    Object.defineProperty(i, 'files', {
+      value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
+    w.send();
+    await sleep(3000);
+    ok('写入固件那步是英文', txt(w, '#p1 .pwhat') === 'Writing firmware…',
+       txt(w, '#p1 .pwhat'));
+    ok('回读校验固件有英文', w.i18s('回读校验 固件…') === 'Verifying firmware…');
+    await sleep(7000);
+  }
+
   console.log('\n--- 上传时报速率与剩余时间 ---');
   {
     const w = await boot();

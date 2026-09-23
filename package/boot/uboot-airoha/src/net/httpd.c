@@ -67,6 +67,7 @@
 #include <time.h>
 #include <ubi_uboot.h>
 #include <linux/kernel.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/libfdt.h>
 #include <linux/mtd/mtd.h>
@@ -1424,7 +1425,7 @@ static const char resp_form[] =
 	"function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;\n"
 	"var on=$('#logf').checked;$('#logb').disabled=on;\n"
 	"if(!on)return;\n"
-	"LOGN=0;$('#log').textContent='';logtick()}\n"
+	"LOGN=0;logset('',1);logtick()}\n"
 	"function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;\n"
 	"get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;\n"
 	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
@@ -1491,10 +1492,18 @@ static const char resp_form[] =
 	"$('#scan').innerHTML=h;\n"
 	"$('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'\n"
 	":s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}\n"
+	"/*\n"
+	"* 日志是串口的原样拷贝：TTL 上是什么这里就是什么，英文界面也不去翻它。\n"
+	"* 只有「正在读取」「读取失败」这种页面自己的话才跟着语言走。\n"
+	"*/\n"
+	"function logset(t,raw){var l=$('#log');\n"
+	"if(raw)l.setAttribute('data-raw','');else l.removeAttribute('data-raw');\n"
+	"l.textContent=t;return l}\n"
 	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;\n"
-	"if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');l.textContent='正在读取…'}get('/log',func"
-		"tion(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replac"
-		"e(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
+	"if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');logset('正在读取…',0)}get('/log',function"
+		"(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';if(st==200)logset(txt.replace(/\\x1b\\"
+		"[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,''),1);else"
+		" logset('读取失败（'+st+'）',0);l.scrollTop=l.scrollHeight})}\n"
 	"function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.styl"
 		"e.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.ex"
 		"ecCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator."
@@ -1539,8 +1548,8 @@ static const char resp_form[] =
 	"get('/env',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 	"if(r&&r.env){ENV=r;envfill();bmfill()}fin()})};\n"
 	"if($('#log').textContent.length>20)return step2();\n"
-	"get('/log',function(st,t){if(st==200)$('#log').textContent=t.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'"
-		"').replace(/\\r/g,'');step2()})}\n"
+	"get('/log',function(st,t){if(st==200)logset(t.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/"
+		"g,''),1);step2()})}\n"
 	"/* 存文件全在浏览器里完成，设备不参与 */\n"
 	"function save(name,text){try{\n"
 	"var b=new Blob([text],{type:'text/plain;charset=utf-8'}),\n"
@@ -1813,6 +1822,8 @@ static const char resp_form[] =
 	"*/\n"
 	"/* i18n-dict begin */\n"
 	"var I18N={\n"
+	"\"写入 固件…\":\"Writing firmware…\",\n"
+	"\"回读校验 固件…\":\"Verifying firmware…\",\n"
 	"\"文件名里没有机型\":\"No model in the file name\",\n"
 	"\"应为 .itb 文件\":\"Expected a .itb file\",\n"
 	"\"应为 .bin 文件\":\"Expected a .bin file\",\n"
@@ -2417,7 +2428,6 @@ static const char resp_form[] =
 	"\"挂载 UBI 失败，详见串口日志\":\"Mounting UBI failed — see the serial log\",\n"
 	"\"重建 UBI 失败，详见串口日志\":\"Rebuilding UBI failed — see the serial log\",\n"
 	"\"内存不足以分配接收环，至少需要 \":\"Not enough memory for the receive ring; at least \",\n"
-	"\"[日志缓冲已满，后续输出未记录]\":\"[log buffer full; later output not recorded]\",\n"
 	"\"正在写入闪存，这一项要等写完再改\":\"Flash is being written; this one has to wait until the write is done\",\n"
 	"\" 字节。固件不完整，请重新上传\":\" bytes. The firmware is incomplete — upload it again\",\n"
 	"\"本机开始发地址：电脑将拿到 \":\"This device starts handing out addresses; the computer will get \",\n"
@@ -2635,12 +2645,16 @@ static const char resp_form[] =
 	"I18A.forEach(function(a){var k='zh0_'+a;\n"
 	"if(n[k]!==undefined){n.setAttribute(a,n[k]);n[k]=undefined}});\n"
 	"for(c=n.firstChild;c;c=c.nextSibling)i18off(c)}\n"
+	"/* 插进来的是文本节点时 i18on 看不到它的父元素，data-raw 得往上找 */\n"
+	"function i18inraw(n){for(n=n.parentNode;n&&n.nodeType==1;n=n.parentNode)\n"
+	"if(i18skip(n))return true;return false}\n"
 	"var I18OB=window.MutationObserver?new MutationObserver(function(rs){\n"
 	"if(!I18ON)return;var i,j,r;\n"
 	"for(i=0;i<rs.length;i++){r=rs[i];\n"
-	"if(r.type=='characterData')i18text(r.target);\n"
+	"if(r.type=='characterData'){if(!i18inraw(r.target))i18text(r.target)}\n"
 	"else if(r.type=='attributes')i18attr(r.target,r.attributeName);\n"
-	"else for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;\n"
+	"else if(!i18inraw(r.addedNodes[0]||r.target))\n"
+	"for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;\n"
 	"function setlang(l){\n"
 	"$$('.lg button').forEach(function(b){\n"
 	"b.setAttribute('aria-checked',b.getAttribute('data-g')==l?'true':'false')});\n"
@@ -3234,7 +3248,9 @@ static void httpd_tick_stop(void)
 #define DHCP_DISCOVER		1
 #define DHCP_OFFER		2
 #define DHCP_REQUEST		3
+#define DHCP_DECLINE		4
 #define DHCP_ACK		5
+#define DHCP_NAK		6
 #define DHCP_MIN_LEN		240
 #define DHCP_LEASE_SECS		3600
 /*
@@ -3321,12 +3337,19 @@ static struct in_addr dhcp_client_ip(void)
 	return ip;
 }
 
-static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
+/*
+ * The value of option @want if it is there and exactly @wlen bytes long, else
+ * NULL.  Both tests matter on a malformed packet: a truncated option would
+ * read the value from past the end of what arrived, and a wrong length means
+ * this is not the option it claims to be.
+ */
+static const u8 *dhcp_opt(const struct dhcp_msg *m, unsigned int len,
+			  u8 want, u8 wlen)
 {
 	unsigned int i, max;
 
 	if (len <= DHCP_MIN_LEN)
-		return 0;
+		return NULL;
 
 	max = len - DHCP_MIN_LEN;
 	if (max > sizeof(m->opts))
@@ -3342,22 +3365,35 @@ static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
 		}
 		if (tag == 255)			/* end */
 			break;
-		/*
-		 * Option 53 carries exactly one byte.  Both tests matter on a
-		 * malformed packet: a truncated option would read the value
-		 * from past the end of what arrived, and a wrong length means
-		 * this is not the option it claims to be.
-		 */
-		if (tag == 53) {
-			if (olen != 1 || i + 2 >= max)
-				return 0;
+		if (tag == want) {
+			if (olen != wlen || i + 2 + olen > max)
+				return NULL;
 
-			return m->opts[i + 2];
+			return &m->opts[i + 2];
 		}
 		i += 2 + olen;
 	}
 
-	return 0;
+	return NULL;
+}
+
+static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
+{
+	const u8 *t = dhcp_opt(m, len, 53, 1);
+
+	return t ? *t : 0;
+}
+
+/* An address option, or 0 when it is absent or malformed. */
+static u32 dhcp_opt_ip(const struct dhcp_msg *m, unsigned int len, u8 tag)
+{
+	const u8 *v = dhcp_opt(m, len, tag, 4);
+	u32 ip = 0;
+
+	if (v)
+		memcpy(&ip, v, 4);
+
+	return ip;
 }
 
 static u8 *dhcp_put(u8 *o, u8 tag, u8 len, const void *val)
@@ -3388,15 +3424,49 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	if (req->op != 1 || req->cookie != htonl(DHCP_MAGIC))
 		return;
 
-	type = dhcp_msg_type(req, len);
-	if (type == DHCP_DISCOVER)
-		reply = DHCP_OFFER;
-	else if (type == DHCP_REQUEST)
-		reply = DHCP_ACK;
-	else
-		return;
-
 	yiaddr = dhcp_client_ip();
+	type = dhcp_msg_type(req, len);
+	if (type == DHCP_DISCOVER) {
+		reply = DHCP_OFFER;
+	} else if (type == DHCP_REQUEST) {
+		/*
+		 * RFC 2131 4.3.2.  There is only one address to give, so a
+		 * REQUEST for any other one is answered with a NAK -- most
+		 * often a PC that held a lease from the system this board
+		 * normally runs, asking for it back after the cable came up.
+		 * ACKing it with .100 instead left the client to discard the
+		 * mismatch and retry until it gave up and started over; a NAK
+		 * sends it straight back to DISCOVER.
+		 *
+		 * A REQUEST naming another server is that client accepting
+		 * somebody else's offer, and is none of our business.
+		 */
+		u32 sid = dhcp_opt_ip(req, len, 54);
+		u32 want = dhcp_opt_ip(req, len, 50);
+
+		if (!want)
+			want = req->ciaddr;	/* renewing or rebinding */
+		if (sid && sid != net_ip.s_addr) {
+			printf("httpd: DHCP REQUEST from %pM is for server %pI4, "
+			       "not us; ignored\n", req->chaddr, &sid);
+			return;
+		}
+		if (want && want != yiaddr.s_addr) {
+			reply = DHCP_NAK;
+			printf("httpd: DHCP REQUEST from %pM for %pI4 -> NAK "
+			       "(the lease here is %pI4)\n", req->chaddr, &want,
+			       &yiaddr);
+		} else {
+			reply = DHCP_ACK;
+		}
+	} else if (type == DHCP_DECLINE) {
+		/* The client found the address taken; nothing to hand out instead */
+		printf("httpd: DHCP DECLINE from %pM: %pI4 is already in use on "
+		       "this link\n", req->chaddr, &yiaddr);
+		return;
+	} else {
+		return;
+	}
 
 	rep = (struct dhcp_msg *)(net_tx_packet + net_eth_hdr_size() +
 				  IP_UDP_HDR_SIZE);
@@ -3406,8 +3476,10 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	rep->hlen = 6;
 	rep->xid = req->xid;
 	rep->flags = req->flags;
-	rep->yiaddr = yiaddr.s_addr;
-	rep->siaddr = net_ip.s_addr;
+	if (reply != DHCP_NAK) {
+		rep->yiaddr = yiaddr.s_addr;
+		rep->siaddr = net_ip.s_addr;
+	}
 	memcpy(rep->chaddr, req->chaddr, sizeof(rep->chaddr));
 	rep->cookie = htonl(DHCP_MAGIC);
 
@@ -3419,9 +3491,11 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	*o++ = 1;
 	*o++ = (u8)reply;
 	o = dhcp_put(o, 54, 4, &net_ip.s_addr);		/* server id */
-	o = dhcp_put(o, 1, 4, &mask);			/* subnet mask */
-	o = dhcp_put(o, 3, 4, &net_ip.s_addr);		/* router */
-	o = dhcp_put(o, 51, 4, &lease);			/* lease time */
+	if (reply != DHCP_NAK) {
+		o = dhcp_put(o, 1, 4, &mask);		/* subnet mask */
+		o = dhcp_put(o, 3, 4, &net_ip.s_addr);	/* router */
+		o = dhcp_put(o, 51, 4, &lease);		/* lease time */
+	}
 	*o++ = 255;
 
 	n = (int)((u8 *)o - (u8 *)rep);
@@ -3432,14 +3506,17 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	net_send_udp_packet((uchar *)bcast_mac, bcast, DHCP_CLIENT_PORT,
 			    DHCP_SERVER_PORT, n);
 
+	/* A NAK handed nothing out, so it is not what the page counts */
+	if (reply == DHCP_NAK)
+		return;
 	if (reply == DHCP_OFFER)
 		dhcp_offers++;
 	else
 		dhcp_acks++;
 	memcpy(dhcp_last_mac, req->chaddr, sizeof(dhcp_last_mac));
 
-	printf("httpd: DHCP %s -> %pI4\n",
-	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr);
+	printf("httpd: DHCP %s %pI4 -> %pM\n",
+	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr, req->chaddr);
 }
 
 static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
@@ -3656,12 +3733,36 @@ static struct ubi_volume *ubi_vol_find(struct ubi_device *ubi, const char *name)
 #define PHY_FIRST	0x9
 #define PHY_LAST	0xc
 
+/*
+ * The switch's own MDIO, found by what it hangs off rather than by being
+ * first.  The eth driver binds it to the switch node's "mdio" child; AN7583
+ * also describes two SoC buses (mdio-bus@c8, @cc) with nothing on 0x9-0xc,
+ * and should their driver ever be built in, "the first MDIO device" is one
+ * of those -- port state would read as no link and the cable would never
+ * be bounced, with nothing to say why.
+ */
+static struct udevice *switch_mdio(void)
+{
+	struct udevice *dev;
+
+	uclass_foreach_dev_probe(UCLASS_MDIO, dev) {
+		ofnode sw = ofnode_get_parent(dev_ofnode(dev));
+
+		if (ofnode_device_is_compatible(sw, "airoha,en7523-switch") ||
+		    ofnode_device_is_compatible(sw, "airoha,en7581-switch") ||
+		    ofnode_device_is_compatible(sw, "airoha,an7583-switch"))
+			return dev;
+	}
+
+	return NULL;
+}
+
 static void info_ports(struct jbuf *jb)
 {
-	struct udevice *mdio;
+	struct udevice *mdio = switch_mdio();
 	int a, first = 1;
 
-	if (uclass_first_device_err(UCLASS_MDIO, &mdio))
+	if (!mdio)
 		return;
 
 	jb_printf(jb, ",\"ports\":[");
@@ -3694,6 +3795,74 @@ static void info_ports(struct jbuf *jb)
 		first = 0;
 	}
 	jb_printf(jb, "]");
+}
+
+/*
+ * Pull the cable out and put it back, once per boot, the moment the server
+ * is ready.
+ *
+ * With the cable already in, the PC saw link long before anything here was
+ * listening -- through BL2, U-Boot and the boot menu -- asked for an address
+ * into silence, gave up and took a 169.254 one.  Windows then asks again only
+ * every five minutes or so, which is why pulling and replugging the cable was
+ * the fix everyone found: a link that goes away and comes back is what makes
+ * a PC ask straight away.  So do that for them.
+ *
+ * Only ports that have link, and only in server mode -- on someone else's
+ * network nobody is waiting for us to hand out an address.  Once per boot
+ * because net_loop() comes back through httpd_start_server() after every
+ * "stay on the page" write and every address change, with the page open and
+ * watching; and synchronously, before anything listens, so that nothing can
+ * leave the loop with a port still powered down.  The link is gone for this
+ * long plus however long autonegotiation takes, a couple of seconds at
+ * gigabit.
+ */
+#define LINK_BOUNCE_MS	1000
+
+static void httpd_link_bounce(void)
+{
+	static int done;
+	int bmcr[PHY_LAST - PHY_FIRST + 1];
+	struct udevice *mdio;
+	int a, n = 0;
+
+	if (done || netmode != NET_SERVER)
+		return;
+	done = 1;
+
+	mdio = switch_mdio();
+	if (!mdio)
+		return;
+
+	for (a = PHY_FIRST; a <= PHY_LAST; a++) {
+		int *b = &bmcr[a - PHY_FIRST];
+		int bmsr;
+
+		*b = -1;
+		dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);  /* latched */
+		bmsr = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);
+		if (bmsr < 0 || bmsr == 0xffff || !(bmsr & BMSR_LSTATUS))
+			continue;
+		*b = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMCR);
+		if (*b < 0 || *b == 0xffff) {
+			*b = -1;
+			continue;
+		}
+		dm_mdio_write(mdio, a, MDIO_DEVAD_NONE, MII_BMCR,
+			      *b | BMCR_PDOWN);
+		n++;
+	}
+	if (!n)
+		return;
+
+	printf("httpd: bouncing link on %d port(s) so the PC asks for an "
+	       "address again\n", n);
+	mdelay(LINK_BOUNCE_MS);
+
+	for (a = PHY_FIRST; a <= PHY_LAST; a++)
+		if (bmcr[a - PHY_FIRST] >= 0)
+			dm_mdio_write(mdio, a, MDIO_DEVAD_NONE, MII_BMCR,
+				      bmcr[a - PHY_FIRST] & ~BMCR_PDOWN);
 }
 
 /*
@@ -4867,7 +5036,7 @@ static int httpd_log(void)
 {
 	static const char hdr[] = TEXT_HDR("200 OK");
 	static const char full[] =
-		"\n[日志缓冲已满，后续输出未记录]\n";
+		"\n[log buffer full; later output not recorded]\n";
 	struct membuf copy = *(struct membuf *)&gd->console_out;
 	char from[24], pre[16];
 	unsigned long skip = 0;
@@ -6275,16 +6444,33 @@ static int dump_stale(void)
 }
 
 /* Refuse with a reason the page can show; the console gets it too. */
-static void dump_fail(const char *status, const char *fmt, ...)
+/*
+ * One message, two languages: the console gets English, the page gets the
+ * Chinese its dictionary knows how to translate.  Both formats take the same
+ * arguments in the same order.
+ */
+static void fmt2(char *en, int enlen, char *zh, int zhlen,
+		 const char *fen, const char *fzh, va_list ap)
 {
-	char msg[192];
+	va_list aq;
+
+	va_copy(aq, ap);
+	vsnprintf(en, enlen, fen, ap);
+	vsnprintf(zh, zhlen, fzh, aq);
+	va_end(aq);
+}
+
+static void dump_fail(const char *status, const char *fen, const char *fzh,
+		      ...)
+{
+	char con[128], msg[192];
 	va_list ap;
 
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_start(ap, fzh);
+	fmt2(con, sizeof(con), msg, sizeof(msg), fen, fzh, ap);
 	va_end(ap);
 
-	printf("httpd: /dump refused: %s\n", msg);
+	printf("httpd: /dump refused: %s\n", con);
 
 	dump_len = 0;
 	dump_wlen = 0;
@@ -6424,13 +6610,15 @@ static void httpd_dump(void)
 
 	if (up_active) {
 		dump_fail("503 Service Unavailable",
+			  "an upload is in progress",
 			  "设备正在接收上传，请等待写入完成后再备份");
 		return;
 	}
 
 	dump_mtd = flash_master();
 	if (!dump_mtd) {
-		dump_fail("500 Internal Server Error", "没有找到闪存设备");
+		dump_fail("500 Internal Server Error", "no flash device",
+			  "没有找到闪存设备");
 		return;
 	}
 
@@ -6439,24 +6627,28 @@ static void httpd_dump(void)
 		struct ubi_volume *v;
 
 		if (!vol_name_ok(val)) {
-			dump_fail("400 Bad Request", "卷名不合法");
+			dump_fail("400 Bad Request", "bad volume name",
+				  "卷名不合法");
 			return;
 		}
 		if (ubi_part(part_name, NULL)) {
 			dump_fail("500 Internal Server Error",
+				  "UBI does not attach; only raw offsets can be read",
 				  "UBI 无法挂载，只能按 flash 偏移备份");
 			return;
 		}
 		ubi = ubi_get_device(0);
 		if (!ubi) {
 			dump_fail("500 Internal Server Error",
+				  "UBI attached but not accessible",
 				  "UBI 已挂载但无法访问");
 			return;
 		}
 		v = ubi_vol_find(ubi, val);
 		if (!v) {
 			ubi_put_device(ubi);
-			dump_fail("404 Not Found", "没有名为 %s 的卷", val);
+			dump_fail("404 Not Found", "no volume named %s",
+				  "没有名为 %s 的卷", val);
 			return;
 		}
 		/*
@@ -6477,7 +6669,8 @@ static void httpd_dump(void)
 		dump_raw = 1;
 		off = qs_get(dump_qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
 		if (off >= dump_mtd->size) {
-			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
+			dump_fail("400 Bad Request", "offset past the end of flash",
+				  "起始偏移超过闪存容量");
 			return;
 		}
 		/* Every byte from here to the end, bad blocks included. */
@@ -6488,11 +6681,12 @@ static void httpd_dump(void)
 	}
 
 	if (!len) {
-		dump_fail("400 Bad Request", "长度为 0");
+		dump_fail("400 Bad Request", "zero length", "长度为 0");
 		return;
 	}
 	if (dump_raw && off + len > dump_mtd->size) {
-		dump_fail("400 Bad Request", "偏移加长度超过闪存容量");
+		dump_fail("400 Bad Request", "offset + length past the end of flash",
+			  "偏移加长度超过闪存容量");
 		return;
 	}
 
@@ -6513,6 +6707,7 @@ static void httpd_dump(void)
 	 */
 	if (dump_win < SZ_64K) {
 		dump_fail("507 Insufficient Storage",
+			  "not enough memory for a read window",
 			  "内存不足，无法分配读取窗口");
 		return;
 	}
@@ -6525,7 +6720,8 @@ static void httpd_dump(void)
 
 	/* First window now, so a read error is still a status code. */
 	if (dump_fill(0)) {
-		dump_fail("500 Internal Server Error", "读取失败，详见串口日志");
+		dump_fail("500 Internal Server Error", "read failed",
+			  "读取失败，详见串口日志");
 		return;
 	}
 
@@ -6678,16 +6874,10 @@ static u32	st_wipe_n;	/* blocks erased */
 static u32	st_wipe_bad;	/* bad blocks passed over */
 static int	st_wipe_in;	/* the tick must not re-enter the erase */
 
-static void st_reply(const char *status, const char *fmt, ...)
+/* The console line in English, the answer in what the page translates. */
+static void st_reply(const char *status, const char *con, const char *msg)
 {
-	char msg[256];
-	va_list ap;
-
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
-	va_end(ap);
-
-	printf("httpd: /stock: %s\n", msg);
+	printf("httpd: /stock: %s\n", con);
 	st_resp_len = snprintf(st_resp, sizeof(st_resp),
 			       "HTTP/1.0 %s\r\n"
 			       "Content-Type: text/plain; charset=utf-8\r\n"
@@ -6696,22 +6886,26 @@ static void st_reply(const char *status, const char *fmt, ...)
 }
 
 /* Refuse, and say whether the flash has already been changed. */
-static void st_fail(const char *fmt, ...)
+static void st_fail(const char *fen, const char *fzh, ...)
 {
-	char msg[192];
+	char en[128], zh[192], con[192], msg[256];
 	va_list ap;
 
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_start(ap, fzh);
+	fmt2(en, sizeof(en), zh, sizeof(zh), fen, fzh, ap);
 	va_end(ap);
 
 	st_failed = 1;
 	if (st_started) {
-		st_reply("500 Internal Server Error",
-			 "%s。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电",
-			 msg);
+		snprintf(con, sizeof(con), "%s; flash is partly written, write "
+			 "again until it succeeds before rebooting", en);
+		snprintf(msg, sizeof(msg), "%s。闪存已写入一部分，此时重启将无法"
+			 "启动。请重新写入至成功，其间不要断电", zh);
+		st_reply("500 Internal Server Error", con, msg);
 	} else {
-		st_reply("400 Bad Request", "%s（闪存尚未改动）", msg);
+		snprintf(con, sizeof(con), "%s; flash untouched", en);
+		snprintf(msg, sizeof(msg), "%s（闪存尚未改动）", zh);
+		st_reply("400 Bad Request", con, msg);
 	}
 }
 
@@ -6751,7 +6945,8 @@ static int st_begin(u32 rx_bytes)
 		 * line in the same place.
 		 */
 		if (n >= HDRBUF_SZ - 1) {
-			st_fail("请求头超过 %d 字节", HDRBUF_SZ - 1);
+			st_fail("request head over %d bytes",
+				"请求头超过 %d 字节", HDRBUF_SZ - 1);
 			return -1;
 		}
 
@@ -6775,7 +6970,7 @@ static int st_begin(u32 rx_bytes)
 
 	p = strstr(hdr, "Content-Length:");
 	if (!p) {
-		st_fail("没有 Content-Length");
+		st_fail("no Content-Length", "没有 Content-Length");
 		return -1;
 	}
 	p += 15;
@@ -6783,23 +6978,25 @@ static int st_begin(u32 rx_bytes)
 		p++;
 	clen = simple_strtoul(p, NULL, 10);
 	if (!clen) {
-		st_fail("长度为 0");
+		st_fail("zero length", "长度为 0");
 		return -1;
 	}
 
 	st_mtd = flash_master();
 	if (!st_mtd) {
-		st_fail("没有找到闪存设备");
+		st_fail("no flash device", "没有找到闪存设备");
 		return -1;
 	}
 	st_blk = st_mtd->erasesize;
 
 	if (st_off & (u64)(st_blk - 1)) {
-		st_fail("写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
+		st_fail("offset 0x%llx is not aligned to the 0x%x erase block",
+			"写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
 		return -1;
 	}
 	if (st_off + clen > st_mtd->size) {
-		st_fail("自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
+		st_fail("0x%llx + %lu bytes runs past the %llu byte flash",
+			"自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
 			st_off, clen, (unsigned long long)st_mtd->size);
 		return -1;
 	}
@@ -6809,7 +7006,8 @@ static int st_begin(u32 rx_bytes)
 	if (st_nblk > ST_RING_MAX / st_blk)
 		st_nblk = ST_RING_MAX / st_blk;
 	if (st_nblk < 4) {
-		st_fail("内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
+		st_fail("not enough memory for the receive ring, need %u bytes",
+			"内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
 		return -1;
 	}
 	st_ring = up_base;
@@ -6876,13 +7074,15 @@ static int st_put(u32 k, u32 n)
 	ei.len = st_blk;
 	ret = mtd_erase(st_mtd, &ei);
 	if (ret) {
-		st_fail("擦除 0x%llx 失败（%d）", pos, ret);
+		st_fail("erase at 0x%llx failed (%d)",
+			"擦除 0x%llx 失败（%d）", pos, ret);
 		return -1;
 	}
 
 	ret = mtd_write(st_mtd, pos, n, &wl, p);
 	if (ret || wl != n) {
-		st_fail("写入 0x%llx 失败（%d，实际写入 %u/%u）", pos, ret,
+		st_fail("write at 0x%llx failed (%d, %u of %u written)",
+			"写入 0x%llx 失败（%d，实际写入 %u/%u）", pos, ret,
 			(u32)wl, n);
 		return -1;
 	}
@@ -6893,6 +7093,7 @@ static int st_put(u32 k, u32 n)
 /* The last thing either path does: stop the chase, answer, stand still. */
 static void st_finish(void)
 {
+	char ok[80];
 	int i;
 
 	/* Dark, which is what every other write ends on too. */
@@ -6908,12 +7109,13 @@ static void st_finish(void)
 		printf("httpd: /stock: everything else landed at its own offset\n");
 	}
 	if (st_wipe)
-		st_reply("200 OK",
+		snprintf(ok, sizeof(ok),
 			 "ok %u bytes crc32 %08x skipped %d wiped %u",
 			 st_body, st_crc, st_nskip, st_wipe_n);
 	else
-		st_reply("200 OK", "ok %u bytes crc32 %08x skipped %d",
+		snprintf(ok, sizeof(ok), "ok %u bytes crc32 %08x skipped %d",
 			 st_body, st_crc, st_nskip);
+	st_reply("200 OK", ok, ok);
 }
 
 /*
@@ -7931,6 +8133,7 @@ void httpd_start_server(void)
 	dump_hdr_len = 0;
 	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
 	fvols_parse();
+	httpd_link_bounce();
 
 	memset(net_server_ethaddr, 0, 6);
 	tcp_stream_set_on_create_handler(httpd_on_create);

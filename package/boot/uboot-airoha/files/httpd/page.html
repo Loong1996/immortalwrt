@@ -914,7 +914,7 @@ CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var s=Math.max(0
 function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;
 var on=$('#logf').checked;$('#logb').disabled=on;
 if(!on)return;
-LOGN=0;$('#log').textContent='';logtick()}
+LOGN=0;logset('',1);logtick()}
 function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;
 get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;
 var i=st==200&&t?t.indexOf('\n'):-1;
@@ -981,8 +981,15 @@ h+='<tr><td><span class="dot s'+(s.fail?2:0)+'"></span>读失败</td>'
 $('#scan').innerHTML=h;
 $('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'
 :s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}
+/*
+ * 日志是串口的原样拷贝：TTL 上是什么这里就是什么，英文界面也不去翻它。
+ * 只有「正在读取」「读取失败」这种页面自己的话才跟着语言走。
+ */
+function logset(t,raw){var l=$('#log');
+if(raw)l.setAttribute('data-raw','');else l.removeAttribute('data-raw');
+l.textContent=t;return l}
 function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;
-if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');l.textContent='正在读取…'}get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}
+if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');logset('正在读取…',0)}get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';if(st==200)logset(txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''),1);else logset('读取失败（'+st+'）',0);l.scrollTop=l.scrollHeight})}
 function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
 function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push(T('(未运行健康检查)'));copy(b,s.join('\n'))}
 /* 复制那份是给聊天窗口用的；这份是给附件用的，把日志和 env 也带上 */
@@ -1016,7 +1023,7 @@ var step2=function(){if(ENV)return fin();
 get('/env',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
 if(r&&r.env){ENV=r;envfill();bmfill()}fin()})};
 if($('#log').textContent.length>20)return step2();
-get('/log',function(st,t){if(st==200)$('#log').textContent=t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,'');step2()})}
+get('/log',function(st,t){if(st==200)logset(t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''),1);step2()})}
 /* 存文件全在浏览器里完成，设备不参与 */
 function save(name,text){try{
 var b=new Blob([text],{type:'text/plain;charset=utf-8'}),
@@ -1239,6 +1246,8 @@ document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
  */
 /* i18n-dict begin */
 var I18N={
+"写入 固件…":"Writing firmware…",
+"回读校验 固件…":"Verifying firmware…",
 "文件名里没有机型":"No model in the file name",
 "应为 .itb 文件":"Expected a .itb file",
 "应为 .bin 文件":"Expected a .bin file",
@@ -1710,7 +1719,6 @@ var I18P={
 "挂载 UBI 失败，详见串口日志":"Mounting UBI failed — see the serial log",
 "重建 UBI 失败，详见串口日志":"Rebuilding UBI failed — see the serial log",
 "内存不足以分配接收环，至少需要 ":"Not enough memory for the receive ring; at least ",
-"[日志缓冲已满，后续输出未记录]":"[log buffer full; later output not recorded]",
 "正在写入闪存，这一项要等写完再改":"Flash is being written; this one has to wait until the write is done",
 " 字节。固件不完整，请重新上传":" bytes. The firmware is incomplete — upload it again",
 "本机开始发地址：电脑将拿到 ":"This device starts handing out addresses; the computer will get ",
@@ -1928,12 +1936,16 @@ if(n.nodeType!=1||i18skip(n))return;
 I18A.forEach(function(a){var k='zh0_'+a;
 if(n[k]!==undefined){n.setAttribute(a,n[k]);n[k]=undefined}});
 for(c=n.firstChild;c;c=c.nextSibling)i18off(c)}
+/* 插进来的是文本节点时 i18on 看不到它的父元素，data-raw 得往上找 */
+function i18inraw(n){for(n=n.parentNode;n&&n.nodeType==1;n=n.parentNode)
+if(i18skip(n))return true;return false}
 var I18OB=window.MutationObserver?new MutationObserver(function(rs){
 if(!I18ON)return;var i,j,r;
 for(i=0;i<rs.length;i++){r=rs[i];
-if(r.type=='characterData')i18text(r.target);
+if(r.type=='characterData'){if(!i18inraw(r.target))i18text(r.target)}
 else if(r.type=='attributes')i18attr(r.target,r.attributeName);
-else for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;
+else if(!i18inraw(r.addedNodes[0]||r.target))
+for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;
 function setlang(l){
 $$('.lg button').forEach(function(b){
 b.setAttribute('aria-checked',b.getAttribute('data-g')==l?'true':'false')});

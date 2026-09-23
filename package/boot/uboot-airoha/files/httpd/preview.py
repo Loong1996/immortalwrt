@@ -155,13 +155,14 @@ In:    serial
 Out:   serial
 Err:   serial
 Net:   eth0: airoha-gdm1
+httpd: bouncing link on 1 port(s) so the PC asks for an address again
 Airoha Web U-Boot %s by Loong
 Using airoha-gdm1 device, MAC 90:03:2e:12:34:56
 Listening for HTTP on 192.168.1.1 port 80
 Handing out DHCP leases from 192.168.1.1
 Press Ctrl-C to abort
-httpd: DHCP OFFER -> 192.168.1.100
-httpd: DHCP ACK -> 192.168.1.100
+httpd: DHCP OFFER 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
+httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
 """ % MACROS["WEB_VERSION"]
 
 # The stub.  Plain ES5 like the page itself.
@@ -184,7 +185,7 @@ var DBUSY=0,DSENT=0,DTOTAL=0,DTICK=null;
 /* 真设备的日志会一直长，跟随功能不自己长就看不出在跟 */
 var LOGX='',LOGSEQ=0;
 setInterval(function(){LOGSEQ++;
-LOGX+='httpd: DHCP ACK -> 192.168.1.10'+(LOGSEQ%9)+'\n'},3000);
+LOGX+='httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3'+(LOGSEQ%9)+'\n'},3000);
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
