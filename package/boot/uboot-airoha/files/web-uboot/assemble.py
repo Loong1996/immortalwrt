@@ -111,18 +111,19 @@ def parse_env(text, version):
 def find_version(tree, explicit):
     if explicit:
         return explicit
-    found = {}
-    for path in tree.rglob("*"):
-        if path.suffix not in {".c", ".h"} or not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8", errors="replace")
-        for match in VERSION_RE.finditer(text):
-            found.setdefault(match.group(1), path)
+    # Only net/httpd.c defines it. Reading just that file rather than
+    # every .c/.h in the tree keeps Build/Prepare fast, and an unrelated
+    # upstream WEB_VERSION can never be picked up.
+    path = tree / "net" / "httpd.c"
+    if not path.is_file():
+        die(f"没有找到 {path}")
+    found = VERSION_RE.findall(path.read_text(encoding="utf-8",
+                                              errors="replace"))
     if not found:
-        die(f"在 {tree} 里没有找到 #define WEB_VERSION")
-    if len(found) > 1:
-        die("WEB_VERSION 有多个不同的值: " + ", ".join(found))
-    return next(iter(found))
+        die(f"{path} 里没有 #define WEB_VERSION")
+    if len(set(found)) > 1:
+        die("WEB_VERSION 有多个不同的值: " + ", ".join(sorted(set(found))))
+    return found[0]
 
 
 def assemble_env(board, version):

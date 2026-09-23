@@ -3401,7 +3401,8 @@ static void httpd_tick_stop(void)
 #define ENV_NETMASK		"web_uboot_netmask"
 /*
  * "<ipaddr> <netmask>" as they were before the first unsaved change on a
- * board with no ENV_NETMODE, "-" for one that was unset.  See netmode_stash().
+ * board whose saved mode does not put ipaddr back at boot, "-" for one that
+ * was unset.  See netmode_stash().
  */
 #define ENV_NETPREV		"web_uboot_netprev"
 
@@ -3412,8 +3413,8 @@ static int	netmode = NET_SERVER;
  * "next boot goes back to ..." -- because the two are kept apart by
  * construction rather than by a flag: an unsaved change writes ipaddr and
  * nothing else, and netmode_load() overwrites ipaddr from web_uboot_ipaddr
- * at every boot -- or, on a board that never saved a mode, from the copy
- * netmode_stash() took.  So even a saveenv from somewhere else entirely
+ * at every boot -- or, where no saved mode does that (none saved, or
+ * client), from the copy netmode_stash() took.  So even a saveenv from somewhere else entirely
  * cannot make an unsaved address outlive the power cycle.
  */
 static int	net_unsaved;
@@ -3660,15 +3661,37 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr, req->chaddr);
 }
 
+/*
+ * httpd_finish() searches a whole upload for the multipart boundary, from
+ * the on_rcv_nxt_update callback with the net loop stopped.  A memcmp() at
+ * every offset of 235 MiB is seconds of nothing else happening, so a needle
+ * that long (the boundary is 40-odd bytes) goes through Horspool and skips
+ * about its own length per step.  Short needles -- the "\r\n" and
+ * "\r\n\r\n" of a request head -- only ever meet a few hundred bytes.
+ */
 static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
 {
-	int i;
+	const u8 *h = (const u8 *)hay, *nd = (const u8 *)needle;
+	u8 skip[256];
+	int i, last;
 
 	if (nlen <= 0 || hlen < nlen)
 		return -1;
 
-	for (i = 0; i <= hlen - nlen; i++)
-		if (!memcmp(hay + i, needle, nlen))
+	if (nlen < 8 || nlen > 255) {
+		for (i = 0; i <= hlen - nlen; i++)
+			if (h[i] == nd[0] && !memcmp(h + i, nd, nlen))
+				return i;
+		return -1;
+	}
+
+	last = nlen - 1;
+	memset(skip, nlen, sizeof(skip));
+	for (i = 0; i < last; i++)
+		skip[nd[i]] = last - i;
+
+	for (i = 0; i <= hlen - nlen; i += skip[h[i + last]])
+		if (h[i + last] == nd[last] && !memcmp(h + i, nd, last))
 			return i;
 
 	return -1;
@@ -5920,19 +5943,32 @@ static void netmode_lease(void)
 }
 
 /*
- * A board that never saved a mode has nothing for netmode_load() to put
- * back, so an unsaved address would simply stay in ipaddr -- and the next
- * saveenv from /dhcpgw, /bootonce or anything else would make it permanent.
- * Keep what was there before the first unsaved change instead.  RAM only,
- * like the change itself: if nothing saves, the flash still holds the old
- * ipaddr anyway; if something does, this goes along with it.
+ * Whether netmode_load() puts ipaddr back from a saved value by itself:
+ * server and static do, from web_uboot_ipaddr.  No saved mode leaves ipaddr
+ * alone, and client saves the decision but never an address.
+ */
+static int netmode_restores_ip(void)
+{
+	const char *m = env_get(ENV_NETMODE);
+
+	return m && netmode_parse(m) != NET_CLIENT && env_get(ENV_NETIP);
+}
+
+/*
+ * Where netmode_load() has nothing to put back, an unsaved address would
+ * simply stay in ipaddr -- and the next saveenv from /dhcpgw, /bootonce or
+ * anything else would make it permanent.  In client mode that is also the
+ * address a boot without a lease falls back to.  Keep what was there before
+ * the first unsaved change instead.  RAM only, like the change itself: if
+ * nothing saves, the flash still holds the old ipaddr anyway; if something
+ * does, this goes along with it.
  */
 static void netmode_stash(void)
 {
 	const char *ip = env_get("ipaddr"), *mask = env_get("netmask");
 	char v[64];
 
-	if (env_get(ENV_NETMODE) || env_get(ENV_NETPREV))
+	if (netmode_restores_ip() || env_get(ENV_NETPREV))
 		return;
 
 	snprintf(v, sizeof(v), "%s %s", ip ? ip : "-", mask ? mask : "-");
@@ -6021,16 +6057,23 @@ static void netmode_apply(void)
  * may well have been set by hand on the serial console, and there is no
  * reason for this page to have an opinion about it before it is used.  The
  * one exception is an unsaved change that some other saveenv carried into
- * flash, which netmode_unstash() undoes.
+ * flash, which netmode_unstash() undoes -- here and in client mode alike.
  */
 static void netmode_load(void)
 {
 	const char *s = env_get(ENV_NETMODE);
 
-	if (!s) {
+	/*
+	 * Before the client-mode lease, which falls back to whatever ipaddr
+	 * holds when nobody answers.
+	 */
+	if (netmode_restores_ip())
+		env_set(ENV_NETPREV, NULL);
+	else
 		netmode_unstash();
+
+	if (!s)
 		return;
-	}
 
 	netmode = netmode_parse(s);
 
