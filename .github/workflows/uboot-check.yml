@@ -11,6 +11,10 @@ name: Web U-Boot 检查
 # 三道便宜的（page 作业，~3 min）加一道贵的（compile 作业，每块板一个 job
 # 并行，各 ~6-9 min）。改动只碰 package/boot/uboot-airoha 时才跑。
 #
+# 另有 tcpsim 作业（~1 min）：204 改了上游 net/tcp.c 的发送路径，交叉编译只
+# 能证明它编得过。这一道在主机上把上游和打过补丁的 tcp.c 都接到模拟的浏览器
+# 上跑，看字节对不对、连接关不关得上、刷机那种「上传加小响应」和上游是否一致。
+#
 # 只检查、不出可刷的东西：板子要的是 BL2 + BL31/U-Boot 的 FIP，得走 OpenWrt
 # 整套编译（ImmortalWrt-Airoha 的 CI）；这里的 u-boot.bin 用发行版的交叉
 # 编译器编、带 -ci 后缀，所以不上传。
@@ -185,6 +189,76 @@ jobs:
           print("扫了 %d 个补丁 %d 个 hunk，坏 %d 个" % (len(files), nh, bad))
           sys.exit(1 if bad else 0)
           PY
+
+  tcpsim:
+    name: TCP 仿真
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout(检出)
+        uses: actions/checkout@v7
+
+      # 以下两步与 compile 作业相同，共用同一份缓存
+      - name: Read Makefile(读 PKG_VERSION / PKG_HASH)
+        id: ver
+        run: |
+          set -eu
+          V=$(sed -n 's/^PKG_VERSION:=//p' "$PKG/Makefile")
+          H=$(sed -n 's/^PKG_HASH:=//p' "$PKG/Makefile")
+          test -n "$V" && test -n "$H"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "hash=$H"    >> "$GITHUB_OUTPUT"
+
+      - name: Cache Tarball(缓存源码包)
+        uses: actions/cache@v6
+        with:
+          path: ~/dl
+          key: uboot-src-${{ steps.ver.outputs.hash }}
+
+      - name: Fetch U-Boot(下载并校验源码包)
+        env:
+          UBOOT_VERSION: ${{ steps.ver.outputs.version }}
+          UBOOT_HASH: ${{ steps.ver.outputs.hash }}
+        run: |
+          set -eu
+          TAR="$HOME/dl/u-boot-$UBOOT_VERSION.tar.bz2"
+          mkdir -p "$HOME/dl"
+          if [ ! -f "$TAR" ]; then
+            for URL in "https://mirror.cyberbits.eu/u-boot" "https://ftp.denx.de/pub/u-boot"; do
+              echo "从 $URL 取"
+              curl -fsSL --retry 3 --retry-delay 5 -o "$TAR.part" \
+                "$URL/u-boot-$UBOOT_VERSION.tar.bz2" && mv "$TAR.part" "$TAR" && break
+            done
+          fi
+          test -f "$TAR" || { echo "::error::u-boot-$UBOOT_VERSION.tar.bz2 下载失败"; exit 1; }
+          echo "$UBOOT_HASH  $TAR" | sha256sum -c -
+
+      # 两棵树：上游原样一棵，src/ 加全部补丁一棵，用到的只是其中的 net/tcp.c
+      # 与 include/net/tcp.h。上游那棵就只解这两个文件；打补丁那棵得整棵解，
+      # 别的补丁才打得上 —— 顺带也验了一遍 204 在整套补丁里的位置。
+      - name: Unpack(解出上游与打过补丁的 tcp.c)
+        env:
+          UBOOT_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eu
+          TAR="$HOME/dl/u-boot-$UBOOT_VERSION.tar.bz2"
+          mkdir -p "$RUNNER_TEMP/orig" "$RUNNER_TEMP/new"
+          tar -xjf "$TAR" -C "$RUNNER_TEMP/orig" \
+            "u-boot-$UBOOT_VERSION/net/tcp.c" "u-boot-$UBOOT_VERSION/include/net/tcp.h"
+          tar -xjf "$TAR" -C "$RUNNER_TEMP/new"
+          cd "$RUNNER_TEMP/new/u-boot-$UBOOT_VERSION"
+          cp -a "$GITHUB_WORKSPACE/$PKG/src/." .
+          for p in "$GITHUB_WORKSPACE/$PKG"/patches/*.patch; do
+            patch -p1 -s --no-backup-if-mismatch -i "$p" \
+              || { echo "::error::$(basename "$p") 打不上"; exit 1; }
+          done
+
+      - name: Simulate(上游与打过补丁的 tcp.c 各跑一遍)
+        env:
+          UBOOT_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          sh "$PKG/files/tcpsim/run.sh" \
+            "$RUNNER_TEMP/orig/u-boot-$UBOOT_VERSION" \
+            "$RUNNER_TEMP/new/u-boot-$UBOOT_VERSION"
 
   compile:
     name: 交叉编译 ${{ matrix.label }}
