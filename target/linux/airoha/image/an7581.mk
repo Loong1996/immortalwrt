@@ -187,6 +187,10 @@ TARGET_DEVICES += gemtek_w1700k-ubi
 # XR1710G support carries the board's own kernel fixes.  This definition is
 # here for the recovery U-Boot: chainloader-slot.bin goes into the
 # chainloader partition, and a sysupgrade image of either tree boots from it.
+# preloader.bin and bl31-uboot.fip are the other way to start it, for units
+# whose BootROM runs our BL2: the vendor bootloader's first erase block is
+# replaced, and U-Boot moves into a fip volume of the same UBI (both signed
+# with the SDK key, like the XG-040G-TF's, in case the chip checks it).
 define Device/gemtek_xr1710g-ubi
   DEVICE_VENDOR := Gemtek
   DEVICE_MODEL := XR1710G
@@ -210,8 +214,10 @@ define Device/gemtek_xr1710g-ubi
   KERNEL_INITRAMFS_SUFFIX := -recovery.itb
   IMAGES := sysupgrade.itb
   IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | append-metadata
-  ARTIFACTS := chainloader-slot.bin
+  ARTIFACTS := chainloader-slot.bin preloader.bin bl31-uboot.fip
   ARTIFACT/chainloader-slot.bin := an7581-chainloader-slot gemtek_xr1710g
+  ARTIFACT/preloader.bin := an7581-preloader-signed gemtek_xr1710g_bl2 gemtek
+  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot-signed gemtek_xr1710g_bl2
   SOC := an7581
 endef
 TARGET_DEVICES += gemtek_xr1710g-ubi
