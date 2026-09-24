@@ -1,6 +1,8 @@
 # Parallel NAND.  No factory ri/bosa known yet, so the stock UBI (no fip
 # volume) is left untouched like the ZN504XG-D.  The NAND driver and its
-# options come from fragments/an7581_pnand.config.
+# options come from fragments/an7581_pnand.config.  Neither the stock UBI
+# nor one left by pbs05/uboot-an758x reads back here (another ECC codeword,
+# see patches/123), so the first install always rebuilds UBI.
 soc=an7581
 profile=fiberhome_hg5382a-ubi
 dts=airoha/an7581-fiberhome-hg5382a

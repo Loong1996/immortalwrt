@@ -12,10 +12,16 @@ only, so a board on one of them needs its Linux entry added too.
 
 The W29N02KVSIAF is listed at ECC8 although the part only asks for 4:
 the driver picks the lowest strength at or above the declared one, and 8
-is what the stock FiberHome loader uses on it (spare 28 either way).  The
-stock flash then reads back without ECC errors -- a whole-chip backup
-from this U-Boot is usable -- and BL2 lands in the layout the BootROM
-already reads.
+is what the stock FiberHome loader reports on it (spare 28 either way).
+BL2 (arm-trusted-firmware-airoha patches/100) and Linux (patches-6.18/903
+and 904) use the same codeword: ECC8, data inverted, all 8 FDM bytes
+covered, so what one writes the others read.
+
+Nothing written before is readable that way: the stock firmware's UBI,
+and the UBI of pbs05/uboot-an758x (whose U-Boot runs this part at ECC4,
+and whose firmware left ECC8 pages of yet another codeword), fail every
+page with -74.  A board coming from either has its UBI rebuilt the first
+time it runs this U-Boot.
 
 Taken from https://github.com/pbs05/uboot-an758x (manufacturer ops files
 and the NAND_MFR_* additions are not carried; W29N02KVSIAF changed from
