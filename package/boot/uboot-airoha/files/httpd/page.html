@@ -451,7 +451,8 @@ var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
  */
 var TRYB=0;
 var RT=0,RN=0,RATE=0;
-var DLSEQ=0,DLBAD=0,STUCK='',DLWHAT='';
+/* STUCKN：红条说的是哪几个部分，重写成功一个划掉一个，划完才撤；null 是刷回原厂写了一半，只有刷回原厂成功才撤 */
+var DLSEQ=0,DLBAD=0,STUCK='',STUCKN=null,DLWHAT='';
 var LOGN=0,LOGT=null,LOGGEN=0;
 /* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */
 var NETINIT=0;
@@ -737,8 +738,10 @@ function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
 if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);
 if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
 if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}
-(INFO.fv||[]).forEach(function(v){fv[v.n]=1});
+(INFO.fv||[]).forEach(function(v){fv[v.n]=v.s});
 (INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;
+/* 出厂卷下载只给到规定长度，与 dlvol() 一致 */
+if(fv[v.n]&&n>fv[v.n])n=fv[v.n];
 h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(n)+'</td><td class=b><button type=button class="pb dlb" data-v="'+esc(v.n)+'">下载</button></td></tr>'});
 t.innerHTML=h;dlbind(t)}
 /* 卷名是设备给的字符串：只进 data 属性，绝不进 JS 代码里 */
@@ -813,8 +816,11 @@ dlstop(h?'':'ok');
 $('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';
 $('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志':'传输完成'}
 
-function dlvol(n){var v=null;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
-sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}
+function dlvol(n){var v=null,s;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
+s=v?(v.u||v.s):0;
+/* 出厂卷设备只给到它规定的长度（后面是擦除态），和原厂分区备份一样大 */
+FV.forEach(function(f){if(f.n==n&&(!s||s>f.s))s=f.s});
+sink('/dump?vol='+encodeURIComponent(n),n+' 卷',s)}
 /* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */
 function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}
 $('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}
@@ -1187,8 +1193,9 @@ x.upload.onload=function(){bar.className='pbar ind';var wz=$('[name=wipe]',p),tb
 $('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};
 x.onload=function(){var r=x.responseText||'';
 /* 200 不一定是收下了：另一个上传还占着时，设备把这个 POST 当 GET 答，回的
-   是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {"ok":1} */
-if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.indexOf('"ok"')>=0)){done(r);return}
+   是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {"ok":1}。
+   后者得整句比对：页面自己的脚本里就有 "ok" 这几个字 */
+if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.trim()=='{"ok":1}')){done(r);return}
 if(x.status==200){fail('设备正忙：另一个上传还没结束，请稍后重试',409);return}
 /* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */
 fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};
@@ -1200,7 +1207,7 @@ x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16)+(wp&&wp.checked?'&wipe=1'
 x.open('POST','/');x.send(fd)}
 function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
 /* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
-if(p.id=='p4'&&(st===0||st>=500)){STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}
+if(p.id=='p4'&&(st===0||st>=500)){STUCKN=null;STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}
 function done(resp){var p=SENT.p;
 /* 刷回原厂边收边写，拿到 200 时早写完了，去它自己的完成页 */
 if(p.id=='p4'){HBOFF=0;stdone(resp);return}
@@ -1248,6 +1255,8 @@ function wrstep(l){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),
 k=l.charAt(0),a=l.slice(2).split(' '),n,d,tt,now,dt;
 if(k=='s'){n=+a[a.length-1];WR.left=0;
 if(n>0){a.pop();WR.left=Math.max(2,Math.round(n/WRSPD))}
+/* 回读校验一个部分一行 "s 回读校验 <名> <字节>"，记下正在校验哪个 */
+if(a[0]=='回读校验')WR.vf=a.slice(1).join(' ');
 bar.className='pbar ind';bar.style.width='100%';
 $('.pwhat',prog).textContent=a.join(' ')+'…';
 $('.pct',prog).textContent=WR.left?'预计 '+dur(WR.left):'';return}
@@ -1258,7 +1267,10 @@ $('.pct',prog).textContent=sz(d)+' / '+sz(tt)+' · '+(tt?(d/tt*100).toFixed(0):0
 +(WR.rate>0?' · '+spd(WR.rate)+' · 剩余 '+dur((tt-d)/WR.rate):'');return}
 if(k=='r'){WR.rows.push({n:a[0],s:+a[1]||0,c:a[2]||''});return}
 if(k=='c'){if(a[0]=='ok'){WR.ver='通过';return}
-STUCK='<b>回读校验没通过，闪存里的内容与上传的不一致。</b>重新写入至成功之前不要重启设备。';
+/* 并进已有的；刷回原厂写了一半那条更要紧，它在就不动 */
+if(!STUCK||STUCKN){if(!STUCK)STUCKN=[];
+(WR.vf?[WR.vf]:WR.rows.map(function(r){return r.n})).forEach(function(n){if(STUCKN.indexOf(n)<0)STUCKN.push(n)});
+STUCK='<b>回读校验没通过，闪存里的内容与上传的不一致。</b>重新写入至成功之前不要重启设备。'}
 banner();fail('回读校验没通过：'+a.slice(1).join(' '),500);return}
 if(k=='t'){n=+a[0];d=+a[1];
 if(n>0&&d>0){WRSPD=n/d;try{localStorage.setItem('xgwrspd',String(Math.round(WRSPD)))}catch(e){}}
@@ -1275,8 +1287,12 @@ btn=$('button[type=submit]',p),h='';
 if(!WR||WR.fin)return;
 WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;
 HBOFF=0;busy(0);
-/* 横幅要的正是「重新写入成功」，到了就撤；rhide() 重读 /info 时会重画 */
-STUCK='';
+/*
+ * 横幅要的是「把没写好的那部分重新写成功」：这次写的得盖住它，写别的不算
+ * —— fip 校验没过，接着刷个固件成功了，fip 照样是坏的。rhide() 重读 /info 时会重画
+ */
+if(STUCK&&STUCKN){STUCKN=STUCKN.filter(function(n){
+return !WR.rows.some(function(r){return r.n==n})});if(!STUCKN.length)STUCK=''}
 /*
  * 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、
  * ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。

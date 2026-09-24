@@ -904,8 +904,8 @@ static const char resp_form[] =
 	"<script>\n"
 	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null,INFOQ=0,CHKQ=0,ENVQ=0,HB=0,HBT=null,HBG"
 		"EN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY=\"\",SILENT=0,GONE=0,TRYB=0,RT=0,RN=0,RATE=0,DLSEQ=0,DLBAD"
-		"=0,STUCK=\"\",DLWHAT=\"\",LOGN=0,LOGT=null,LOGGEN=0,NETINIT=0,NET=null,NETT=null,WRSPD=14e5;try{var"
-		" wr0=+localStorage.getItem(\"xgwrspd\");wr0>0&&(WRSPD=wr0)}catch(e){}var"
+		"=0,STUCK=\"\",STUCKN=null,DLWHAT=\"\",LOGN=0,LOGT=null,LOGGEN=0,NETINIT=0,NET=null,NETT=null,WRSPD=1"
+		"4e5;try{var wr0=+localStorage.getItem(\"xgwrspd\");wr0>0&&(WRSPD=wr0)}catch(e){}var"
 		" WR=null,WRT=null,WRP=null;function $(e,t){return(t||document).querySelector(e)}function"
 		" $$(e,t){return Array.prototype.slice.call((t||document).querySelectorAll(e))}function tg(){var"
 		" e=document.documentElement,t=\"dark\"==e.getAttribute(\"data-t\")?\"light\":\"dark\";e.setAttribute(\"da"
@@ -1066,14 +1066,14 @@ static const char resp_form[] =
 		"ving failed\")>=0?\"已设置，但未能保存到闪存：断电后失效，请在「诊断」中确认 ubootenv"
 		" 卷\":o.indexOf(\"already\")>=0?\"此前已设置，下次开机将停在本页面\":\"已设置。下次开机停在本页面，再下次开机恢复正常引导\"):$(\"#boh\").textConten"
 		"t=\"设置失败（\"+t+\"）\"})}function dlfill(){var e=$(\"#dl\"),t=INFO&&INFO.flash,o={},n=\"\";t&&($(\"#dumphint"
-		"\").textContent=\"读至片尾，\"+sz(t.size)),INFO?INFO.ubi?((INFO.fv||[]).forEach(function(e){o[e.n]=1}),("
-		"INFO.ubi.vols||[]).slice().sort(function(e,t){return(o[t.n]?1:0)-(o[e.n]?1:0)||(e.n<t.n?-1:e.n>t"
-		".n?1:0)}).forEach(function(e){var t=e.u||e.s;n+=\"<tr><td>\"+esc(e.n)+(o[e.n]?\"<span"
-		" class=tag>出厂数据</span>\":\"\")+\"</td><td>\"+esc(e.t)+\"</td><td class=n>\"+sz(t)+'</td><td"
-		" class=b><button type=button class=\"pb dlb\" data-v=\"'+esc(e.n)+'\">下载</button></td></tr>'}),e.inn"
-		"erHTML=n,dlbind(e)):e.innerHTML=\"<tr><td class=empty><b>UBI"
-		" 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>\":e.innerHTML=INFOQ?\"<tr><td>正在读取…</td></tr>\":\"<t"
-		"r><td class=empty>读取失败，刷新页面重试</td></tr>\"}function"
+		"\").textContent=\"读至片尾，\"+sz(t.size)),INFO?INFO.ubi?((INFO.fv||[]).forEach(function(e){o[e.n]=e.s})"
+		",(INFO.ubi.vols||[]).slice().sort(function(e,t){return(o[t.n]?1:0)-(o[e.n]?1:0)||(e.n<t.n?-1:e.n"
+		">t.n?1:0)}).forEach(function(e){var t=e.u||e.s;o[e.n]&&t>o[e.n]&&(t=o[e.n]),n+=\"<tr><td>\"+esc(e."
+		"n)+(o[e.n]?\"<span class=tag>出厂数据</span>\":\"\")+\"</td><td>\"+esc(e.t)+\"</td><td"
+		" class=n>\"+sz(t)+'</td><td class=b><button type=button class=\"pb dlb\""
+		" data-v=\"'+esc(e.n)+'\">下载</button></td></tr>'}),e.innerHTML=n,dlbind(e)):e.innerHTML=\"<tr><td"
+		" class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>\":e.innerHTML=INFOQ?\"<tr><td>正"
+		"在读取…</td></tr>\":\"<tr><td class=empty>读取失败，刷新页面重试</td></tr>\"}function"
 		" dlbind(e){e.__b||(e.__b=1,e.addEventListener(\"click\",function(t){for(var"
 		" o=t.target;o&&o!=e;){if(o.getAttribute&&/(^| )dlb( |$)/.test(o.className||\"\"))return void"
 		" dlvol(o.getAttribute(\"data-v\"));o=o.parentNode}}))}function dlstart(e,t){var"
@@ -1103,10 +1103,11 @@ static const char resp_form[] =
 		" class=n>\"+sz(e.len)+'</td><td class=\"n mono\">'+esc(e.crc)+\"</td></tr>\",$(\"#dllh\").hidden=!1,dls"
 		"top(o?\"\":\"ok\"),$(\".pwhat\",$(\"#dlprog\")).textContent=o?o+\" 个块读取失败，该部分以 0xff"
 		" 填充\":\"传输完成\",$(\"#dlh\").textContent=o?\"传输完成；\"+o+\" 个块读取失败，该部分以 0xff"
-		" 填充，详见「诊断」中的串口日志\":\"传输完成\"}function dlvol(e){var t=null;DLWHAT=e,(INFO&&INFO.ubi&&INFO.ubi.vols||["
-		"]).forEach(function(o){o.n==e&&(t=o)}),sink(\"/dump?vol=\"+encodeURIComponent(e),e+\""
-		" 卷\",t?t.u||t.s:0)}function dumpall(){INFO&&INFO.flash?($(\"#dumpoff\").value=\"0x0\",$(\"#dumplen\").v"
-		"alue=\"\",dumpraw()):$(\"#dlh\").textContent=\"无法读取闪存信息\"}function dumpraw(){var"
+		" 填充，详见「诊断」中的串口日志\":\"传输完成\"}function dlvol(e){var t,o=null;DLWHAT=e,(INFO&&INFO.ubi&&INFO.ubi.vols|"
+		"|[]).forEach(function(t){t.n==e&&(o=t)}),t=o?o.u||o.s:0,FV.forEach(function(o){o.n==e&&(!t||t>o."
+		"s)&&(t=o.s)}),sink(\"/dump?vol=\"+encodeURIComponent(e),e+\" 卷\",t)}function"
+		" dumpall(){INFO&&INFO.flash?($(\"#dumpoff\").value=\"0x0\",$(\"#dumplen\").value=\"\",dumpraw()):$(\"#dlh"
+		"\").textContent=\"无法读取闪存信息\"}function dumpraw(){var"
 		" e=INFO&&INFO.flash,t=hex($(\"#dumpoff\").value),o=$(\"#dumplen\").value.trim(),n=o?hex(o):null;t<0?"
 		"$(\"#dlh\").textContent=\"起始偏移不是有效的十六进制数\":null!==n&&n<0?$(\"#dlh\").textContent=\"长度不是有效的十六进制数\":0!==n?"
 		"e&&t>=e.size?$(\"#dlh\").textContent=\"起始偏移超出 flash 容量"
@@ -1291,9 +1292,9 @@ static const char resp_form[] =
 		" \"+sz(t[0].f.size)+(r?\"\":\"，覆盖 bootloader 及其后全部内容\")),o.push(\"写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启\""
 		");var d=$(\"[name=wipe]\",e),c=l?l.size-r-t[0].f.size:0;l&&c>0&&o.push(d&&d.checked?\"镜像之后剩余的"
 		" \"+sz(c)+\" 将被擦成空白\":\"镜像之后剩余的 \"+sz(c)+\" 保留原有内容不动\"),r||o.push(\"写入后本页面不再可用，重新迁移需经串口\")}}if(\"p3\"==e.id"
-		"){var h=$(\"[name=ubivol]\",e).value.trim(),f=t.some(function(e){return\"ubifile\"==e.k});f&&!h&&n.p"
-		"ush(\"选择了卷内容但未填写卷名\"),h&&!f&&n.push(\"填写了卷名但未选择卷内容\"),h&&!/^[A-Za-z0-9_.-]{1,63}$/.test(h)&&n.push(\""
-		"卷名仅限字母、数字与 _ - .\"),f&&h&&o.push(\"卷 \"+esc(h)+\" 不存在时按文件长度创建\")}if(\"p2\"==e.id){var"
+		"){var f=$(\"[name=ubivol]\",e).value.trim(),h=t.some(function(e){return\"ubifile\"==e.k});h&&!f&&n.p"
+		"ush(\"选择了卷内容但未填写卷名\"),f&&!h&&n.push(\"填写了卷名但未选择卷内容\"),f&&!/^[A-Za-z0-9_.-]{1,63}$/.test(f)&&n.push(\""
+		"卷名仅限字母、数字与 _ - .\"),h&&f&&o.push(\"卷 \"+esc(f)+\" 不存在时按文件长度创建\")}if(\"p2\"==e.id){var"
 		" u=$(\"[name=format]\",e).checked,p=t.some(function(e){return\"fip\"==e.k}),b=t.some(function(e){ret"
 		"urn\"bl2\"==e.k});if(u&&!p&&n.push(\"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
 		" 设备将无法启动\"),u&&!b&&n.push(\"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot"
@@ -1343,14 +1344,14 @@ static const char resp_form[] =
 		" a=Math.min(n.loaded,l),r=0,d=o[0],c=0;for(e=0;e<o.length&&(d=o[e],c=e,!(a<r+o[e].f.size||e==o.l"
 		"ength-1));e++)r+=o[e].f.size;s.style.width=a/l*100+\"%\",$(\".pwhat\",i).textContent=(\"p4\"==t.id?\"正在"
 		"写入 \":\"正在上传 \")+d.l+(o.length>1?\"（\"+(c+1)+\"/\"+o.length+\"）\":\"\")+\" · \"+sz(Math.min(a-r,d.f.size))+\""
-		" / \"+sz(d.f.size);var h=Date.now(),f=(h-RT)/1e3;f>=1.5&&(RATE=(a-RN)/f,RT=h,RN=a),$(\".pct\",i).te"
+		" / \"+sz(d.f.size);var f=Date.now(),h=(f-RT)/1e3;h>=1.5&&(RATE=(a-RN)/h,RT=f,RN=a),$(\".pct\",i).te"
 		"xtContent=sz(a)+\" / \"+sz(l)+\" · \"+(a/l*100).toFixed(0)+\"%\"+(RATE>0?\" · \"+spd(RATE)+\" · 剩余"
 		" \"+dur((l-a)/RATE):\"\")}},a.upload.onload=function(){s.className=\"pbar ind\";var"
 		" e=$(\"[name=wipe]\",t),o=$(\"[name=tryboot]\",t),n=!(!o||!o.checked);$(\".pwhat\",i).textContent=\"p4\""
 		"==t.id?e&&e.checked?\"传输完成，设备正在写入最后一块并擦净尾部…\":\"传输完成，设备正在写入最后一块…\":n?\"已载入内存，即将启动\":\"上传完成，设备开始写入闪存\",$("
 		"\".pct\",i).textContent=\"p4\"==t.id||n?\"\":\"预计 \"+dur(Math.max(8,l/WRSPD))},a.onload=function(){var"
 		" e=a.responseText||\"\";200==a.status&&(\"p4\"==t.id?/^ok"
-		" /.test(e):e.indexOf('\"ok\"')>=0)?done(e):200!=a.status?fail((a.status>=500?\"设备写入失败（\":\"设备拒绝了上传（\")"
+		" /.test(e):'{\"ok\":1}'==e.trim())?done(e):200!=a.status?fail((a.status>=500?\"设备写入失败（\":\"设备拒绝了上传（\")"
 		"+a.status+\"）：\"+a.responseText,a.status):fail(\"设备正忙：另一个上传还没结束，请稍后重试\",409)},a.onerror=function(){f"
 		"ail(\"连接中断，请检查网线后重试\",0)},\"p4\"==t.id&&o.length){var"
 		" d=hex($(\"[name=stockoff]\",t).value),c=$(\"[name=wipe]\",t);return"
@@ -1360,8 +1361,8 @@ static const char resp_form[] =
 		"RP),WRP=null,WR&&(WR.fin=1),HBOFF=0,busy(0),n.className=\"prog"
 		" bad\",$(\".pbar\",n).className=\"pbar\",$(\".pbar\",n).style.width=\"100%\",$(\".pwhat\",n).textContent=e,"
 		"$(\".pct\",n).textContent=\"\",a.disabled=!1,a.textContent=SENT.btxt,\"p4\"==o.id&&(0===t||t>=500)&&(S"
-		"TUCK=t>=500?\"<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。\":\"<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。\",bann"
-		"er())}function done(e){var t=SENT.p;return\"p4\"==t.id?(HBOFF=0,void"
+		"TUCKN=null,STUCK=t>=500?\"<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。\":\"<b>连接中断，写入可能未完成。</b>在重新写入成功之前不"
+		"要重启设备。\",banner())}function done(e){var t=SENT.p;return\"p4\"==t.id?(HBOFF=0,void"
 		" stdone(e)):WR&&WR.fin?void(HBOFF=0):$(\"[name=tryboot]\",t)&&$(\"[name=tryboot]\",t).checked?(HBOFF"
 		"=0,clearInterval(WRT),WRT=null,WR&&(WR.fin=1),$(\"#steps\").innerHTML=\"<li>\"+plan().join(\"</li><li"
 		">\")+\"</li>\",$(\"#ban\").setAttribute(\"hidden\",\"\"),TRYB=1,busy(0),expect(\"boot\"),void"
@@ -1373,23 +1374,28 @@ static const char resp_form[] =
 		"r$/,\"\"),WR.n=t+1,o&&wrstep(o)}function wrstep(e){var"
 		" t,o,n,a,i,s=$(\".prog\",SENT.p),r=$(\".pbar\",s),l=e.charAt(0),d=e.slice(2).split(\""
 		" \");if(\"s\"==l)return t=+d[d.length-1],WR.left=0,t>0&&(d.pop(),WR.left=Math.max(2,Math.round(t/WR"
-		"SPD))),r.className=\"pbar ind\",r.style.width=\"100%\",$(\".pwhat\",s).textContent=d.join(\""
+		"SPD))),\"回读校验\"==d[0]&&(WR.vf=d.slice(1).join(\" \")),r.className=\"pbar"
+		" ind\",r.style.width=\"100%\",$(\".pwhat\",s).textContent=d.join(\""
 		" \")+\"…\",void($(\".pct\",s).textContent=WR.left?\"预计 \"+dur(WR.left):\"\");if(\"v\"==l)return"
 		" o=+d[0],n=+d[1],i=((a=Date.now())-WR.rt)/1e3,WR.left=0,r.className=\"pbar\",r.style.width=(n?o/n*"
 		"100:0)+\"%\",i>=1.5&&(WR.rate=(o-WR.rn)/i,WR.rt=a,WR.rn=o),void($(\".pct\",s).textContent=sz(o)+\" /"
 		" \"+sz(n)+\" · \"+(n?(o/n*100).toFixed(0):0)+\"%\"+(WR.rate>0?\" · \"+spd(WR.rate)+\" · 剩余"
-		" \"+dur((n-o)/WR.rate):\"\"));if(\"r\"!=l){if(\"c\"==l)return\"ok\"==d[0]?void(WR.ver=\"通过\"):(STUCK=\"<b>回读"
-		"校验没通过，闪存里的内容与上传的不一致。</b>重新写入至成功之前不要重启设备。\",banner(),void fail(\"回读校验没通过：\"+d.slice(1).join(\""
+		" \"+dur((n-o)/WR.rate):\"\"));if(\"r\"!=l){if(\"c\"==l)return\"ok\"==d[0]?void(WR.ver=\"通过\"):(STUCK&&!STUC"
+		"KN||(STUCK||(STUCKN=[]),(WR.vf?[WR.vf]:WR.rows.map(function(e){return"
+		" e.n})).forEach(function(e){STUCKN.indexOf(e)<0&&STUCKN.push(e)}),STUCK=\"<b>回读校验没通过，闪存里的内容与上传的不一"
+		"致。</b>重新写入至成功之前不要重启设备。\"),banner(),void fail(\"回读校验没通过：\"+d.slice(1).join(\""
 		" \"),500));if(\"t\"!=l)\"f\"!=l?\"done\"==e&&wrfin():fail(e.slice(2),500);else{if(t=+d[0],o=+d[1],t>0&&"
 		"o>0){WRSPD=t/o;try{localStorage.setItem(\"xgwrspd\",String(Math.round(WRSPD)))}catch(e){}}WR.secs="
 		"o}}else WR.rows.push({n:d[0],s:+d[1]||0,c:d[2]||\"\"})}function"
 		" wrclock(){WR&&!WR.fin&&WR.left&&SENT&&(WR.left--,$(\".pct\",$(\".prog\",SENT.p)).textContent=WR.lef"
 		"t>0?\"预计还需 \"+dur(WR.left):\"即将完成…\")}function wrfin(){var"
 		" e=SENT.p,t=$(\".prog\",e),o=$(\".pbar\",t),n=$(\"button[type=submit]\",e),a=\"\";WR&&!WR.fin&&(WR.fin=1"
-		",clearInterval(WRT),WRT=null,clearTimeout(WRP),WRP=null,HBOFF=0,busy(0),STUCK=\"\",CHK=null,t.clas"
-		"sName=\"prog ok\",o.className=\"pbar\",o.style.width=\"100%\",$(\".pwhat\",t).textContent=\"写入完成\",$(\".pct"
-		"\",t).textContent=\"\",n.disabled=!1,n.textContent=SENT.btxt,clear(e),WR.rows.forEach(function(e){a"
-		"+=\"<div class=r><span>\"+esc(e.n)+\"</span><span class=v>\"+sz(e.s)+(e.c?\" · crc32"
+		",clearInterval(WRT),WRT=null,clearTimeout(WRP),WRP=null,HBOFF=0,busy(0),STUCK&&STUCKN&&((STUCKN="
+		"STUCKN.filter(function(e){return!WR.rows.some(function(t){return"
+		" t.n==e})})).length||(STUCK=\"\")),CHK=null,t.className=\"prog"
+		" ok\",o.className=\"pbar\",o.style.width=\"100%\",$(\".pwhat\",t).textContent=\"写入完成\",$(\".pct\",t).textCo"
+		"ntent=\"\",n.disabled=!1,n.textContent=SENT.btxt,clear(e),WR.rows.forEach(function(e){a+=\"<div"
+		" class=r><span>\"+esc(e.n)+\"</span><span class=v>\"+sz(e.s)+(e.c?\" · crc32"
 		" \"+esc(e.c):\"\")+\"</span></div>\"}),WR.ver&&(a+=\"<div class=r><span>回读校验</span><span"
 		" class=v>\"+esc(WR.ver)+\"</span></div>\"),WR.secs&&(a+=\"<div class=r><span>用时</span><span"
 		" class=v>\"+dur(WR.secs)+\"</span></div>\"),a||(a=\"<div"
@@ -5103,6 +5109,33 @@ static void netmode_unstash(void)
 	env_set("netmask", strcmp(mask, "-") ? mask : NULL);
 }
 
+/*
+ * Saving client mode saves no address, but the saveenv that goes with it
+ * writes ipaddr as it stands -- which may be a temporary one from an unsaved
+ * change, and the next boot without a lease would fall back to it.  It stays
+ * for this boot: the page is on it, and promises that a failed lease leaves
+ * it there.  What goes to flash alongside is the address to come back to,
+ * for netmode_load() to put back as it does after any unsaved change: the
+ * stash already taken, or else what the old saved mode would have restored.
+ * Read off that old mode, so before it is overwritten.
+ */
+static void netmode_client_stash(void)
+{
+	const char *ip, *mask;
+	char v[64];
+
+	if (env_get(ENV_NETPREV) || !netmode_restores_ip())
+		return;
+
+	ip = env_get(ENV_NETIP);
+	if (netmode_parse(env_get(ENV_NETMODE)) == NET_SERVER)
+		mask = "255.255.255.0";
+	else if (!(mask = env_get(ENV_NETMASK)))
+		mask = env_get("netmask");
+	snprintf(v, sizeof(v), "%s %s", ip, mask ? mask : "-");
+	env_set(ENV_NETPREV, v);
+}
+
 /* Apply what /netmode asked for, once the answer is out. */
 static void netmode_apply(void)
 {
@@ -5127,6 +5160,8 @@ static void netmode_apply(void)
 	if (!nm_save) {
 		net_unsaved = 1;
 	} else {
+		if (nm_mode == NET_CLIENT)
+			netmode_client_stash();
 		env_set(ENV_NETMODE, netmode_name(nm_mode));
 		/*
 		 * A lease is not an address this board owns, so client mode
@@ -5135,8 +5170,13 @@ static void netmode_apply(void)
 		 */
 		env_set(ENV_NETIP, nm_ip[0] ? nm_ip : NULL);
 		env_set(ENV_NETMASK, nm_mask[0] ? nm_mask : NULL);
-		/* A saved mode is what netmode_load() goes by from now on. */
-		env_set(ENV_NETPREV, NULL);
+		/*
+		 * A saved mode is what netmode_load() goes by from now on --
+		 * client mode by the stash as well, for the address it falls
+		 * back to.
+		 */
+		if (nm_mode != NET_CLIENT)
+			env_set(ENV_NETPREV, NULL);
 		if (run_command("saveenv", 0)) {
 			printf("httpd: saving failed; this lasts until "
 			       "reboot\n");
@@ -5410,6 +5450,8 @@ static struct fvol *fvol_find(const char *field)
 	return NULL;
 }
 
+static ulong part_align(struct up_part *part);
+
 /*
  * Everything that can be checked before answering is checked here, so a
  * refused upload is refused while the browser is still listening.  Once the
@@ -5430,9 +5472,29 @@ static int httpd_validate(void)
 
 		if (v)
 			nvols++;
+		/*
+		 * A backup read out of the volume is longer: a dynamic volume
+		 * reads back as all of its LEBs, and those past the data are
+		 * erased.  Taken as the same file cut to size -- but only when
+		 * every byte past it is 0xff, or a wrong file of about the
+		 * right length would get in the same way.
+		 */
+		if (v && up_parts[i].size > v->size) {
+			const u8 *d = (const u8 *)part_align(&up_parts[i]);
+
+			if (all_ff(d + v->size, up_parts[i].size - v->size)) {
+				printf("httpd: %s is %u bytes, erased past %u; "
+				       "writing the first %u\n",
+				       up_parts[i].name, up_parts[i].size,
+				       v->size, v->size);
+				up_parts[i].size = v->size;
+			}
+		}
 		if (v && up_parts[i].size != v->size) {
 			httpd_reject("%s is %u bytes, the %s volume holds "
-				     "exactly %u", up_parts[i].name,
+				     "exactly %u (a longer backup of the "
+				     "volume is taken if all past that is "
+				     "0xff)", up_parts[i].name,
 				     up_parts[i].size, v->name, v->size);
 			return -1;
 		}
@@ -6039,6 +6101,7 @@ static void httpd_dump(void)
 	ulong top, avail;
 	u64 off = 0;
 	u32 len = 0;
+	int i;
 
 	dump_busy = 1;
 	dump_t0 = get_timer(0);
@@ -6100,6 +6163,16 @@ static void httpd_dump(void)
 		len = v->used_bytes > 0 ? (u32)v->used_bytes :
 			(u32)((u64)v->reserved_pebs * ubi->leb_size);
 		ubi_put_device(ubi);
+		/*
+		 * Except a factory volume: its data is the configured length
+		 * and the rest of the last LEB is erased.  Cut there, and the
+		 * backup is the same file as the stock partition it came from
+		 * -- same length, same md5 -- and writes straight back here
+		 * or into another project's volume of the same size.
+		 */
+		for (i = 0; i < nfvols; i++)
+			if (!strcmp(fvols[i].name, val) && len > fvols[i].size)
+				len = fvols[i].size;
 
 		dump_raw = 0;
 		strlcpy(dump_vol, val, sizeof(dump_vol));

@@ -290,8 +290,9 @@ x.send=function(fd){
  var tick=setInterval(function(){n+=Math.max(tot/40,65536);if(n>=tot){n=tot;clearInterval(tick);x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot});x.upload.onload&&x.upload.onload();
   setTimeout(function(){if(S.post=='drop'){x.onerror&&x.onerror();return}
    if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well';x.onload&&x.onload();return}
-   /* 另一个上传占着时，设备把这个 POST 当 GET 答：200，整张页面 */
-   if(S.post=='busy'){x.status=200;x.responseText='<!DOCTYPE html><html><head><title>U-Boot</title></head><body></body></html>';x.onload&&x.onload();return}
+   /* 另一个上传占着时，设备把这个 POST 当 GET 答：200，整张页面 —— 真的那张，
+      连脚本在内，页面据以判断的字眼它里面都有 */
+   if(S.post=='busy'){x.status=200;x.responseText='<!DOCTYPE html>'+document.documentElement.outerHTML;x.onload&&x.onload();return}
    /* 刷回原厂仍是一次性回复：它边收边写，200 到手时早写完了 */
    if(st){if(S.post=='fail500'){x.status=500;
      x.responseText='写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电'}
@@ -301,25 +302,31 @@ x.send=function(fd){
     x.onload&&x.onload();return}
    /* 试运行一去不回，所以它还是先回复后动手 */
    if(tryb){x.status=200;x.responseText='{"ok":1}';fall(9000);x.onload&&x.onload();return}
-   x.status=200;x.responseText='{"ok":1}';x.onload&&x.onload();
-   WRLOG='';wrrun(wrlines(parts,fmt),0);return},1200);return}
+   /* 设备在 ACK 时就清了上一次的写入记录，回 200 之前：页面拿到 200 立刻去读 /wr，
+      先清再答，否则读到的是上一次的 */
+   WRLOG='';x.status=200;x.responseText='{"ok":1}';x.onload&&x.onload();
+   wrrun(wrlines(parts,fmt),0);return},1200);return}
   x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot})},80)}}
 /*
  * A1 的行协议。写那一步报不出中间态（配方在 run_command 里），所以只有一句
  * 「正在写…」；回读校验是设备自己的循环，一段一段报得出来。
  */
 var VNAME={bl2:'BL2',fip:'U-Boot',firmware:'固件',ubifile:'卷'};
-function wrlines(parts,fmt){var L=[],tot=0;
+function vname(p){return VNAME[p.k]||(p.k.indexOf('fvol_')==0?p.k.slice(5):p.k)}
+function wrlines(parts,fmt){var L=[],tot=0,vd=Math.round(520/Math.max(1,parts.length));
  if(fmt)L.push(['s 重建 UBI',2600]);
- parts.forEach(function(p){var nm=VNAME[p.k]||(p.k.indexOf('fvol_')==0?p.k.slice(5):p.k);
+ parts.forEach(function(p){var nm=vname(p);
   tot+=p.n;
   L.push(['s 写入 '+nm+' '+p.n,Math.max(800,Math.min(7000,p.n/1400000*1000))]);
   L.push(['r '+nm+' '+p.n+' '+((0x3f2a91c4+p.n)>>>0).toString(16),250])});
  if(S.post=='fail500'){L=L.slice(0,fmt?2:1);
   L.push(['f 写入 BL2 失败，详见串口日志',0]);
   return L}
- L.push(['s 回读校验 '+tot,500]);
- for(var i=1;i<=5;i++)L.push(['v '+Math.round(tot*i/5)+' '+tot,520]);
+ /* 和设备一样一个部分一段：「s 回读校验 <名> <字节>」，再一串 v；vbad 让最后一个部分不过 */
+ for(var j=0;j<parts.length;j++){var q=parts[j],qn=vname(q);
+  L.push(['s 回读校验 '+qn+' '+q.n,j?120:500]);
+  for(var i=1;i<=5;i++)L.push(['v '+Math.round(q.n*i/5)+' '+q.n,vd]);
+  if(S.post=='vbad'&&j==parts.length-1){L.push(['c bad '+qn+' 读回来的内容与上传的不一致',0]);return L}}
  L.push(['c ok',250]);
  L.push(['t '+tot+' '+Math.max(0.1,tot/1400000).toFixed(1),120]);
  L.push(['done',0]);
@@ -342,7 +349,7 @@ document.addEventListener('DOMContentLoaded',function(){
  /* 这条是预览自己的，不属于设备那张页面：别让语言切换去动它 */
  b.id='pvbar';b.setAttribute('data-raw','');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option><option value=vbad>回读校验没通过</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
  var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn');
  sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};

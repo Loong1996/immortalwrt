@@ -104,10 +104,14 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
        rows.find(r => /^fip/.test(r.cells[0].textContent)).cells[2].textContent === '318 KiB',
        rows.find(r => /^fip/.test(r.cells[0].textContent)).cells[2].textContent);
 
-    let url = null;
-    w.sink = (u, what, n) => { url = u; };
+    /* 出厂卷是 dynamic，整卷 372 KiB；设备只给到规定的 256 KiB，和原厂分区一样大 */
+    ok('出厂卷按规定长度列出', rows.find(r => /^ri/.test(r.cells[0].textContent)).cells[2].textContent === '256 KiB',
+       rows.find(r => /^ri/.test(r.cells[0].textContent)).cells[2].textContent);
+    let url = null, len = null;
+    w.sink = (u, what, n) => { url = u; len = n; };
     rows.find(r => /^ri/.test(r.cells[0].textContent)).querySelector('button').click();
     ok('卷下载走 /dump?vol=', url === '/dump?vol=ri', url);
+    ok('出厂卷下载按规定长度', len === 262144, len);
 
     w.dumpall();
     ok('整片下载不带 len，交给设备去数', url === '/dump?off=0x0', url);
@@ -462,21 +466,78 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
   }
 
   console.log('\n--- 重写成功，红条撤掉 ---');
-  {
-    const w = await boot();
-    w.STUCK = '<b>回读校验没通过</b>';
-    w.banner();
-    ok('红条先挂着', /回读校验没通过/.test(txt(w, '#bant')));
+  const fw = async (w) => {
     const i = $(w, '#p1 input[name=firmware]');
     Object.defineProperty(i, 'files', {
       value: [new w.File([new Uint8Array(1024)], 'x.itb')], configurable: true });
     w.send();
-    for (let k = 0; k < 150 && !on(w, '#rmask'); k++) await sleep(100);
-    ok('写完了', on(w, '#rmask'));
+    for (let k = 0; k < 150 && !on(w, '#rmask') &&
+         $(w, '#p1 .prog').className !== 'prog bad'; k++) await sleep(100);
+  };
+  {
+    const w = await boot();
+    setsel(w, 'post', 'vbad');
+    await fw(w);
+    ok('校验没过不弹结果框', !on(w, '#rmask'));
+    ok('红条挂上', /回读校验没通过/.test(txt(w, '#bant')), txt(w, '#bant'));
+    ok('记下的是没过的那个部分', JSON.stringify(w.STUCKN) === '["固件"]',
+       JSON.stringify(w.STUCKN));
+    setsel(w, 'post', 'ok');
+    await fw(w);
+    ok('重写固件写完了', on(w, '#rmask'));
     ok('STUCK 清掉', !w.STUCK, w.STUCK);
     w.rhide();
     await sleep(600);
     ok('红条不在了', !/回读校验没通过/.test(txt(w, '#bant')), txt(w, '#bant'));
+  }
+
+  console.log('\n--- 写的是别的部分，红条不撤 ---');
+  {
+    const w = await boot();
+    w.STUCK = '<b>回读校验没通过</b>';
+    w.STUCKN = ['U-Boot'];
+    w.banner();
+    await fw(w);
+    ok('固件写完了', on(w, '#rmask'));
+    ok('U-Boot 没重写，STUCK 还在', /回读校验没通过/.test(w.STUCK), w.STUCK);
+    w.rhide();
+    await sleep(600);
+    ok('红条还挂着', /回读校验没通过/.test(txt(w, '#bant')), txt(w, '#bant'));
+  }
+  {
+    const w = await boot();
+    w.STUCK = '<b>写入未完成，闪存已写入一部分。</b>';
+    w.STUCKN = null;
+    w.banner();
+    await fw(w);
+    ok('刷回原厂写了一半，写个固件不撤', /写入未完成/.test(w.STUCK), w.STUCK);
+  }
+  {
+    const w = await boot();
+    w.STUCK = '<b>回读校验没通过</b>';
+    w.STUCKN = ['U-Boot', '固件'];
+    w.banner();
+    await fw(w);
+    ok('两个没过的，重写一个只划掉一个', JSON.stringify(w.STUCKN) === '["U-Boot"]' &&
+       /回读校验没通过/.test(w.STUCK), JSON.stringify(w.STUCKN));
+  }
+  {
+    const w = await boot();
+    w.STUCK = '<b>回读校验没通过</b>';
+    w.STUCKN = ['U-Boot'];
+    setsel(w, 'post', 'vbad');
+    await fw(w);
+    ok('又一个没过的并进去', JSON.stringify(w.STUCKN) === '["U-Boot","固件"]',
+       JSON.stringify(w.STUCKN));
+  }
+  {
+    const w = await boot();
+    w.STUCK = '<b>写入未完成，闪存已写入一部分。</b>';
+    w.STUCKN = null;
+    setsel(w, 'post', 'vbad');
+    await fw(w);
+    ok('刷回原厂写了一半的红条不被校验失败顶掉', w.STUCKN === null &&
+       /写入未完成/.test(w.STUCK), w.STUCK);
   }
 
   console.log('\n--- 备份完之后能核对 ---');
@@ -493,8 +554,9 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     ok('传完出现一行记录', w.document.querySelectorAll('#dll tr').length === 1);
     const row = $(w, '#dll tr');
     ok('记录带文件名', /\.bin$/.test(row.cells[0].textContent), row.cells[0].textContent);
-    /* dynamic 卷没有「内容多长」这回事，整卷都得下 */
-    ok('记录带长度', row.cells[1].textContent === '372 KiB', row.cells[1].textContent);
+    /* dynamic 卷没有「内容多长」这回事，一般整卷都得下；出厂卷例外，给到
+       规定的长度为止，和原厂分区备份一样大、写得回去 */
+    ok('记录带长度', row.cells[1].textContent === '256 KiB', row.cells[1].textContent);
     ok('记录带 crc32', /^[0-9a-f]+$/.test(row.cells[2].textContent), row.cells[2].textContent);
     ok('说清这个数怎么用', /本地文件核对/.test(txt(w, '#dllh')));
     ok('说清长度不受限', /不限长度/.test(txt(w, '#p10')));
