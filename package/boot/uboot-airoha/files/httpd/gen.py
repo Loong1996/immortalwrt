@@ -10,11 +10,14 @@ httpd.c.  Markers understood inside the HTML:
                                           CONFIG_CMD_HTTPD_STOCK_RESTORE
   @@NAME@@                                spliced as the C macro NAME
 
-Every source line becomes one string literal ending in \\n, so the HTML,
-CSS and JS stay exactly as written -- no minifier, nothing to get wrong.
+Every source line becomes one string literal ending in \\n.  The HTML
+and CSS stay as written; the main script is minified first (jsmin.py, which
+needs node and test/'s npm install).
 """
 import re
 import sys
+
+from jsmin import minify
 
 BEGIN = "/* @@PAGE_BEGIN@@ */"
 END = "/* @@PAGE_END@@ */"
@@ -60,7 +63,7 @@ def convert(html):
 
 
 def main():
-    html = open(sys.argv[1], encoding="utf-8").read()
+    html = minify(open(sys.argv[1], encoding="utf-8").read())
     src = open(sys.argv[2], encoding="utf-8").read()
     a = src.index(BEGIN) + len(BEGIN)
     b = src.index(END)

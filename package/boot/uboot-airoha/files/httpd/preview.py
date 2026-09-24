@@ -21,9 +21,14 @@ Markers are handled the way gen.py does, except that the @@MACROS@@ get
 sample values.  The STOCK section is shown by default; --no-stock drops it
 instead, which is what a board built without CMD_HTTPD_STOCK_RESTORE serves.
 Anything reachable from outside that section has to keep working in both.
+
+The main script is minified as gen.py does (jsmin.py), so the jsdom cases
+run what the board sends; --raw leaves it as written, for reading.
 """
 import json
 import sys
+
+from jsmin import minify
 
 MACROS = {
     "WEB_VERSION": "1.0.1",
@@ -398,9 +403,11 @@ def render(html, stock=True):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a != "--no-stock"]
+    args = [a for a in sys.argv[1:] if a not in ("--no-stock", "--raw")]
     stock = "--no-stock" not in sys.argv[1:]
     html = open(args[0], encoding="utf-8").read()
+    if "--raw" not in sys.argv[1:]:
+        html = minify(html)
     # argv[2] is written over, so it is the destination and never the source.
     dst = args[1] if len(args) > 1 else "preview.html"
     open(dst, "w", encoding="utf-8", newline="").write(render(html, stock))
