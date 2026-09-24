@@ -402,6 +402,37 @@ jobs:
           echo "u-boot.bin   $(stat -c%s u-boot.bin) B"
           aarch64-linux-gnu-size net/httpd.o || true
 
+      # BL2 把 FIP 里 LZMA 压过的 U-Boot 读进固定大小的缓冲区（还得留约 16 KiB
+      # 给解压器），再解到固定大小的窗口里；超了就是串口上的
+      # "BL2: Failed to load image id 5 (-27)"，板子起不来。上限按 Makefile 里
+      # 这块板的 BL33_MAX / BL33_LZMA_MAX（没写就用 U-Boot/Default 的），跟整套
+      # 编译时 files/fip/check-bl33.sh 拦的是同一条线。这里的编译器和 xz 都跟
+      # OpenWrt 的不一样，压出来要大 1% 左右，SPI 板子眼下只剩一两 KiB 余量，
+      # 所以这里超了只报警告；真正拦的是整套编译里那一道。
+      - name: BL33 Size(U-Boot 塞得进 BL2)
+        if: ${{ !matrix.chain }}
+        env:
+          UBOOT_CFG: ${{ matrix.config }}
+        run: |
+          set -eu
+          mk="$GITHUB_WORKSPACE/$PKG/Makefile"
+          lim() {
+            awk -v cfg="$UBOOT_CFG" -v key="$1" '
+              /^define U-Boot\// { blk = $2; next }
+              /^endef/ { blk = ""; next }
+              blk != "" && $1 == "UBOOT_CONFIG:=" cfg { hit[blk] = 1 }
+              blk != "" && index($1, key ":=") == 1 { v[blk] = substr($1, length(key) + 3) }
+              END {
+                for (b in hit) if (b in v) { print v[b]; exit }
+                print v["U-Boot/Default"]
+              }' "$mk"
+          }
+          cd "$UB"
+          xz --format=lzma -9 -k -c u-boot.bin > u-boot.lzma
+          sh "$GITHUB_WORKSPACE/$PKG/files/fip/check-bl33.sh" "$UBOOT_CFG" \
+            u-boot.bin u-boot.lzma "$(lim BL33_MAX)" "$(lim BL33_LZMA_MAX)" \
+            || echo "::warning::$UBOOT_CFG 的 U-Boot 按这里的编译结果超出 BL2 能加载的大小"
+
       # 原厂引导锁着的板子不刷 BL2/FIP，刷的是 chainloader 分区的槽位镜像：
       # FIT 在 0x2100（原厂 bootcmd 读的地方），前面是 legacy uImage 包着的
       # shim（给改过 bootcmd、从 0x600000 读的机器）。shim 是裸机代码，没有

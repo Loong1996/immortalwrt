@@ -11,10 +11,16 @@ include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
 
+# What BL2 will load as BL33 (files/fip/check-bl33.sh): LZMA-packed, into
+# a 0x58000 buffer that also holds ~16 KiB of decoder state, and unpacked
+# into 1 MiB.  Boards whose BL2 was built from the same ATF with wider limits
+# say so; the SPI NAND BL2s already in the field have these.
 define U-Boot/Default
   BUILD_TARGET:=airoha
   LZMA_COMPRESS:=1
   HIDDEN:=1
+  BL33_MAX:=0x100000
+  BL33_LZMA_MAX:=0x54000
 endef
 
 define U-Boot/an7581_fiberhome_hg5382a
@@ -24,6 +30,11 @@ define U-Boot/an7581_fiberhome_hg5382a
   BUILD_SUBTARGET:=an7581
   BL2_IMAGE:=an7581-pnand-bl2.bin
   BL31_IMAGE:=an7581-bl31.bin
+  # The pnand BL2 unpacks up to 2 MiB from a 0x80000 buffer (ATF patch
+  # 102).  The FIP must also fit the 0x7f800 BL2 takes over XMODEM, next to
+  # BL31, hence 0x70000 rather than 0x7c000.
+  BL33_MAX:=0x200000
+  BL33_LZMA_MAX:=0x70000
 endef
 
 # Locked vendor bootloader: no BL2 or FIP, the vendor U-Boot boots this one
@@ -169,6 +180,10 @@ define Build/Compile
 	$(if $(LZMA_COMPRESS), $(STAGING_DIR_HOST)/bin/lzma e \
 		$(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/u-boot.lzma)
+	$(if $(and $(BL2_IMAGE),$(LZMA_COMPRESS)), \
+		$(SHELL) ./files/fip/check-bl33.sh $(BUILD_VARIANT) \
+			$(PKG_BUILD_DIR)/u-boot.bin $(PKG_BUILD_DIR)/u-boot.lzma \
+			$(BL33_MAX) $(BL33_LZMA_MAX))
 	$(if $(CHAINLOAD_SLOT), \
 		XZ=$(STAGING_DIR_HOST)/bin/xz $(SHELL) ./files/chainload/build.sh \
 			$(TARGET_CROSS) $(PKG_BUILD_DIR) $(PKG_BUILD_DIR)/u-boot.lzma \
