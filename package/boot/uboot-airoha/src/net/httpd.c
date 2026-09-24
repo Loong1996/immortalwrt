@@ -33,8 +33,11 @@
  *   network          GET /net for the address and the link state of each
  *                    port (polled while that tab is open); GET
  *                    /netmode?mode=server|static|client&ip=&mask=&save= to
- *                    change it
+ *                    change it; GET /dhcpgw?on=0|1 for whether a lease
+ *                    carries this board as the gateway
  *   environment      GET /env read-only, GET /envreset for the defaults
+ *   settings         GET /wipecfg removes rootfs_data: OpenWrt's settings
+ *                    and packages, gone on the next boot
  *   reboot           GET /reboot
  *
  * The page also polls GET /ping.  That answer is the only thing telling
@@ -67,6 +70,7 @@
 #include <time.h>
 #include <ubi_uboot.h>
 #include <linux/kernel.h>
+#include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/libfdt.h>
 #include <linux/mtd/mtd.h>
@@ -146,6 +150,8 @@ DECLARE_GLOBAL_DATA_PTR;
  * have to be taken off it -- see httpd_on_snd_una_update().
  */
 #define CONN_DRAIN		((void *)22)
+#define CONN_WIPECFG		((void *)23)
+#define CONN_DHCPGW		((void *)24)
 
 /*
  * Commands run after the response has been flushed and net_loop() returned.
@@ -187,6 +193,15 @@ DECLARE_GLOBAL_DATA_PTR;
 #define DEF_WRITE_FIP		"if ubi check fip ; then " \
 				"ubi write $loadaddr fip $filesize ; " \
 				"else run ubi_write_fip ; fi"
+/*
+ * Clearing OpenWrt's settings is removing its overlay.  The next normal boot
+ * runs ubi_prepare_rootfs, which creates an empty rootfs_data again, and UBIFS
+ * formats an empty volume on its first mount -- the same thing a flash does
+ * to it.  The board's ubi_remove_rootfs is used when it is there so the
+ * serial menu and this page take the same path.
+ */
+#define ENV_REMOVE_ROOTFS	"ubi_remove_rootfs"
+#define DEF_REMOVE_ROOTFS	"ubi check rootfs_data && ubi remove rootfs_data"
 #define DEF_WRITE_FIT		"ubi check fit && ubi remove fit ; " \
 				"ubi check rootfs_data && ubi remove rootfs_data ; " \
 				"ubi create fit $filesize dynamic && " \
@@ -427,6 +442,12 @@ static const char resp_form[] =
 	".r+.r{border-top:1px solid var(--sep)}\n"
 	".r span:first-child{color:var(--c2)}\n"
 	".r .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}\n"
+	"/* 文件名那一格：.r span:first-child 会连 .vc 里的文件名一起染灰，这里压过它 */\n"
+	".r .vc{min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right}\n"
+	".r:has(.vc)>span:first-child{flex:none}\n"
+	".r .vc .v{max-width:100%;color:var(--fg)}\n"
+	".r .vc .md{font-size:.86em;color:var(--c2)}\n"
+	".r .vc .ok{color:var(--grn)}.r .vc .bad{color:var(--red)}.r .vc .md.bad{font-weight:500}\n"
 	".w{font-size:.9em;color:var(--org);margin-top:.5rem;line-height:1.45}\n"
 	".w+.w{margin-top:.3rem}\n"
 	".e{font-size:.9em;color:var(--red);margin-top:.5rem;line-height:1.45;font-weight:500}\n"
@@ -662,8 +683,8 @@ static const char resp_form[] =
 	"<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>\n"
 	"<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部"
 		" <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>\n"
-	"<div class=row><button type=button class=pb onclick=dumpall()>整片下载</button><button type=button"
-		" class=\"pb pri\" onclick=dumpraw()>下载区段</button></div>\n"
+	"<div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button"
+		" type=button class=\"pb pri\" onclick=dumpraw()>下载区段</button></div>\n"
 	"</div>\n"
 	"<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div"
 		" class=box><table class=kv id=dll></table></div></div>\n"
@@ -703,6 +724,11 @@ static const char resp_form[] =
 	"<div class=row><button type=button class=\"pb pri\" onclick=applyaddr()>应用</button></div>\n"
 	"<p class=note id=nboot></p>\n"
 	"<p class=note id=dhsum hidden></p>\n"
+	"<div id=dgwbox hidden><p class=bh>DHCP 服务器</p>\n"
+	"<div class=box><div class=\"fr wide\"><span class=fl>下发网关<small>关掉后路由器不下发网关</small></span><span"
+		" class=\"fc end\"><input type=checkbox class=sw id=ndgw checked"
+		" onchange=dgwset()></span></div></div>\n"
+	"<p class=note id=dgwh></p></div>\n"
 	"</div>\n"
 	"<div class=sp data-g=g5 id=s53>\n"
 	"<div class=vbar id=vbar hidden></div>\n"
@@ -788,6 +814,13 @@ static const char resp_form[] =
 		" end\"><button type=button class=pb id=bob onclick=bootonce()>设置</button></span></div>\n"
 	"</div>\n"
 	"<p class=note id=boh>设置后下次开机停在本页面，再下次开机恢复正常引导。</p>\n"
+	"<p class=bh>清空设置</p>\n"
+	"<div class=box>\n"
+	"<div class=\"fr wide\"><span class=fl>清空系统设置<small>删掉 OpenWrt"
+		" 的设置和装过的软件包，固件与出厂数据不动</small></span><span class=\"fc end\"><button type=button class=\"pb red\""
+		" id=wcb onclick=askwipe()>清空</button></span></div>\n"
+	"</div>\n"
+	"<p class=note id=wch></p>\n"
 	"</div>\n"
 	"<div class=pane id=p6>\n"
 	"<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>\n"
@@ -869,7 +902,7 @@ static const char resp_form[] =
 	"</div></div>\n"
 	"</div>\n"
 	"<script>\n"
-	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null;\n"
+	"var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null,INFOQ=0,CHKQ=0,ENVQ=0;\n"
 	"var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;\n"
 	"/*\n"
 	"* 试跑交出去之后，p7 那一页说的比任何遮罩都全：闪存动没动、起不来断电就回\n"
@@ -879,7 +912,7 @@ static const char resp_form[] =
 	"*/\n"
 	"var TRYB=0;\n"
 	"var RT=0,RN=0,RATE=0;\n"
-	"var DLSEQ=0,DLBAD=0,STUCK='';\n"
+	"var DLSEQ=0,DLBAD=0,STUCK='',DLWHAT='';\n"
 	"var LOGN=0,LOGT=null,LOGGEN=0;\n"
 	"/* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */\n"
 	"var NETINIT=0;\n"
@@ -925,8 +958,8 @@ static const char resp_form[] =
 	"function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}\n"
 	"function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');el"
 		"se x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!IN"
-		"FO)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'"
-		"&&!CHK)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV)getenv()}\n"
+		"FO&&!INFOQ)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if("
+		"id=='p8'&&!CHK&&!CHKQ)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV&&!ENVQ)getenv()}\n"
 	"function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}\n"
 	"/*\n"
 	"* 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；\n"
@@ -973,7 +1006,14 @@ static const char resp_form[] =
 		" class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}\n"
 	"function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x"
 		".onerror=function(){cb(0,'')};x.open('GET',u);x.send()}\n"
-	"function info(){get('/info',function(st,t){try{INFO=JSON.parse(t)}catch(e){INFO=null}fill()})}\n"
+	"/*\n"
+	"* 出错的 /info 是一个 JSON 500（{\"err\":…}），解析得出来但里面没有 ubi ——\n"
+	"* 当成读到了，横幅就会叫人在好好的板子上重建 UBI。所以只认 200。\n"
+	"* INFOQ：1 正在读，2 读的同时又有人要一份新的（写完之后），回来后再读一次。\n"
+	"*/\n"
+	"function info(){if(INFOQ){INFOQ=2;return}INFOQ=1;\n"
+	"get('/info',function(st,t){var r=null,again=INFOQ==2;INFOQ=0;\n"
+	"if(st==200)try{r=JSON.parse(t)}catch(e){}INFO=r;fill();if(again)info()})}\n"
 	"/*\n"
 	"* 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。\n"
 	"* 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个\n"
@@ -994,7 +1034,6 @@ static const char resp_form[] =
 		" $('#ban').setAttribute('hidden','')}\n"
 	"var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1"
 		" 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20\"/>';\n"
-	"var ICON_WR='<path d=\"M12 6v6l4 2\"/><circle cx=\"12\" cy=\"12\" r=\"9\"/>';\n"
 	"var ICON_RB='<path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/>';\n"
 	"function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;\n"
 	"d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}\n"
@@ -1024,14 +1063,13 @@ static const char resp_form[] =
 	"*/\n"
 	"if(LIVE&&MISS>=2&&(!SILENT||MISS>=40)){LIVE=0;SILENT=0;offline(OFFWHY)}\n"
 	"live(LIVE?1:2)}\n"
-	"/* 已知会断，而且要立刻说明：写入、重启 */\n"
+	"/* 已知会断，而且要立刻说明：重启、试跑启动 */\n"
 	"function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}\n"
 	"/* 已知会静默，但用户自己发起的：只变点，不弹框 */\n"
 	"function silent(){SILENT=1;MISS=0}\n"
 	"/* 设备已经移走、或者页面自己已经把话说完了：通用的「断开」框只会盖掉那条指引 */\n"
 	"function offline(why){if(GONE||TRYB)return;var i,t,b,r=0;\n"
-	"if(why=='write'){i=ICON_WR;t='设备正在写入';b='指示灯流水表示设备还在工作。<b>请勿断电</b>，也不要拔网线。'}\n"
-	"else if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}\n"
+	"if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}\n"
 	"else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动。引导成功后<b>本页面不再可用</b>；引导失败则回到本页面。'}\n"
 	"else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。';r=1}\n"
 	"$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;\n"
@@ -1039,9 +1077,7 @@ static const char resp_form[] =
 	"(r?'<div class=hint>每 2 秒自动重试。</div>':'');\n"
 	"$('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连接';\n"
 	"$('#off').setAttribute('data-on','')}\n"
-	"function online(){var why=OFFWHY;OFFWHY='';$('#off').removeAttribute('data-on');\n"
-	"if(why=='write'&&SENT&&SENT.p){var prog=$('.prog',SENT.p);if(prog){prog.className='prog ok';\n"
-	"$('.pwhat',prog).textContent='写入完成，HTTP 服务已恢复，可继续写入下一个卷';$('.pct',prog).textContent=''}}}\n"
+	"function online(){OFFWHY='';$('#off').removeAttribute('data-on')}\n"
 	"/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */\n"
 	"function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if"
 		"(!HB)HB=1;ping()}\n"
@@ -1071,12 +1107,13 @@ static const char resp_form[] =
 	"*/\n"
 	"var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};\n"
 	"function amodesw(){var m=$('#amode').value;\n"
+	"$('#dgwbox').hidden=m!='server';\n"
 	"$('#arow1').hidden=m=='client';\n"
 	"$('#arow2').hidden=m!='static';\n"
 	"$('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'\n"
 	":'IP<small>设备的接口地址</small>';\n"
 	"$('#nh').innerHTML=m=='server'\n"
-	"?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，网关指向本设备且不带"
+	"?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，不带"
 		" DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'\n"
 	":m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'\n"
 	":'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';\n"
@@ -1107,7 +1144,9 @@ static const char resp_form[] =
 	"h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'\n"
 	"+(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)\n"
 	"+(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');\n"
-	"if(m=='server')h+='<div class=w>本机开始发地址：电脑将拿到 <b>'\n"
+	"if(m=='server')h+='<div class=r><span>网关</span><span class=v>'\n"
+	"+($('#ndgw').checked?'下发':'不下发')+'</span></div>'\n"
+	"+'<div class=w>本机开始发地址：电脑将拿到 <b>'\n"
 	"+esc(ip.replace(/\\.\\d+$/,'.100'))+'</b></div>';\n"
 	"if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';\n"
 	"if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'\n"
@@ -1143,6 +1182,40 @@ static const char resp_form[] =
 	"+(url?'<div class=hint>10 秒后自动跳转。</div>':'');\n"
 	"$('#offr').hidden=true;$('#off').setAttribute('data-on','');\n"
 	"if(url)setTimeout(function(){location.href=url},10000)}\n"
+	"/*\n"
+	"* 下发网关：默认发，电脑插上就把本机当出口；关掉之后电脑的外网还走它原来\n"
+	"* 那条（Wi-Fi），救砖时照样能查教程、下固件。只管之后拿地址的电脑，已经\n"
+	"* 拿过的要重新插一下网线。拨了就存，不走「应用」—— 那条路要断开重开页面。\n"
+	"*/\n"
+	"function dgwset(){var c=$('#ndgw'),on=c.checked?1:0;c.disabled=true;\n"
+	"get('/dhcpgw?on='+on,function(st,t){c.disabled=false;t=(t||'').trim();\n"
+	"if(st!=200||!/^ok/.test(t)){c.checked=!on;$('#dgwh').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'"
+		"+(t||st);return}\n"
+	"var n=(NET&&NET.net)||(INFO&&INFO.net);if(n)n.dgw=on;\n"
+	"$('#dgwh').textContent=(on?'已打开':'已关闭')+(t.indexOf('saved')<0?'，但未能保存到闪存':'')+'。电脑重新插拔网线后生效'})}\n"
+	"/*\n"
+	"* 清空系统设置 = 删掉 rootfs_data。下次正常启动时 ubi_prepare_rootfs 建一个\n"
+	"* 空的，UBIFS 挂上去自己格式化，OpenWrt 就当第一次开机。日常刷机本来就走\n"
+	"* 这一步，这里只是把它单拿出来。\n"
+	"*/\n"
+	"function wcvol(){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n=='roo"
+		"tfs_data')v=x});return v}\n"
+	"function wcfill(){var b=$('#wcb'),h=$('#wch');if(!INFO||b.textContent=='已清空')return;\n"
+	"b.disabled=!INFO.ubi||!wcvol();\n"
+	"h.textContent=!INFO.ubi?'闪存上没有 UBI，没有可清空的设置':!wcvol()?'没有 rootfs_data 卷，下次启动就是全新系统':''}\n"
+	"function askwipe(){var b=bkall(),h;$('#atitle').textContent='清空系统设置';\n"
+	"h='<div class=r><span>删除</span><span class=v>rootfs_data 卷</span></div>'\n"
+	"+'<div class=w>OpenWrt 的设置和软件包全部清空，下次启动为全新系统</div>';\n"
+	"if(!b.rootfs_data&&!b.all)h='<div class=w>rootfs_data 未备份 · <a href=\"#\" onclick=\"gobk();return"
+		" false\">去备份</a></div>'+h;\n"
+	"$('#abody').innerHTML=h;var y=$('#yes');y.hidden=false;y.textContent='清空';\n"
+	"YES=dowipe;$('#mask').setAttribute('data-on','')}\n"
+	"function dowipe(){var b=$('#wcb');b.disabled=true;$('#wch').textContent='正在清空…';\n"
+	"get('/wipecfg',function(st,t){t=(t||'').trim();\n"
+	"if(st!=200||!/^ok/.test(t)){b.disabled=false;$('#wch').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受"
+		"：'+(t||st);return}\n"
+	"CHK=null;b.textContent='已清空';$('#wch').textContent='已清空。下次启动为全新系统';\n"
+	"info()})}\n"
 	"function askboot(){$('#atitle').textContent='启动系统';\n"
 	"$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run bootcmd</span></div>'+\n"
 	"'<div class=w>闪存内容不受影响；引导失败回到本页面</div>';\n"
@@ -1162,7 +1235,8 @@ static const char resp_form[] =
 	":'已设置。下次开机停在本页面，再下次开机恢复正常引导'})}\n"
 	"function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';\n"
 	"if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);\n"
-	"if(!INFO){t.innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
+	"if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td"
+		" class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
 	"if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI"
 		" 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}\n"
 	"(INFO.fv||[]).forEach(function(v){fv[v.n]=1});\n"
@@ -1222,15 +1296,30 @@ static const char resp_form[] =
 	"$('.pct',pg).textContent=''}\n"
 	"/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */\n"
 	"/* 传完了才有 crc32：它算的是真正发出去的那些字节 */\n"
-	"function dlrow(r){var t=$('#dll'),h=r.holes|0;\n"
+	"/*\n"
+	"* 备份过什么记在浏览器里，按本机 MAC 分开：重建 UBI 之前要问的就是「这台\n"
+	"* 的出厂卷存过没有」。只记完整传完、没有读取失败的；整片备份算全都存过。\n"
+	"* 浏览器不让存也不要紧，那就每次都提醒。\n"
+	"*/\n"
+	"function bkall(){var m=INFO&&INFO.mac,a={};if(!m)return{};\n"
+	"try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}return a[m]||{}}\n"
+	"function bkmark(w){var m=INFO&&INFO.mac,a={};if(!m||!w)return;\n"
+	"try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();\n"
+	"localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}}\n"
+	"/* 重建会清掉的出厂卷里，这台还没备份过的；整片备份过就一个都不缺 */\n"
+	"function bkmissing(){var b=bkall();if(b.all)return[];\n"
+	"return FV.map(function(v){return v.n}).filter(function(n){return !b[n]})}\n"
+	"function gobk(){hide();nav($('.nav[data-p=p10]'));\n"
+	"if(!INFO||!INFO.ubi){seg($('[data-s=s102]'));$('#dumpallb').focus()}}\n"
+	"function dlrow(r){var t=$('#dll'),h=r.holes|0;if(!h)bkmark(DLWHAT);\n"
 	"t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td"
 		" class=n>'+sz(r.len)+'</td><td class=\"n mono\">'+esc(r.crc)+'</td></tr>';\n"
 	"$('#dllh').hidden=false;\n"
 	"dlstop(h?'':'ok');\n"
 	"$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';\n"
 	"$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志':'传输完成'}\n"
-	"function dlvol(n){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v"
-		"=x});\n"
+	"function dlvol(n){var v=null;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if"
+		"(x.n==n)v=x});\n"
 	"sink('/dump?vol='+encodeURIComponent(n),n+' 卷',v?(v.u||v.s):0)}\n"
 	"/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */\n"
 	"function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}\n"
@@ -1242,13 +1331,14 @@ static const char resp_form[] =
 	"if(l===0){$('#dlh').textContent='长度为 0';return}\n"
 	"if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}\n"
 	"if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}\n"
+	"DLWHAT=!o&&l===null?'all':'';\n"
 	"sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+'"
 		" 起的区段',l)}\n"
 	"/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */\n"
 	"var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_b"
 		"uttons|web_uboot_|envver|httpd_|ubi_)/;\n"
-	"function getenv(){var b=$('#envb');b.disabled=true;get('/env',function(st,t){b.disabled=false;va"
-		"r r=null;try{r=JSON.parse(t)}catch(e){}\n"
+	"function getenv(){var b=$('#envb');b.disabled=true;ENVQ=1;get('/env',function(st,t){ENVQ=0;b.dis"
+		"abled=false;var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 	"if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}\n"
 	"if(!r||!r.env){$('#envt').innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}\n"
 	"ENV=r;envfill();bmfill()})}\n"
@@ -1316,6 +1406,7 @@ static const char resp_form[] =
 	"h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';\n"
 	"/* 发地址这本账只有在真的在发的时候才有意义 */\n"
 	"$('#dhsum').hidden=m!='server';\n"
+	"if(!$('#ndgw').disabled)$('#ndgw').checked=n.dgw!==0;\n"
 	"$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'\n"
 	"+(n.client?'，最近一次分配给 '+n.client:'')\n"
 	"+'。当前打开本页面的主机用的就是设备发的地址。'\n"
@@ -1390,7 +1481,7 @@ static const char resp_form[] =
 	"$('#logtab').hidden=!INFO.log;\n"
 	"if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});\n"
 	"dlfill();\n"
-	"FV=INFO.fv||[];fvrows();\n"
+	"FV=INFO.fv||[];fvrows();wcfill();\n"
 	"if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}\n"
 	"ubibar();\n"
 	"h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';\n"
@@ -1398,12 +1489,12 @@ static const char resp_form[] =
 		" a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td"
 		" class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td"
 		" class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}\n"
-	"function check(){var b=$('#chkb'),t=$('#chk');silent();b.disabled=true;b.textContent='检查中…';t.in"
-		"nerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt"
-		"){b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t"
-		".innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.inner"
-		"HTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class"
-		" 之前先当整数看待并夹在 0..2 */\n"
+	"function check(){var b=$('#chkb'),t=$('#chk');CHKQ=1;silent();b.disabled=true;b.textContent='检查中"
+		"…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function"
+		"(st,txt){CHKQ=0;b.disabled=false;b.textContent='重新检查';var"
+		" r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2"
+		" class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2"
+		" class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */\n"
 	"CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var"
 		" s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g"
 		" colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class=\"dot"
@@ -1418,7 +1509,7 @@ static const char resp_form[] =
 	"function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;\n"
 	"var on=$('#logf').checked;$('#logb').disabled=on;\n"
 	"if(!on)return;\n"
-	"LOGN=0;$('#log').textContent='';logtick()}\n"
+	"LOGN=0;logset('',1);logtick()}\n"
 	"function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;\n"
 	"get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;\n"
 	"var i=st==200&&t?t.indexOf('\\n'):-1;\n"
@@ -1485,10 +1576,18 @@ static const char resp_form[] =
 	"$('#scan').innerHTML=h;\n"
 	"$('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'\n"
 	":s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}\n"
+	"/*\n"
+	"* 日志是串口的原样拷贝：TTL 上是什么这里就是什么，英文界面也不去翻它。\n"
+	"* 只有「正在读取」「读取失败」这种页面自己的话才跟着语言走。\n"
+	"*/\n"
+	"function logset(t,raw){var l=$('#log');\n"
+	"if(raw)l.setAttribute('data-raw','');else l.removeAttribute('data-raw');\n"
+	"l.textContent=t;return l}\n"
 	"function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;\n"
-	"if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');l.textContent='正在读取…'}get('/log',func"
-		"tion(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';l.textContent=st==200?txt.replac"
-		"e(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,''):'读取失败（'+st+'）';l.scrollTop=l.scrollHeight})}\n"
+	"if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');logset('正在读取…',0)}get('/log',function"
+		"(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';if(st==200)logset(txt.replace(/\\x1b\\"
+		"[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/g,''),1);else"
+		" logset('读取失败（'+st+'）',0);l.scrollTop=l.scrollHeight})}\n"
 	"function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.styl"
 		"e.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.ex"
 		"ecCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator."
@@ -1533,8 +1632,8 @@ static const char resp_form[] =
 	"get('/env',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}\n"
 	"if(r&&r.env){ENV=r;envfill();bmfill()}fin()})};\n"
 	"if($('#log').textContent.length>20)return step2();\n"
-	"get('/log',function(st,t){if(st==200)$('#log').textContent=t.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'"
-		"').replace(/\\r/g,'');step2()})}\n"
+	"get('/log',function(st,t){if(st==200)logset(t.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,'').replace(/\\r/"
+		"g,''),1);step2()})}\n"
 	"/* 存文件全在浏览器里完成，设备不参与 */\n"
 	"function save(name,text){try{\n"
 	"var b=new Blob([text],{type:'text/plain;charset=utf-8'}),\n"
@@ -1576,9 +1675,13 @@ static const char resp_form[] =
 		" U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000"
 		" 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有"
 		" U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建"
-		" UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot"
-		" 环境与用户配置');if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或"
-		" U-Boot，本次只写入固件')}\n"
+		" UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');\n"
+	"/* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */\n"
+	"if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '\n"
+	"+'<a href=\"#\" onclick=\"gobk();return false\">整片下载</a>')}\n"
+	"else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '\n"
+	"+'<a href=\"#\" onclick=\"gobk();return false\">去备份</a>')}}if(!rows.some(function(r){return"
+		" r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}\n"
 	"/*\n"
 	"* BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件\n"
 	"* 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在\n"
@@ -1607,17 +1710,35 @@ static const char resp_form[] =
 	"/* p4 是流式的，没有上限；别的页要先整个进内存才写 */\n"
 	"if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次上传"
 		" '+sz(utot)+'，超过设备单次可接收的 '+sz(INFO.uploadmax)+'：内存不足，设备将拒绝');\n"
-	"rows.forEach(function(r){var ok=nameok(r.k,r.f.name);h+='<div"
-		" class=r><span>'+esc(r.l)+'</span><span class=v>'+esc(r.f.name)+' ·"
-		" '+sz(r.f.size)+'</span></div>';if(!ok)W.push(esc(r.l)+' 的文件名与常规命名不符，请确认文件正确')});\n"
+	"var dev=INFO&&INFO.model;\n"
+	"if(dev&&rows.some(function(r){return MDK[r.k]}))h+='<div class=r><span>本机</span><span"
+		" class=v>'+esc(dev)+'</span></div>';\n"
+	"rows.forEach(function(r){var c=fcheck(r.k,r.f.name,dev);h+='<div"
+		" class=r><span>'+esc(r.l)+'</span>'+(c?'<span class=vc><span class=\"v'+(c.c?'"
+		" '+c.c:'')+'\">':'<span class=v>')+esc(r.f.name)+' · '+sz(r.f.size)+'</span>'+(c?'<span"
+		" class=\"md'+(c.c?' '+c.c:'')+'\">'+c.t+'</span></span>':'')+'</div>'});\n"
 	"if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';\n"
 	"E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div"
 		" class=w>'+x+'</div>'});\n"
 	"$('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribute('data-on','');"
 		"return false}\n"
-	"function nameok(k,n){n=n.toLowerCase();return k=='firmware'?n.indexOf('.itb')>0:k=='bl2'?(n.inde"
-		"xOf('preloader')>=0||n.slice(-4)=='.bin'):k=='fip'?n.slice(-4)=='.fip':k=='stock'?n.slice(-4)=='"
-		".bin':true}\n"
+	"/*\n"
+	"* 文件名不是凭据，但选错的人多半连名字都没换过。扩展名先看，对了再从\n"
+	"* 文件名里取机型和本机比：immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-…\n"
+	"* 取出 XG-040G-MD。比较时两边只留字母数字，看本机 model 里有没有它。\n"
+	"* 只上色不拦：有人就是要给别的机型刷。\n"
+	"*/\n"
+	"var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1};\n"
+	"function fmodel(n){var m=/an75\\d\\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|"
+		"bl31)/i.exec(n);return m?m[1].toUpperCase():''}\n"
+	"function mnorm(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}\n"
+	"function fcheck(k,n,dev){var x=EXT[k],m;if(!x)return null;\n"
+	"if(n.toLowerCase().slice(-x.length)!=x)return{c:'bad',t:'应为 '+x+' 文件'};\n"
+	"if(!MDK[k])return null;\n"
+	"m=fmodel(n);if(!m)return{c:'bad',t:'文件名里没有机型'};\n"
+	"if(!dev)return{c:'',t:esc(m)};\n"
+	"if(mnorm(dev).indexOf(mnorm(m))>=0)return{c:'ok',t:esc(m)+' · 与本机一致'};\n"
+	"return{c:'bad',t:esc(m)+' · 本机是 '+esc(String(dev).replace(/^\\S+\\s+/,''))}}\n"
 	"function hide(){$('#mask').removeAttribute('data-on');YES=null}\n"
 	"function go(){var f=YES;hide();if(f){f();return}send()}\n"
 	"function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new"
@@ -1651,7 +1772,11 @@ static const char resp_form[] =
 	"/* 刷回原厂报不出进度：那条 /stock 连着板子唯一的 tcp_stream，腾不出第二条\n"
 	"连接去问。别的页写入期间会轮询 /wr，这里给的只是接手之前的一个估计 */\n"
 	"$('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};\n"
-	"x.onload=function(){if(x.status==200){done(x.responseText);return}\n"
+	"x.onload=function(){var r=x.responseText||'';\n"
+	"/* 200 不一定是收下了：另一个上传还占着时，设备把这个 POST 当 GET 答，回的\n"
+	"是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {\"ok\":1} */\n"
+	"if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.indexOf('\"ok\"')>=0)){done(r);return}\n"
+	"if(x.status==200){fail('设备正忙：另一个上传还没结束，请稍后重试',409);return}\n"
 	"/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */\n"
 	"fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};\n"
 	"x.onerror=function(){fail('连接中断，请检查网线后重试',0)};\n"
@@ -1742,6 +1867,8 @@ static const char resp_form[] =
 	"if(!WR||WR.fin)return;\n"
 	"WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;\n"
 	"HBOFF=0;busy(0);\n"
+	"/* 横幅要的正是「重新写入成功」，到了就撤；rhide() 重读 /info 时会重画 */\n"
+	"STUCK='';\n"
 	"/*\n"
 	"* 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、\n"
 	"* ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。\n"
@@ -1789,6 +1916,37 @@ static const char resp_form[] =
 	"*/\n"
 	"/* i18n-dict begin */\n"
 	"var I18N={\n"
+	"\"清空设置\":\"Clear settings\",\n"
+	"\"清空系统设置\":\"Clear system settings\",\n"
+	"\"删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动\":\"Removes OpenWrt's settings and installed packages; firmware"
+		" and factory data stay\",\n"
+	"\"清空\":\"Clear\",\n"
+	"\"已清空\":\"Cleared\",\n"
+	"\"正在清空…\":\"Clearing…\",\n"
+	"\"删除\":\"Delete\",\n"
+	"\"OpenWrt 的设置和软件包全部清空，下次启动为全新系统\":\"All OpenWrt settings and packages are erased; the next boot"
+		" starts fresh\",\n"
+	"\"闪存上没有 UBI，没有可清空的设置\":\"No UBI on the flash, so there are no settings to clear\",\n"
+	"\"没有 rootfs_data 卷，下次启动就是全新系统\":\"There is no rootfs_data volume; the next boot starts fresh\",\n"
+	"\"已清空。下次启动为全新系统\":\"Cleared. The next boot starts fresh\",\n"
+	"\"下发网关\":\"Hand out a gateway\",\n"
+	"\"下发\":\"Yes\",\n"
+	"\"不下发\":\"No\",\n"
+	"\"关掉后路由器不下发网关\":\"Off: the router hands out no gateway\",\n"
+	"\"已打开。电脑重新插拔网线后生效\":\"On. Replug the computer's cable for it to take effect\",\n"
+	"\"已关闭。电脑重新插拔网线后生效\":\"Off. Replug the computer's cable for it to take effect\",\n"
+	"\"已打开，但未能保存到闪存。电脑重新插拔网线后生效\":\"On, but not saved to flash. Replug the computer's cable for it to"
+		" take effect\",\n"
+	"\"已关闭，但未能保存到闪存。电脑重新插拔网线后生效\":\"Off, but not saved to flash. Replug the computer's cable for it to"
+		" take effect\",\n"
+	"\"原厂系统请先整片备份 · \":\"Stock firmware: back up the whole flash first · \",\n"
+	"\"去备份\":\"Back up now\",\n"
+	"\"写入 固件…\":\"Writing firmware…\",\n"
+	"\"回读校验 固件…\":\"Verifying firmware…\",\n"
+	"\"文件名里没有机型\":\"No model in the file name\",\n"
+	"\"应为 .itb 文件\":\"Expected a .itb file\",\n"
+	"\"应为 .bin 文件\":\"Expected a .bin file\",\n"
+	"\"应为 .fip 文件\":\"Expected a .fip file\",\n"
 	"\"日常刷机\":\"Flash firmware\",\n"
 	"\"引导升级\":\"Bootloader\",\n"
 	"\"试跑固件\":\"Boot from RAM\",\n"
@@ -2051,10 +2209,6 @@ static const char resp_form[] =
 	"\"闪存中没有 U-Boot（fip 卷）。\":\"There is no U-Boot in flash (the fip volume). \",\n"
 	"\"当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。\":\"The running U-Boot lives only in RAM and is lost"
 		" on power-off. Upload a U-Boot file on Bootloader.\",\n"
-	"\"设备正在写入\":\"The device is writing\",\n"
-	"\"指示灯流水表示设备还在工作。\":\"Chasing LEDs mean it is still working. \",\n"
-	"\"请勿断电\":\"Do not cut the power\",\n"
-	"\"，也不要拔网线。\":\", and do not unplug the cable.\",\n"
 	"\"设备正在重启\":\"The device is rebooting\",\n"
 	"\"引导成功即进入系统，\":\"A successful boot lands in the system and \",\n"
 	"\"本页面不再可用\":\"this page is gone\",\n"
@@ -2066,8 +2220,6 @@ static const char resp_form[] =
 	"\"设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。\":\"The device is not answering. Check the cable and the"
 		" power. If the LEDs are still chasing it is alive, so give it a moment.\",\n"
 	"\"每 2 秒自动重试。\":\"Retrying every 2 seconds.\",\n"
-	"\"写入完成，HTTP 服务已恢复，可继续写入下一个卷\":\"Write finished, the HTTP service is back, and the next volume can"
-		" go in\",\n"
 	"\"正在重试…\":\"Retrying…\",\n"
 	"\"闪存内容不受影响\":\"Flash is not affected\",\n"
 	"\"闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。\":\"There is no mountable UBI in flash and the running U-Boot"
@@ -2086,7 +2238,7 @@ static const char resp_form[] =
 	"\"电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 \":\"With a computer plugged straight into this device, it"
 		" gets an address on connect and needs no manual IP. The mask is fixed at \",\n"
 	"\"，电脑拿到的是本网段 \":\", the computer gets \",\n"
-	"\"，网关指向本设备且不带 DNS。\":\" on this subnet, and the gateway points at this device with no DNS. \",\n"
+	"\"，不带 DNS。\":\" on this subnet, with no DNS. \",\n"
 	"\"接入已有网络前不要用这一档\":\"Do not use this mode on an existing network\",\n"
 	"\"：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。\":\": it answers every request and races that network's"
 		" router to hand out addresses, knocking whichever machines it wins off the network.\",\n"
@@ -2141,6 +2293,7 @@ static const char resp_form[] =
 	"\"长度不是有效的十六进制数\":\"The length is not a valid hexadecimal number\",\n"
 	"\"长度为 0\":\"The length is 0\",\n"
 	"\"设备正在写入，稍后再试\":\"The device is writing. Try again shortly\",\n"
+	"\"设备正忙：另一个上传还没结束，请稍后重试\":\"The device is busy with another upload. Try again once it is done\",\n"
 	"\"没有匹配的变量\":\"No variable matches\",\n"
 	"\"没有 bootmenu_* 条目\":\"No bootmenu_* entries\",\n"
 	"\"环境中没有引导菜单：串口不会停顿，直接执行 bootcmd\":\"The environment has no boot menu: the console will not pause"
@@ -2324,6 +2477,9 @@ static const char resp_form[] =
 	"\"内存不足，无法分配读取窗口\":\"Not enough memory for a read window\",\n"
 	"};\n"
 	"var I18P={\n"
+	"\" 未备份 · \":\" not backed up · \",\n"
+	"\"与本机一致\":\"matches this device\",\n"
+	"\"本机是 \":\"this device is \",\n"
 	"\"。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置\":\". Widths are each volume's reserved size,"
 		" ordered by volume ID. UBI volumes are not contiguous in flash, so this is not a physical"
 		" layout\",\n"
@@ -2361,7 +2517,6 @@ static const char resp_form[] =
 		" normal boot\",\n"
 	"\" 个块读取失败，该部分以 0xff 填充\":\" block(s) could not be read and were filled with 0xff\",\n"
 	"\"。ECC 无法纠正，这些位置的数据已丢失\":\". ECC could not fix them, so the data there is lost\",\n"
-	"\" 的文件名与常规命名不符，请确认文件正确\":\" has an unusual file name — make sure it is the right file\",\n"
 	"\"。不一定装得下一份固件；可先删掉不用的卷\":\". That may not fit a firmware image; delete volumes you do not need\",\n"
 	"\"另一个备份正在传输，请等待传输完成后重试\":\"Another backup is transferring. Wait for it to finish and try again\",\n"
 	"\"设备正在接收上传，请等待写入完成后再备份\":\"The device is receiving an upload. Wait for the write to finish before"
@@ -2388,7 +2543,6 @@ static const char resp_form[] =
 	"\"挂载 UBI 失败，详见串口日志\":\"Mounting UBI failed — see the serial log\",\n"
 	"\"重建 UBI 失败，详见串口日志\":\"Rebuilding UBI failed — see the serial log\",\n"
 	"\"内存不足以分配接收环，至少需要 \":\"Not enough memory for the receive ring; at least \",\n"
-	"\"[日志缓冲已满，后续输出未记录]\":\"[log buffer full; later output not recorded]\",\n"
 	"\"正在写入闪存，这一项要等写完再改\":\"Flash is being written; this one has to wait until the write is done\",\n"
 	"\" 字节。固件不完整，请重新上传\":\" bytes. The firmware is incomplete — upload it again\",\n"
 	"\"本机开始发地址：电脑将拿到 \":\"This device starts handing out addresses; the computer will get \",\n"
@@ -2606,12 +2760,16 @@ static const char resp_form[] =
 	"I18A.forEach(function(a){var k='zh0_'+a;\n"
 	"if(n[k]!==undefined){n.setAttribute(a,n[k]);n[k]=undefined}});\n"
 	"for(c=n.firstChild;c;c=c.nextSibling)i18off(c)}\n"
+	"/* 插进来的是文本节点时 i18on 看不到它的父元素，data-raw 得往上找 */\n"
+	"function i18inraw(n){for(n=n.parentNode;n&&n.nodeType==1;n=n.parentNode)\n"
+	"if(i18skip(n))return true;return false}\n"
 	"var I18OB=window.MutationObserver?new MutationObserver(function(rs){\n"
 	"if(!I18ON)return;var i,j,r;\n"
 	"for(i=0;i<rs.length;i++){r=rs[i];\n"
-	"if(r.type=='characterData')i18text(r.target);\n"
+	"if(r.type=='characterData'){if(!i18inraw(r.target))i18text(r.target)}\n"
 	"else if(r.type=='attributes')i18attr(r.target,r.attributeName);\n"
-	"else for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;\n"
+	"else if(!i18inraw(r.addedNodes[0]||r.target))\n"
+	"for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;\n"
 	"function setlang(l){\n"
 	"$$('.lg button').forEach(function(b){\n"
 	"b.setAttribute('aria-checked',b.getAttribute('data-g')==l?'true':'false')});\n"
@@ -2683,6 +2841,7 @@ static u32	up_body;	/* stream offset of the first image byte */
 static u32	up_total;	/* total request length (headers + body) */
 static char	up_bound[80];	/* "\r\n--" + multipart boundary */
 static struct tcp_stream *up_owner;	/* owns the staging area */
+static u32	up_hi;		/* end of the furthest bytes staged */
 static int	up_bound_len;
 static int	flash_pending;	/* flash after net_loop() returns */
 /*
@@ -2801,14 +2960,21 @@ static void wr_reset(void)
 static void wr_printf(const char *fmt, ...)
 {
 	va_list ap;
+	int room = WR_LOG_SZ - wr_used, n;
 
-	if (wr_used >= WR_LOG_SZ - 1)
+	if (room <= 1)
 		return;
 
 	va_start(ap, fmt);
-	/* U-Boot's vsnprintf returns what it wrote, not what it wanted to. */
-	wr_used += vsnprintf(wr_log + wr_used, WR_LOG_SZ - wr_used, fmt, ap);
+	/*
+	 * vsnprintf() returns what it wanted to write (lib/vsprintf.c's
+	 * ADDCH counts past the end), so a cut line is clamped to what
+	 * actually landed.  Adding the raw value let wr_used run past
+	 * WR_LOG_SZ and httpd_wr() copy from beyond wr_log.
+	 */
+	n = vsnprintf(wr_log + wr_used, room, fmt, ap);
 	va_end(ap);
+	wr_used += n < room ? n : room - 1;
 
 	if (fmt[0] == 's' && fmt[1] == ' ') {
 		wr_hold = wr_used;
@@ -3205,7 +3371,9 @@ static void httpd_tick_stop(void)
 #define DHCP_DISCOVER		1
 #define DHCP_OFFER		2
 #define DHCP_REQUEST		3
+#define DHCP_DECLINE		4
 #define DHCP_ACK		5
+#define DHCP_NAK		6
 #define DHCP_MIN_LEN		240
 #define DHCP_LEASE_SECS		3600
 /*
@@ -3236,6 +3404,12 @@ static void httpd_tick_stop(void)
 #define ENV_NETMODE		"web_uboot_netmode"
 #define ENV_NETIP		"web_uboot_ipaddr"
 #define ENV_NETMASK		"web_uboot_netmask"
+/*
+ * "<ipaddr> <netmask>" as they were before the first unsaved change on a
+ * board whose saved mode does not put ipaddr back at boot, "-" for one that
+ * was unset.  See netmode_stash().
+ */
+#define ENV_NETPREV		"web_uboot_netprev"
 
 static int	netmode = NET_SERVER;
 /*
@@ -3244,8 +3418,9 @@ static int	netmode = NET_SERVER;
  * "next boot goes back to ..." -- because the two are kept apart by
  * construction rather than by a flag: an unsaved change writes ipaddr and
  * nothing else, and netmode_load() overwrites ipaddr from web_uboot_ipaddr
- * at every boot.  So even a saveenv from somewhere else entirely cannot
- * make an unsaved address outlive the power cycle.
+ * at every boot -- or, where no saved mode does that (none saved, or
+ * client), from the copy netmode_stash() took.  So even a saveenv from somewhere else entirely
+ * cannot make an unsaved address outlive the power cycle.
  */
 static int	net_unsaved;
 
@@ -3264,6 +3439,22 @@ static int netmode_parse(const char *s)
 		return NET_CLIENT;
 
 	return NET_SERVER;
+}
+
+/*
+ * Whether a lease names this board as the gateway.  On by default, which is
+ * what it has always done; off leaves a PC that is also on Wi-Fi with its
+ * own way out, so it can still read the guide and fetch images while it
+ * talks to this page.  Stored only when off, and read per packet so the
+ * switch takes effect with the next lease.
+ */
+#define ENV_DHCPGW		"web_uboot_dhcp_gw"
+
+static int dhcp_gw_on(void)
+{
+	const char *s = env_get(ENV_DHCPGW);
+
+	return !(s && !strcmp(s, "0"));
 }
 
 static u32	dhcp_offers;
@@ -3292,12 +3483,19 @@ static struct in_addr dhcp_client_ip(void)
 	return ip;
 }
 
-static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
+/*
+ * The value of option @want if it is there and exactly @wlen bytes long, else
+ * NULL.  Both tests matter on a malformed packet: a truncated option would
+ * read the value from past the end of what arrived, and a wrong length means
+ * this is not the option it claims to be.
+ */
+static const u8 *dhcp_opt(const struct dhcp_msg *m, unsigned int len,
+			  u8 want, u8 wlen)
 {
 	unsigned int i, max;
 
 	if (len <= DHCP_MIN_LEN)
-		return 0;
+		return NULL;
 
 	max = len - DHCP_MIN_LEN;
 	if (max > sizeof(m->opts))
@@ -3313,22 +3511,35 @@ static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
 		}
 		if (tag == 255)			/* end */
 			break;
-		/*
-		 * Option 53 carries exactly one byte.  Both tests matter on a
-		 * malformed packet: a truncated option would read the value
-		 * from past the end of what arrived, and a wrong length means
-		 * this is not the option it claims to be.
-		 */
-		if (tag == 53) {
-			if (olen != 1 || i + 2 >= max)
-				return 0;
+		if (tag == want) {
+			if (olen != wlen || i + 2 + olen > max)
+				return NULL;
 
-			return m->opts[i + 2];
+			return &m->opts[i + 2];
 		}
 		i += 2 + olen;
 	}
 
-	return 0;
+	return NULL;
+}
+
+static int dhcp_msg_type(const struct dhcp_msg *m, unsigned int len)
+{
+	const u8 *t = dhcp_opt(m, len, 53, 1);
+
+	return t ? *t : 0;
+}
+
+/* An address option, or 0 when it is absent or malformed. */
+static u32 dhcp_opt_ip(const struct dhcp_msg *m, unsigned int len, u8 tag)
+{
+	const u8 *v = dhcp_opt(m, len, tag, 4);
+	u32 ip = 0;
+
+	if (v)
+		memcpy(&ip, v, 4);
+
+	return ip;
 }
 
 static u8 *dhcp_put(u8 *o, u8 tag, u8 len, const void *val)
@@ -3359,15 +3570,49 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	if (req->op != 1 || req->cookie != htonl(DHCP_MAGIC))
 		return;
 
-	type = dhcp_msg_type(req, len);
-	if (type == DHCP_DISCOVER)
-		reply = DHCP_OFFER;
-	else if (type == DHCP_REQUEST)
-		reply = DHCP_ACK;
-	else
-		return;
-
 	yiaddr = dhcp_client_ip();
+	type = dhcp_msg_type(req, len);
+	if (type == DHCP_DISCOVER) {
+		reply = DHCP_OFFER;
+	} else if (type == DHCP_REQUEST) {
+		/*
+		 * RFC 2131 4.3.2.  There is only one address to give, so a
+		 * REQUEST for any other one is answered with a NAK -- most
+		 * often a PC that held a lease from the system this board
+		 * normally runs, asking for it back after the cable came up.
+		 * ACKing it with .100 instead left the client to discard the
+		 * mismatch and retry until it gave up and started over; a NAK
+		 * sends it straight back to DISCOVER.
+		 *
+		 * A REQUEST naming another server is that client accepting
+		 * somebody else's offer, and is none of our business.
+		 */
+		u32 sid = dhcp_opt_ip(req, len, 54);
+		u32 want = dhcp_opt_ip(req, len, 50);
+
+		if (!want)
+			want = req->ciaddr;	/* renewing or rebinding */
+		if (sid && sid != net_ip.s_addr) {
+			printf("httpd: DHCP REQUEST from %pM is for server %pI4, "
+			       "not us; ignored\n", req->chaddr, &sid);
+			return;
+		}
+		if (want && want != yiaddr.s_addr) {
+			reply = DHCP_NAK;
+			printf("httpd: DHCP REQUEST from %pM for %pI4 -> NAK "
+			       "(the lease here is %pI4)\n", req->chaddr, &want,
+			       &yiaddr);
+		} else {
+			reply = DHCP_ACK;
+		}
+	} else if (type == DHCP_DECLINE) {
+		/* The client found the address taken; nothing to hand out instead */
+		printf("httpd: DHCP DECLINE from %pM: %pI4 is already in use on "
+		       "this link\n", req->chaddr, &yiaddr);
+		return;
+	} else {
+		return;
+	}
 
 	rep = (struct dhcp_msg *)(net_tx_packet + net_eth_hdr_size() +
 				  IP_UDP_HDR_SIZE);
@@ -3377,8 +3622,10 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	rep->hlen = 6;
 	rep->xid = req->xid;
 	rep->flags = req->flags;
-	rep->yiaddr = yiaddr.s_addr;
-	rep->siaddr = net_ip.s_addr;
+	if (reply != DHCP_NAK) {
+		rep->yiaddr = yiaddr.s_addr;
+		rep->siaddr = net_ip.s_addr;
+	}
 	memcpy(rep->chaddr, req->chaddr, sizeof(rep->chaddr));
 	rep->cookie = htonl(DHCP_MAGIC);
 
@@ -3390,9 +3637,12 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	*o++ = 1;
 	*o++ = (u8)reply;
 	o = dhcp_put(o, 54, 4, &net_ip.s_addr);		/* server id */
-	o = dhcp_put(o, 1, 4, &mask);			/* subnet mask */
-	o = dhcp_put(o, 3, 4, &net_ip.s_addr);		/* router */
-	o = dhcp_put(o, 51, 4, &lease);			/* lease time */
+	if (reply != DHCP_NAK) {
+		o = dhcp_put(o, 1, 4, &mask);		/* subnet mask */
+		if (dhcp_gw_on())
+			o = dhcp_put(o, 3, 4, &net_ip.s_addr);	/* router */
+		o = dhcp_put(o, 51, 4, &lease);		/* lease time */
+	}
 	*o++ = 255;
 
 	n = (int)((u8 *)o - (u8 *)rep);
@@ -3403,25 +3653,50 @@ static void httpd_dhcp_rx(uchar *pkt, unsigned int dport, struct in_addr sip,
 	net_send_udp_packet((uchar *)bcast_mac, bcast, DHCP_CLIENT_PORT,
 			    DHCP_SERVER_PORT, n);
 
+	/* A NAK handed nothing out, so it is not what the page counts */
+	if (reply == DHCP_NAK)
+		return;
 	if (reply == DHCP_OFFER)
 		dhcp_offers++;
 	else
 		dhcp_acks++;
 	memcpy(dhcp_last_mac, req->chaddr, sizeof(dhcp_last_mac));
 
-	printf("httpd: DHCP %s -> %pI4\n",
-	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr);
+	printf("httpd: DHCP %s %pI4 -> %pM\n",
+	       reply == DHCP_OFFER ? "OFFER" : "ACK", &yiaddr, req->chaddr);
 }
 
+/*
+ * httpd_finish() searches a whole upload for the multipart boundary, from
+ * the on_rcv_nxt_update callback with the net loop stopped.  A memcmp() at
+ * every offset of 235 MiB is seconds of nothing else happening, so a needle
+ * that long (the boundary is 40-odd bytes) goes through Horspool and skips
+ * about its own length per step.  Short needles -- the "\r\n" and
+ * "\r\n\r\n" of a request head -- only ever meet a few hundred bytes.
+ */
 static int mem_find(const char *hay, int hlen, const char *needle, int nlen)
 {
-	int i;
+	const u8 *h = (const u8 *)hay, *nd = (const u8 *)needle;
+	u8 skip[256];
+	int i, last;
 
 	if (nlen <= 0 || hlen < nlen)
 		return -1;
 
-	for (i = 0; i <= hlen - nlen; i++)
-		if (!memcmp(hay + i, needle, nlen))
+	if (nlen < 8 || nlen > 255) {
+		for (i = 0; i <= hlen - nlen; i++)
+			if (h[i] == nd[0] && !memcmp(h + i, nd, nlen))
+				return i;
+		return -1;
+	}
+
+	last = nlen - 1;
+	memset(skip, nlen, sizeof(skip));
+	for (i = 0; i < last; i++)
+		skip[nd[i]] = last - i;
+
+	for (i = 0; i <= hlen - nlen; i += skip[h[i + last]])
+		if (h[i + last] == nd[last] && !memcmp(h + i, nd, last))
 			return i;
 
 	return -1;
@@ -3526,23 +3801,25 @@ static void jb_init(struct jbuf *j, char *b, int max)
 }
 
 /*
- * U-Boot's vsnprintf() returns what it actually wrote, not what it would
- * have written if there had been room (lib/vsprintf.c), so the C99 way of
- * spotting truncation -- return value against space left -- never reports
- * anything here.  What can be seen is the buffer running full: a write that
- * ends on the last usable byte had nowhere left to go.  An exact fit counts
- * as an overflow too, which costs only a reply that was already sitting on
- * the very edge of its buffer.
+ * U-Boot's vsnprintf() returns what it would have written had there been
+ * room (lib/vsprintf.c), C99 style, so a return that does not fit the space
+ * left is the truncation.  j->n is clamped to what actually landed so it
+ * never points past the buffer.  An exact fit -- ending on the last usable
+ * byte -- counts as an overflow too, which costs only a reply that was
+ * already sitting on the very edge of its buffer.
  */
 static void jb_printf(struct jbuf *j, const char *fmt, ...)
 {
 	va_list ap;
+	int room, n;
 
 	if (j->overflow)
 		return;
+	room = j->max - j->n;
 	va_start(ap, fmt);
-	j->n += vsnprintf(j->b + j->n, j->max - j->n, fmt, ap);
+	n = vsnprintf(j->b + j->n, room, fmt, ap);
 	va_end(ap);
+	j->n += n < room ? n : room - 1;
 	if (j->n >= j->max - 1)
 		j->overflow = 1;
 }
@@ -3627,12 +3904,36 @@ static struct ubi_volume *ubi_vol_find(struct ubi_device *ubi, const char *name)
 #define PHY_FIRST	0x9
 #define PHY_LAST	0xc
 
+/*
+ * The switch's own MDIO, found by what it hangs off rather than by being
+ * first.  The eth driver binds it to the switch node's "mdio" child; AN7583
+ * also describes two SoC buses (mdio-bus@c8, @cc) with nothing on 0x9-0xc,
+ * and should their driver ever be built in, "the first MDIO device" is one
+ * of those -- port state would read as no link and the cable would never
+ * be bounced, with nothing to say why.
+ */
+static struct udevice *switch_mdio(void)
+{
+	struct udevice *dev;
+
+	uclass_foreach_dev_probe(UCLASS_MDIO, dev) {
+		ofnode sw = ofnode_get_parent(dev_ofnode(dev));
+
+		if (ofnode_device_is_compatible(sw, "airoha,en7523-switch") ||
+		    ofnode_device_is_compatible(sw, "airoha,en7581-switch") ||
+		    ofnode_device_is_compatible(sw, "airoha,an7583-switch"))
+			return dev;
+	}
+
+	return NULL;
+}
+
 static void info_ports(struct jbuf *jb)
 {
-	struct udevice *mdio;
+	struct udevice *mdio = switch_mdio();
 	int a, first = 1;
 
-	if (uclass_first_device_err(UCLASS_MDIO, &mdio))
+	if (!mdio)
 		return;
 
 	jb_printf(jb, ",\"ports\":[");
@@ -3668,6 +3969,74 @@ static void info_ports(struct jbuf *jb)
 }
 
 /*
+ * Pull the cable out and put it back, once per boot, the moment the server
+ * is ready.
+ *
+ * With the cable already in, the PC saw link long before anything here was
+ * listening -- through BL2, U-Boot and the boot menu -- asked for an address
+ * into silence, gave up and took a 169.254 one.  Windows then asks again only
+ * every five minutes or so, which is why pulling and replugging the cable was
+ * the fix everyone found: a link that goes away and comes back is what makes
+ * a PC ask straight away.  So do that for them.
+ *
+ * Only ports that have link, and only in server mode -- on someone else's
+ * network nobody is waiting for us to hand out an address.  Once per boot
+ * because net_loop() comes back through httpd_start_server() after every
+ * "stay on the page" write and every address change, with the page open and
+ * watching; and synchronously, before anything listens, so that nothing can
+ * leave the loop with a port still powered down.  The link is gone for this
+ * long plus however long autonegotiation takes, a couple of seconds at
+ * gigabit.
+ */
+#define LINK_BOUNCE_MS	1000
+
+static void httpd_link_bounce(void)
+{
+	static int done;
+	int bmcr[PHY_LAST - PHY_FIRST + 1];
+	struct udevice *mdio;
+	int a, n = 0;
+
+	if (done || netmode != NET_SERVER)
+		return;
+	done = 1;
+
+	mdio = switch_mdio();
+	if (!mdio)
+		return;
+
+	for (a = PHY_FIRST; a <= PHY_LAST; a++) {
+		int *b = &bmcr[a - PHY_FIRST];
+		int bmsr;
+
+		*b = -1;
+		dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);  /* latched */
+		bmsr = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMSR);
+		if (bmsr < 0 || bmsr == 0xffff || !(bmsr & BMSR_LSTATUS))
+			continue;
+		*b = dm_mdio_read(mdio, a, MDIO_DEVAD_NONE, MII_BMCR);
+		if (*b < 0 || *b == 0xffff) {
+			*b = -1;
+			continue;
+		}
+		dm_mdio_write(mdio, a, MDIO_DEVAD_NONE, MII_BMCR,
+			      *b | BMCR_PDOWN);
+		n++;
+	}
+	if (!n)
+		return;
+
+	printf("httpd: bouncing link on %d port(s) so the PC asks for an "
+	       "address again\n", n);
+	mdelay(LINK_BOUNCE_MS);
+
+	for (a = PHY_FIRST; a <= PHY_LAST; a++)
+		if (bmcr[a - PHY_FIRST] >= 0)
+			dm_mdio_write(mdio, a, MDIO_DEVAD_NONE, MII_BMCR,
+				      bmcr[a - PHY_FIRST] & ~BMCR_PDOWN);
+}
+
+/*
  * The half of /info that changes while the page is open: the address, what
  * the DHCP server has handed out, and the link state of each port.  Served on
  * its own as /net because that is the half worth asking for again -- /info
@@ -3682,8 +4051,8 @@ static void info_net(struct jbuf *jb)
 		  "\"gw\":\"%pI4\",\"server\":\"%pI4\",\"dev\":",
 		  &net_ip, &net_netmask, &net_gateway, &net_server_ip);
 	jb_str(jb, eth_get_name());
-	jb_printf(jb, ",\"mode\":\"%s\",\"ram\":%d", netmode_name(netmode),
-		  net_unsaved);
+	jb_printf(jb, ",\"mode\":\"%s\",\"ram\":%d,\"dgw\":%d",
+		  netmode_name(netmode), net_unsaved, dhcp_gw_on());
 	jb_printf(jb, ",\"offer\":%u,\"ack\":%u", dhcp_offers, dhcp_acks);
 	if (dhcp_offers || dhcp_acks)
 		jb_printf(jb, ",\"client\":\"%pM\"", dhcp_last_mac);
@@ -4838,7 +5207,7 @@ static int httpd_log(void)
 {
 	static const char hdr[] = TEXT_HDR("200 OK");
 	static const char full[] =
-		"\n[日志缓冲已满，后续输出未记录]\n";
+		"\n[log buffer full; later output not recorded]\n";
 	struct membuf copy = *(struct membuf *)&gd->console_out;
 	char from[24], pre[16];
 	unsigned long skip = 0;
@@ -4945,8 +5314,21 @@ static int httpd_wr(void)
 
 	room = wr_used - skip;
 	/* Header, the offset line and a NUL all have to fit as well. */
-	if (room > (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16)
-		room = (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16;
+	if (room > (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16) {
+		int cap = (int)sizeof(wr_buf) - (int)sizeof(hdr) - 16;
+
+		/*
+		 * Cut after a whole line: the page decodes each answer on
+		 * its own, so a split in the middle of a Chinese step would
+		 * come out as two U+FFFD for good.  The rest follows on the
+		 * next poll from the offset given here.
+		 */
+		room = cap;
+		while (room > 0 && wr_log[skip + room - 1] != '\n')
+			room--;
+		if (!room)
+			room = cap;
+	}
 
 	n = snprintf(wr_buf, sizeof(wr_buf), "%s%d\n", hdr, skip + room);
 	if (skip + room > wr_sent) {
@@ -4976,10 +5358,9 @@ static int httpd_wr(void)
  * and jb_done()'s own "reply too large" answer is 155, so anything under that
  * cannot report its own overflow either.  At 96 -- what this was -- every
  * single poll was cut mid-"Connection:", header incomplete, body absent.
- * U-Boot's vsnprintf() truncates and returns what it wrote rather than what
- * it wanted to (lib/vsprintf.c), so the length looked right and nothing on
- * the console said otherwise; from the page the board simply never came up
- * as connected.  Built through jb_printf() for the same reason: /ping was
+ * A bare vsnprintf() truncates quietly and nothing checked what it
+ * returned, so nothing on the console said otherwise; from the page the
+ * board simply never came up as connected.  Built through jb_printf() for the same reason: /ping was
  * the one JSON endpoint writing straight into its buffer, which is exactly
  * how it stayed silently truncated across four releases.
  */
@@ -5135,9 +5516,9 @@ static int httpd_envreset(void)
 	/*
 	 * These three text/plain answers go through jb_printf() for one
 	 * reason: jb_done()'s truncation check is the only one available.
-	 * U-Boot's vsnprintf() reports what it wrote rather than what it
-	 * meant to write, so a reply that outgrew its buffer used to go out
-	 * cut in half with nothing said anywhere -- which is exactly how
+	 * A bare vsnprintf() truncates without a word, so a reply that
+	 * outgrew its buffer used to go out cut in half with nothing said
+	 * anywhere -- which is exactly how
 	 * /ping spent four releases answering with half a header.  All three
 	 * fit today with room to spare; the point is that the day one of them
 	 * stops fitting, it says so instead of being quietly wrong.
@@ -5231,6 +5612,104 @@ out:
 	bootonce_len = jb_done(&jb, "/bootonce");
 
 	return bootonce_len;
+}
+
+/*
+ * ---- GET /wipecfg --------------------------------------------------------
+ *
+ * Clear OpenWrt's settings: remove rootfs_data, see ENV_REMOVE_ROOTFS.  Done
+ * in the request, like /envreset; removing a volume erases what it held, a
+ * few seconds on a full-size overlay, which the page's heartbeat rides out.
+ * Checked afterwards rather than trusted: a recipe somebody edited can
+ * return success without having removed anything.
+ */
+static char wipecfg_buf[160];
+static int wipecfg_len;
+
+static int rootfs_data_there(void)
+{
+	struct ubi_device *ubi = ubi_get_device(0);
+	int there;
+
+	if (!ubi)
+		return -1;
+	there = !!ubi_vol_find(ubi, "rootfs_data");
+	ubi_put_device(ubi);
+
+	return there;
+}
+
+static int httpd_wipecfg(void)
+{
+	static char part_name[] = UBI_PART;
+	struct jbuf jb;
+	const char *msg;
+	int there;
+
+	if (ubi_part(part_name, NULL)) {
+		msg = "no UBI to clear";
+		goto out;
+	}
+	there = rootfs_data_there();
+	if (there < 0) {
+		msg = "UBI attached but not accessible";
+		goto out;
+	}
+	if (!there) {
+		msg = "ok, there was no rootfs_data";
+		goto out;
+	}
+
+	printf("httpd: removing rootfs_data; OpenWrt starts fresh on the next "
+	       "boot\n");
+	run_command(env_get(ENV_REMOVE_ROOTFS) ? "run " ENV_REMOVE_ROOTFS :
+		    DEF_REMOVE_ROOTFS, 0);
+	msg = rootfs_data_there() ? "rootfs_data is still there" :
+				    "ok removed";
+
+out:
+	printf("httpd: /wipecfg: %s\n", msg);
+	jb_init(&jb, wipecfg_buf, sizeof(wipecfg_buf));
+	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
+	wipecfg_len = jb_done(&jb, "/wipecfg");
+
+	return wipecfg_len;
+}
+
+/*
+ * ---- GET /dhcpgw?on=0|1 --------------------------------------------------
+ *
+ * The gateway switch, saved on the spot: it changes nothing about the
+ * address, so it does not go through /netmode and the page stays where it
+ * is.  Leases already handed out keep what they got until the cable is
+ * replugged.
+ */
+static char dhcpgw_qs[16];
+static char dhcpgw_buf[160];
+static int dhcpgw_len;
+
+static int httpd_dhcpgw(void)
+{
+	struct jbuf jb;
+	const char *msg;
+	char v[4];
+	int on = 1;
+
+	if (qs_get(dhcpgw_qs, "on", v, sizeof(v)))
+		on = v[0] != '0';
+
+	if (env_set(ENV_DHCPGW, on ? NULL : "0"))
+		msg = "could not set the environment";
+	else
+		msg = run_command("saveenv", 0) ? "ok, but saving failed" :
+						  "ok saved";
+	printf("httpd: DHCP gateway %s: %s\n", on ? "on" : "off", msg);
+
+	jb_init(&jb, dhcpgw_buf, sizeof(dhcpgw_buf));
+	jb_printf(&jb, TEXT_HDR("200 OK") "%s\n", msg);
+	dhcpgw_len = jb_done(&jb, "/dhcpgw");
+
+	return dhcpgw_len;
 }
 
 /*
@@ -5481,12 +5960,73 @@ static void netmode_lease(void)
 		env_set("bootfile", bootfile[0] ? bootfile : NULL);
 }
 
+/*
+ * Whether netmode_load() puts ipaddr back from a saved value by itself:
+ * server and static do, from web_uboot_ipaddr.  No saved mode leaves ipaddr
+ * alone, and client saves the decision but never an address.
+ */
+static int netmode_restores_ip(void)
+{
+	const char *m = env_get(ENV_NETMODE);
+
+	return m && netmode_parse(m) != NET_CLIENT && env_get(ENV_NETIP);
+}
+
+/*
+ * Where netmode_load() has nothing to put back, an unsaved address would
+ * simply stay in ipaddr -- and the next saveenv from /dhcpgw, /bootonce or
+ * anything else would make it permanent.  In client mode that is also the
+ * address a boot without a lease falls back to.  Keep what was there before
+ * the first unsaved change instead.  RAM only, like the change itself: if
+ * nothing saves, the flash still holds the old ipaddr anyway; if something
+ * does, this goes along with it.
+ */
+static void netmode_stash(void)
+{
+	const char *ip = env_get("ipaddr"), *mask = env_get("netmask");
+	char v[64];
+
+	if (netmode_restores_ip() || env_get(ENV_NETPREV))
+		return;
+
+	snprintf(v, sizeof(v), "%s %s", ip ? ip : "-", mask ? mask : "-");
+	env_set(ENV_NETPREV, v);
+}
+
+/*
+ * The other half, at boot.  Dropped from RAM once used, so the next saveenv
+ * clears it from flash too and a later ipaddr set by hand is left alone.
+ */
+static void netmode_unstash(void)
+{
+	const char *s = env_get(ENV_NETPREV);
+	char v[64], *mask;
+
+	if (!s)
+		return;
+
+	strlcpy(v, s, sizeof(v));
+	env_set(ENV_NETPREV, NULL);
+
+	mask = strchr(v, ' ');
+	if (!mask)
+		return;
+	*mask++ = '\0';
+
+	env_set("ipaddr", strcmp(v, "-") ? v : NULL);
+	env_set("netmask", strcmp(mask, "-") ? mask : NULL);
+}
+
 /* Apply what /netmode asked for, once the answer is out. */
 static void netmode_apply(void)
 {
 	if (!netmode_pending)
 		return;
 	netmode_pending = 0;
+
+	/* Before ipaddr is touched: it is the old value being kept. */
+	if (!nm_save)
+		netmode_stash();
 
 	netmode = nm_mode;
 	printf("httpd: %s mode%s%s, %s\n", netmode_name(netmode),
@@ -5509,6 +6049,8 @@ static void netmode_apply(void)
 		 */
 		env_set(ENV_NETIP, nm_ip[0] ? nm_ip : NULL);
 		env_set(ENV_NETMASK, nm_mask[0] ? nm_mask : NULL);
+		/* A saved mode is what netmode_load() goes by from now on. */
+		env_set(ENV_NETPREV, NULL);
 		if (run_command("saveenv", 0)) {
 			printf("httpd: saving failed; this lasts until "
 			       "reboot\n");
@@ -5531,11 +6073,22 @@ static void netmode_apply(void)
  * gets server mode -- which is what this whole thing is for, a cable
  * straight from a PC -- and its ipaddr is left exactly as it is: that value
  * may well have been set by hand on the serial console, and there is no
- * reason for this page to have an opinion about it before it is used.
+ * reason for this page to have an opinion about it before it is used.  The
+ * one exception is an unsaved change that some other saveenv carried into
+ * flash, which netmode_unstash() undoes -- here and in client mode alike.
  */
 static void netmode_load(void)
 {
 	const char *s = env_get(ENV_NETMODE);
+
+	/*
+	 * Before the client-mode lease, which falls back to whatever ipaddr
+	 * holds when nobody answers.
+	 */
+	if (netmode_restores_ip())
+		env_set(ENV_NETPREV, NULL);
+	else
+		netmode_unstash();
 
 	if (!s)
 		return;
@@ -6246,16 +6799,33 @@ static int dump_stale(void)
 }
 
 /* Refuse with a reason the page can show; the console gets it too. */
-static void dump_fail(const char *status, const char *fmt, ...)
+/*
+ * One message, two languages: the console gets English, the page gets the
+ * Chinese its dictionary knows how to translate.  Both formats take the same
+ * arguments in the same order.
+ */
+static void fmt2(char *en, int enlen, char *zh, int zhlen,
+		 const char *fen, const char *fzh, va_list ap)
 {
-	char msg[192];
+	va_list aq;
+
+	va_copy(aq, ap);
+	vsnprintf(en, enlen, fen, ap);
+	vsnprintf(zh, zhlen, fzh, aq);
+	va_end(aq);
+}
+
+static void dump_fail(const char *status, const char *fen, const char *fzh,
+		      ...)
+{
+	char con[128], msg[192];
 	va_list ap;
 
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_start(ap, fzh);
+	fmt2(con, sizeof(con), msg, sizeof(msg), fen, fzh, ap);
 	va_end(ap);
 
-	printf("httpd: /dump refused: %s\n", msg);
+	printf("httpd: /dump refused: %s\n", con);
 
 	dump_len = 0;
 	dump_wlen = 0;
@@ -6395,13 +6965,15 @@ static void httpd_dump(void)
 
 	if (up_active) {
 		dump_fail("503 Service Unavailable",
+			  "an upload is in progress",
 			  "设备正在接收上传，请等待写入完成后再备份");
 		return;
 	}
 
 	dump_mtd = flash_master();
 	if (!dump_mtd) {
-		dump_fail("500 Internal Server Error", "没有找到闪存设备");
+		dump_fail("500 Internal Server Error", "no flash device",
+			  "没有找到闪存设备");
 		return;
 	}
 
@@ -6410,24 +6982,28 @@ static void httpd_dump(void)
 		struct ubi_volume *v;
 
 		if (!vol_name_ok(val)) {
-			dump_fail("400 Bad Request", "卷名不合法");
+			dump_fail("400 Bad Request", "bad volume name",
+				  "卷名不合法");
 			return;
 		}
 		if (ubi_part(part_name, NULL)) {
 			dump_fail("500 Internal Server Error",
+				  "UBI does not attach; only raw offsets can be read",
 				  "UBI 无法挂载，只能按 flash 偏移备份");
 			return;
 		}
 		ubi = ubi_get_device(0);
 		if (!ubi) {
 			dump_fail("500 Internal Server Error",
+				  "UBI attached but not accessible",
 				  "UBI 已挂载但无法访问");
 			return;
 		}
 		v = ubi_vol_find(ubi, val);
 		if (!v) {
 			ubi_put_device(ubi);
-			dump_fail("404 Not Found", "没有名为 %s 的卷", val);
+			dump_fail("404 Not Found", "no volume named %s",
+				  "没有名为 %s 的卷", val);
 			return;
 		}
 		/*
@@ -6448,7 +7024,8 @@ static void httpd_dump(void)
 		dump_raw = 1;
 		off = qs_get(dump_qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
 		if (off >= dump_mtd->size) {
-			dump_fail("400 Bad Request", "起始偏移超过闪存容量");
+			dump_fail("400 Bad Request", "offset past the end of flash",
+				  "起始偏移超过闪存容量");
 			return;
 		}
 		/* Every byte from here to the end, bad blocks included. */
@@ -6459,11 +7036,12 @@ static void httpd_dump(void)
 	}
 
 	if (!len) {
-		dump_fail("400 Bad Request", "长度为 0");
+		dump_fail("400 Bad Request", "zero length", "长度为 0");
 		return;
 	}
 	if (dump_raw && off + len > dump_mtd->size) {
-		dump_fail("400 Bad Request", "偏移加长度超过闪存容量");
+		dump_fail("400 Bad Request", "offset + length past the end of flash",
+			  "偏移加长度超过闪存容量");
 		return;
 	}
 
@@ -6484,6 +7062,7 @@ static void httpd_dump(void)
 	 */
 	if (dump_win < SZ_64K) {
 		dump_fail("507 Insufficient Storage",
+			  "not enough memory for a read window",
 			  "内存不足，无法分配读取窗口");
 		return;
 	}
@@ -6496,7 +7075,8 @@ static void httpd_dump(void)
 
 	/* First window now, so a read error is still a status code. */
 	if (dump_fill(0)) {
-		dump_fail("500 Internal Server Error", "读取失败，详见串口日志");
+		dump_fail("500 Internal Server Error", "read failed",
+			  "读取失败，详见串口日志");
 		return;
 	}
 
@@ -6649,16 +7229,10 @@ static u32	st_wipe_n;	/* blocks erased */
 static u32	st_wipe_bad;	/* bad blocks passed over */
 static int	st_wipe_in;	/* the tick must not re-enter the erase */
 
-static void st_reply(const char *status, const char *fmt, ...)
+/* The console line in English, the answer in what the page translates. */
+static void st_reply(const char *status, const char *con, const char *msg)
 {
-	char msg[256];
-	va_list ap;
-
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
-	va_end(ap);
-
-	printf("httpd: /stock: %s\n", msg);
+	printf("httpd: /stock: %s\n", con);
 	st_resp_len = snprintf(st_resp, sizeof(st_resp),
 			       "HTTP/1.0 %s\r\n"
 			       "Content-Type: text/plain; charset=utf-8\r\n"
@@ -6667,22 +7241,26 @@ static void st_reply(const char *status, const char *fmt, ...)
 }
 
 /* Refuse, and say whether the flash has already been changed. */
-static void st_fail(const char *fmt, ...)
+static void st_fail(const char *fen, const char *fzh, ...)
 {
-	char msg[192];
+	char en[128], zh[192], con[192], msg[256];
 	va_list ap;
 
-	va_start(ap, fmt);
-	vsnprintf(msg, sizeof(msg), fmt, ap);
+	va_start(ap, fzh);
+	fmt2(en, sizeof(en), zh, sizeof(zh), fen, fzh, ap);
 	va_end(ap);
 
 	st_failed = 1;
 	if (st_started) {
-		st_reply("500 Internal Server Error",
-			 "%s。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电",
-			 msg);
+		snprintf(con, sizeof(con), "%s; flash is partly written, write "
+			 "again until it succeeds before rebooting", en);
+		snprintf(msg, sizeof(msg), "%s。闪存已写入一部分，此时重启将无法"
+			 "启动。请重新写入至成功，其间不要断电", zh);
+		st_reply("500 Internal Server Error", con, msg);
 	} else {
-		st_reply("400 Bad Request", "%s（闪存尚未改动）", msg);
+		snprintf(con, sizeof(con), "%s; flash untouched", en);
+		snprintf(msg, sizeof(msg), "%s（闪存尚未改动）", zh);
+		st_reply("400 Bad Request", con, msg);
 	}
 }
 
@@ -6722,7 +7300,8 @@ static int st_begin(u32 rx_bytes)
 		 * line in the same place.
 		 */
 		if (n >= HDRBUF_SZ - 1) {
-			st_fail("请求头超过 %d 字节", HDRBUF_SZ - 1);
+			st_fail("request head over %d bytes",
+				"请求头超过 %d 字节", HDRBUF_SZ - 1);
 			return -1;
 		}
 
@@ -6746,7 +7325,7 @@ static int st_begin(u32 rx_bytes)
 
 	p = strstr(hdr, "Content-Length:");
 	if (!p) {
-		st_fail("没有 Content-Length");
+		st_fail("no Content-Length", "没有 Content-Length");
 		return -1;
 	}
 	p += 15;
@@ -6754,23 +7333,25 @@ static int st_begin(u32 rx_bytes)
 		p++;
 	clen = simple_strtoul(p, NULL, 10);
 	if (!clen) {
-		st_fail("长度为 0");
+		st_fail("zero length", "长度为 0");
 		return -1;
 	}
 
 	st_mtd = flash_master();
 	if (!st_mtd) {
-		st_fail("没有找到闪存设备");
+		st_fail("no flash device", "没有找到闪存设备");
 		return -1;
 	}
 	st_blk = st_mtd->erasesize;
 
 	if (st_off & (u64)(st_blk - 1)) {
-		st_fail("写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
+		st_fail("offset 0x%llx is not aligned to the 0x%x erase block",
+			"写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
 		return -1;
 	}
 	if (st_off + clen > st_mtd->size) {
-		st_fail("自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
+		st_fail("0x%llx + %lu bytes runs past the %llu byte flash",
+			"自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
 			st_off, clen, (unsigned long long)st_mtd->size);
 		return -1;
 	}
@@ -6780,7 +7361,8 @@ static int st_begin(u32 rx_bytes)
 	if (st_nblk > ST_RING_MAX / st_blk)
 		st_nblk = ST_RING_MAX / st_blk;
 	if (st_nblk < 4) {
-		st_fail("内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
+		st_fail("not enough memory for the receive ring, need %u bytes",
+			"内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
 		return -1;
 	}
 	st_ring = up_base;
@@ -6801,7 +7383,17 @@ static int st_begin(u32 rx_bytes)
 		printf("httpd: /stock: will erase 0x%llx..0x%llx after the "
 		       "image\n", st_wipe_pos, st_wipe_end);
 
-	/* The head already carried some body bytes; move them into slot 0. */
+	/*
+	 * The head already carried some body bytes; move them into slot 0.
+	 * Up to up_hi rather than rx_bytes: a segment that arrived ahead of
+	 * a hole while the head was still incomplete was staged at its
+	 * stream offset, and TCP has already counted it received, so it is
+	 * never sent again.  Left behind, it would sit st_hdr_end bytes away
+	 * from its ring slot and st_put() would write whatever was there.
+	 * The hole in between is moved too and filled later by st_rx().
+	 */
+	if (up_hi > rx_bytes)
+		rx_bytes = up_hi;
 	body_here = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
 	if (body_here > st_nblk * st_blk)
 		body_here = st_nblk * st_blk;
@@ -6847,13 +7439,15 @@ static int st_put(u32 k, u32 n)
 	ei.len = st_blk;
 	ret = mtd_erase(st_mtd, &ei);
 	if (ret) {
-		st_fail("擦除 0x%llx 失败（%d）", pos, ret);
+		st_fail("erase at 0x%llx failed (%d)",
+			"擦除 0x%llx 失败（%d）", pos, ret);
 		return -1;
 	}
 
 	ret = mtd_write(st_mtd, pos, n, &wl, p);
 	if (ret || wl != n) {
-		st_fail("写入 0x%llx 失败（%d，实际写入 %u/%u）", pos, ret,
+		st_fail("write at 0x%llx failed (%d, %u of %u written)",
+			"写入 0x%llx 失败（%d，实际写入 %u/%u）", pos, ret,
 			(u32)wl, n);
 		return -1;
 	}
@@ -6864,6 +7458,7 @@ static int st_put(u32 k, u32 n)
 /* The last thing either path does: stop the chase, answer, stand still. */
 static void st_finish(void)
 {
+	char ok[80];
 	int i;
 
 	/* Dark, which is what every other write ends on too. */
@@ -6879,12 +7474,13 @@ static void st_finish(void)
 		printf("httpd: /stock: everything else landed at its own offset\n");
 	}
 	if (st_wipe)
-		st_reply("200 OK",
+		snprintf(ok, sizeof(ok),
 			 "ok %u bytes crc32 %08x skipped %d wiped %u",
 			 st_body, st_crc, st_nskip, st_wipe_n);
 	else
-		st_reply("200 OK", "ok %u bytes crc32 %08x skipped %d",
+		snprintf(ok, sizeof(ok), "ok %u bytes crc32 %08x skipped %d",
 			 st_body, st_crc, st_nskip);
+	st_reply("200 OK", ok, ok);
 }
 
 /*
@@ -7139,6 +7735,7 @@ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 			return 0;
 		}
 		up_owner = tcp;
+		up_hi = 0;
 	} else if (up_owner != tcp) {
 		/*
 		 * Somebody else's bytes.  0 is "not accepted, send it again",
@@ -7197,6 +7794,8 @@ static int httpd_rx(struct tcp_stream *tcp, u32 rx_offs, void *buf, int len)
 	}
 
 	memcpy((char *)up_base + rx_offs, buf, len);
+	if (rx_offs + len > up_hi)
+		up_hi = rx_offs + len;
 
 	return len;
 }
@@ -7277,6 +7876,19 @@ static void *httpd_classify_get(const char *req, u32 rx_bytes)
 		return CONN_BOOT;
 	if (plen == 9 && !memcmp(path, "/bootonce", 9))
 		return CONN_BOOTONCE;
+	if (plen == 8 && !memcmp(path, "/wipecfg", 8))
+		return CONN_WIPECFG;
+	if (plen == 7 && !memcmp(path, "/dhcpgw", 7)) {
+		int k = qlen;
+
+		if (k > (int)sizeof(dhcpgw_qs) - 1)
+			k = sizeof(dhcpgw_qs) - 1;
+		if (k > 0)
+			memcpy(dhcpgw_qs, q + 1, k);
+		dhcpgw_qs[k > 0 ? k : 0] = '\0';
+
+		return CONN_DHCPGW;
+	}
 	if (plen == 8 && !memcmp(path, "/netmode", 8)) {
 		int k = qlen;
 
@@ -7407,7 +8019,8 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 			if (flash_running &&
 			    (cls == CONN_ENVRESET || cls == CONN_BOOTONCE ||
 			     cls == CONN_NETMODE || cls == CONN_REBOOT ||
-			     cls == CONN_BOOT)) {
+			     cls == CONN_BOOT || cls == CONN_WIPECFG ||
+			     cls == CONN_DHCPGW)) {
 				tcp->priv = CONN_WRBUSY;
 
 				return;
@@ -7445,6 +8058,10 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 				envreset_len = httpd_envreset();
 			else if (cls == CONN_BOOTONCE)
 				bootonce_len = httpd_bootonce();
+			else if (cls == CONN_WIPECFG)
+				wipecfg_len = httpd_wipecfg();
+			else if (cls == CONN_DHCPGW)
+				dhcpgw_len = httpd_dhcpgw();
 			else if (cls == CONN_NETMODE)
 				netmode_len = httpd_netmode();
 			else if (cls == CONN_DUMPINFO)
@@ -7527,6 +8144,12 @@ static const char *httpd_response(struct tcp_stream *tcp, int *len)
 	} else if (tcp->priv == CONN_BOOTONCE) {
 		*len = bootonce_len;
 		return bootonce_buf;
+	} else if (tcp->priv == CONN_WIPECFG) {
+		*len = wipecfg_len;
+		return wipecfg_buf;
+	} else if (tcp->priv == CONN_DHCPGW) {
+		*len = dhcpgw_len;
+		return dhcpgw_buf;
 	} else if (tcp->priv == CONN_NETMODE) {
 		*len = netmode_len;
 		return netmode_buf;
@@ -7692,6 +8315,13 @@ static void httpd_on_snd_una_update(struct tcp_stream *tcp, u32 tx_bytes)
 			 */
 			flash_pending = 1;
 			flash_running = 1;
+			/*
+			 * FS_START clears the log too, but only on the next
+			 * tick; the page asks /wr?from=0 the moment this 200
+			 * lands, and would read the previous write's "done"
+			 * as this one's.
+			 */
+			wr_reset();
 		}
 	} else {
 		/*
@@ -7902,6 +8532,7 @@ void httpd_start_server(void)
 	dump_hdr_len = 0;
 	up_base = env_get_hex("loadaddr", CONFIG_SYS_LOAD_ADDR);
 	fvols_parse();
+	httpd_link_bounce();
 
 	memset(net_server_ethaddr, 0, 6);
 	tcp_stream_set_on_create_handler(httpd_on_create);

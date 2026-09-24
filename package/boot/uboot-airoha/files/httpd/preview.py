@@ -58,7 +58,7 @@ INFO = {
     "net": {"ip": "192.168.1.1", "mask": "0.0.0.0",
             "gw": "0.0.0.0", "server": "192.168.1.254",
             "dev": "airoha-gdm1", "offer": 1, "ack": 1,
-            "mode": "server", "ram": 0, "saved": None,
+            "mode": "server", "ram": 0, "saved": None, "dgw": 1,
             "client": "a4:5e:60:11:22:33"},
     "ports": [{"p": 1, "link": 0, "speed": 0, "fd": 0},
               {"p": 2, "link": 1, "speed": 1000, "fd": 1},
@@ -155,13 +155,14 @@ In:    serial
 Out:   serial
 Err:   serial
 Net:   eth0: airoha-gdm1
+httpd: bouncing link on 1 port(s) so the PC asks for an address again
 Airoha Web U-Boot %s by Loong
 Using airoha-gdm1 device, MAC 90:03:2e:12:34:56
 Listening for HTTP on 192.168.1.1 port 80
 Handing out DHCP leases from 192.168.1.1
 Press Ctrl-C to abort
-httpd: DHCP OFFER -> 192.168.1.100
-httpd: DHCP ACK -> 192.168.1.100
+httpd: DHCP OFFER 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
+httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
 """ % MACROS["WEB_VERSION"]
 
 # The stub.  Plain ES5 like the page itself.
@@ -184,7 +185,7 @@ var DBUSY=0,DSENT=0,DTOTAL=0,DTICK=null;
 /* 真设备的日志会一直长，跟随功能不自己长就看不出在跟 */
 var LOGX='',LOGSEQ=0;
 setInterval(function(){LOGSEQ++;
-LOGX+='httpd: DHCP ACK -> 192.168.1.10'+(LOGSEQ%9)+'\n'},3000);
+LOGX+='httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3'+(LOGSEQ%9)+'\n'},3000);
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info));
@@ -255,6 +256,10 @@ function body(u){
   return String(all.length)+'\n'+all.slice(f)}
  if(u=='/env')return JSON.stringify({env:D.env,cut:0});
  if(u=='/envreset')return S.dev=='noubi'?'ok':'ok saved';
+ if(u=='/wipecfg'){var ub=D.info.ubi;if(ub){ub.vols=ub.vols.filter(function(v){
+  if(v.n=='rootfs_data'){ub.avail+=Math.floor(v.s/ub.leb);return false}return true})}
+  return 'ok removed'}
+ if(u.indexOf('/dhcpgw')==0){D.info.net.dgw=/on=1/.test(u)?1:0;return S.dev=='noubi'?'ok':'ok saved'}
  if(u=='/bootonce')return S.dev=='noubi'?'armed, but saving failed':'armed and saved';
  if(u=='/boot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'ok'}
  if(u=='/reboot'){fall(9000);setTimeout(function(){T0=Date.now()},9000);return 'OK'}
@@ -263,6 +268,9 @@ function XHR(){var x=this;x.upload={};x.status=0;x.responseText='';x.timeout=0;
 x.open=function(m,u){x.m=m;x.u=u};x.setRequestHeader=function(){};
 x.send=function(fd){
  if(x.m=='GET'){
+  /* 回复超出缓冲区时设备给的是 JSON 500，解析得出来，但不是 /info */
+  if(x.u=='/info'&&S.dev=='info500'&&!down()){setTimeout(function(){x.status=500;
+   x.responseText='{"err":"reply too large"}';x.onload&&x.onload()},300);return}
   if(down()&&x.u!='/reboot'){setTimeout(function(){x.status=0;
    (x.timeout&&x.ontimeout?x.ontimeout:x.onerror||function(){})()},Math.min(x.timeout||1200,900));return}
   var t=body(x.u);
@@ -277,6 +285,8 @@ x.send=function(fd){
  var tick=setInterval(function(){n+=Math.max(tot/40,65536);if(n>=tot){n=tot;clearInterval(tick);x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot});x.upload.onload&&x.upload.onload();
   setTimeout(function(){if(S.post=='drop'){x.onerror&&x.onerror();return}
    if(S.post=='reject'){x.status=400;x.responseText='the flash has no U-Boot (no fip volume) and this upload brings none: nothing would boot after the reset. Upload the U-Boot FIP as well';x.onload&&x.onload();return}
+   /* 另一个上传占着时，设备把这个 POST 当 GET 答：200，整张页面 */
+   if(S.post=='busy'){x.status=200;x.responseText='<!DOCTYPE html><html><head><title>U-Boot</title></head><body></body></html>';x.onload&&x.onload();return}
    /* 刷回原厂仍是一次性回复：它边收边写，200 到手时早写完了 */
    if(st){if(S.post=='fail500'){x.status=500;
      x.responseText='写入 0x8c0000 失败（-5，实际写入 0/131072）。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电'}
@@ -285,8 +295,8 @@ x.send=function(fd){
      fall(60000)}
     x.onload&&x.onload();return}
    /* 试运行一去不回，所以它还是先回复后动手 */
-   if(tryb){x.status=200;x.responseText='OK';fall(9000);x.onload&&x.onload();return}
-   x.status=200;x.responseText='OK';x.onload&&x.onload();
+   if(tryb){x.status=200;x.responseText='{"ok":1}';fall(9000);x.onload&&x.onload();return}
+   x.status=200;x.responseText='{"ok":1}';x.onload&&x.onload();
    WRLOG='';wrrun(wrlines(parts,fmt),0);return},1200);return}
   x.upload.onprogress&&x.upload.onprogress({lengthComputable:true,loaded:n,total:tot})},80)}}
 /*
@@ -327,7 +337,7 @@ document.addEventListener('DOMContentLoaded',function(){
  /* 这条是预览自己的，不属于设备那张页面：别让语言切换去动它 */
  b.id='pvbar';b.setAttribute('data-raw','');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
  var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn');
  sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};
