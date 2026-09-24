@@ -11,10 +11,30 @@ include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
 
+# What BL2 will load as BL33 (files/fip/check-bl33.sh): LZMA-packed, into
+# a 0x58000 buffer that also holds ~16 KiB of decoder state, and unpacked
+# into 1 MiB.  Boards whose BL2 was built from the same ATF with wider limits
+# say so; the SPI NAND BL2s already in the field have these.
 define U-Boot/Default
   BUILD_TARGET:=airoha
   LZMA_COMPRESS:=1
   HIDDEN:=1
+  BL33_MAX:=0x100000
+  BL33_LZMA_MAX:=0x54000
+endef
+
+define U-Boot/an7581_fiberhome_hg5382a
+  NAME:=FiberHome HG5382A
+  UBOOT_CONFIG:=an7581_fiberhome_hg5382a
+  BUILD_DEVICES:=fiberhome_hg5382a-ubi
+  BUILD_SUBTARGET:=an7581
+  BL2_IMAGE:=an7581-pnand-bl2.bin
+  BL31_IMAGE:=an7581-bl31.bin
+  # The pnand BL2 unpacks up to 2 MiB from a 0x80000 buffer (ATF patch
+  # 102).  The FIP must also fit the 0x7f800 BL2 takes over XMODEM, next to
+  # BL31, hence 0x70000 rather than 0x7c000.
+  BL33_MAX:=0x200000
+  BL33_LZMA_MAX:=0x70000
 endef
 
 define U-Boot/an7581_gemtek_w1700k
@@ -100,6 +120,7 @@ define U-Boot/en7523_rfb
 endef
 
 UBOOT_TARGETS := \
+	an7581_fiberhome_hg5382a \
 	an7581_gemtek_w1700k \
 	an7581_nokia_valyrian \
 	an7581_nokia_xg-040g-md \
@@ -117,7 +138,7 @@ UBOOT_CUSTOMIZE_CONFIG := \
 	--enable SERIAL_RX_BUFFER \
 	--set-val SERIAL_RX_BUFFER_SIZE 256
 
-# src/ is copied and patches apply first. The four web-recovery boards
+# src/ is copied and patches apply first. The web-recovery boards
 # then get their defconfig and env from files/web-uboot/, so the version
 # string and the shared menu live in one place. Other boards are untouched.
 define Build/Prepare
@@ -147,6 +168,10 @@ define Build/Compile
 	$(if $(LZMA_COMPRESS), $(STAGING_DIR_HOST)/bin/lzma e \
 		$(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/u-boot.lzma)
+	$(if $(and $(BL2_IMAGE),$(LZMA_COMPRESS)), \
+		$(SHELL) ./files/fip/check-bl33.sh $(BUILD_VARIANT) \
+			$(PKG_BUILD_DIR)/u-boot.bin $(PKG_BUILD_DIR)/u-boot.lzma \
+			$(BL33_MAX) $(BL33_LZMA_MAX))
 endef
 
 # don't stage files to bindir, let target/linux/airoha/image/*.mk do that

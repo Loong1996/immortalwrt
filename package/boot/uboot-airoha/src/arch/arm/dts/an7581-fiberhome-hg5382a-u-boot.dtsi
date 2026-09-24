@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+
+#include "an7581-u-boot.dtsi"
+
+/*
+ * an7581-u-boot.dtsi redefines spi@1fa10000 but leaves its status alone, so
+ * the SNFI stays disabled from en7581.dtsi.  Never set it okay here: the
+ * SNFI shares the NFI block with the parallel NAND controller.
+ */
+
+&gdm1 {
+	status = "okay";
+};

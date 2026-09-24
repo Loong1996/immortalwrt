@@ -1,0 +1,78 @@
+Subject: [PATCH] mtd: rawnand: add full-ID entries for 2 Gbit parallel NANDs
+
+Required on the FiberHome HG5382A: its Winbond W29N02KVSIAF is not ONFI
+(onfi_ver=0), and without a full-ID entry its extended ID decodes to a
+64-byte OOB instead of 128.  Full-ID entries fix the OOB size of common
+2 Gbit SLC parts whose extended-ID decode is ambiguous (64 vs 128 byte
+OOB).  The EN7581 PNAND driver derives its BCH strength from
+mtd->oobsize, so a wrong OOB size means a page layout that nothing else
+in the boot chain reads back.  Linux carries the W29N02KV entries
+(target/linux/airoha/patches-6.18/904); the others are U-Boot and BL2
+only, so a board on one of them needs its Linux entry added too.
+
+The W29N02KVSIAF is listed at ECC8 although the part only asks for 4:
+the driver picks the lowest strength at or above the declared one, and 8
+is what the stock FiberHome loader reports on it (spare 28 either way).
+BL2 (arm-trusted-firmware-airoha patches/100) and Linux (patches-6.18/903
+and 904) use the same codeword: ECC8, data inverted, all 8 FDM bytes
+covered, so what one writes the others read.
+
+Nothing written before is readable that way: the stock firmware's UBI,
+and the UBI of pbs05/uboot-an758x (whose U-Boot runs this part at ECC4,
+and whose firmware left ECC8 pages of yet another codeword), fail every
+page with -74.  A board coming from either has its UBI rebuilt the first
+time it runs this U-Boot.
+
+Taken from https://github.com/pbs05/uboot-an758x (manufacturer ops files
+and the NAND_MFR_* additions are not carried; W29N02KVSIAF changed from
+ECC4 to ECC8).
+
+--- a/drivers/mtd/nand/raw/nand_ids.c
++++ b/drivers/mtd/nand/raw/nand_ids.c
+@@ -32,6 +32,46 @@
+ 		{ .id = {0x98, 0xd1, 0x90, 0x15, 0x76, 0x14, 0x01, 0x00} },
+ 		  SZ_2K, SZ_128, SZ_128K, 0, 8, 64, NAND_ECC_INFO(1, SZ_512),
+ 		  2 },
++	{"TC58NVG1S3HTAI0 2G 3.3V 8-bit",
++		{ .id = {0x98, 0xda, 0x90, 0x15, 0x76} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(8, SZ_512), 0 },
++	{"W29N02GV 2G 3.3V 8-bit",
++		{ .id = {0xef, 0xda, 0x90, 0x95, 0x04} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 64,
++		  NAND_ECC_INFO(1, SZ_512), 0 },
++	{"W29N02KVSIAE 2G 3.3V 8-bit",
++		{ .id = {0xef, 0xda, 0x10, 0x95, 0x07} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(8, SZ_512), 0 },
++	{"W29N02KVSIAF 2G 3.3V 8-bit",
++		{ .id = {0xef, 0xda, 0x10, 0x95, 0x06} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(8, SZ_512), 0 },
++	{"S34ML02G300TFI00 2G 3.3V 8-bit",
++		{ .id = {0x01, 0xda, 0x00, 0x95, 0x46} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(4, SZ_512), 0 },
++	{"S34ML01G1 1G 3.3V 8-bit",
++		{ .id = {0x01, 0xf1, 0x00, 0x1d} },
++		  SZ_2K, SZ_128, SZ_128K, 0, 4, 64,
++		  NAND_ECC_INFO(1, SZ_512), 0 },
++	{"S34ML02G1 2G 3.3V 8-bit",
++		{ .id = {0x01, 0xda, 0x90, 0x95, 0x44} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 64,
++		  NAND_ECC_INFO(1, SZ_512), 0 },
++	{"S34ML04G1 4G 3.3V 8-bit",
++		{ .id = {0x01, 0xdc, 0x90, 0x95, 0x54} },
++		  SZ_2K, SZ_512, SZ_128K, 0, 5, 64,
++		  NAND_ECC_INFO(1, SZ_512), 0 },
++	{"S34ML02G2 2G 3.3V 8-bit",
++		{ .id = {0x01, 0xda, 0x90, 0x95, 0x46} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(4, SZ_512), 0 },
++	{"S34ML02G2 2G 3.3V 8-bit (alt ID order)",
++		{ .id = {0x01, 0xda, 0x46, 0x95, 0x90} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128,
++		  NAND_ECC_INFO(4, SZ_512), 0 },
+ 	{"TC58NVG2S0F 4G 3.3V 8-bit",
+ 		{ .id = {0x98, 0xdc, 0x90, 0x26, 0x76, 0x15, 0x01, 0x08} },
+ 		  SZ_4K, SZ_512, SZ_256K, 0, 8, 224, NAND_ECC_INFO(4, SZ_512) },
