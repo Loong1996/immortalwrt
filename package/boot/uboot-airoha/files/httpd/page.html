@@ -43,8 +43,13 @@ input[type=text]:focus,.fc select:focus{box-shadow:0 0 0 3px rgba(10,102,214,.25
 input::placeholder{color:var(--c3)}
 .note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}
 .note b{color:var(--org);font-weight:500}
+.note.ok b{color:var(--grn)}.note.bad b{color:var(--red)}
 .act{display:flex;align-items:center;justify-content:flex-end;gap:.8rem;margin-top:auto;padding-top:1.4rem}
 .st{color:var(--c2);margin-right:auto;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st.ok{color:var(--grn)}.st.warn{color:var(--org)}.st.bad{color:var(--red)}
+/* 结果可能是一整句话，不能被截成省略号 */
+.st.wrap{white-space:normal}
+input[type=radio]{accent-color:var(--blue);width:15px;height:15px;margin:0;flex:none;cursor:pointer}
 @media (min-width:701px){.side{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;scrollbar-width:none}
 .side::-webkit-scrollbar{display:none}}
 .side{background:var(--side);border-right:1px solid var(--sep);padding:.6rem .6rem 1rem;display:flex;flex-direction:column}
@@ -174,7 +179,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 .envv{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;white-space:pre-wrap;word-break:break-all}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.38rem;background:var(--c3)}
 .dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}
-.kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}
+.kv td.s0{color:var(--grn)}.kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}
 .kv td.hot{color:var(--red)}
 .kv td.cmd{color:var(--c2);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}
 .row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}
@@ -260,6 +265,15 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px" oninput=stwipe()><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
 <div class="fr wide"><span class=fl>擦净尾部<small>镜像之后<b>直至片尾</b>的擦除块一并擦空；不擦则保留原有内容</small></span><span class="fc end"><input type=checkbox class=sw name=wipe value=1 checked onchange="this.dataset.t=1"></span></div>
 </div>
+<!--#if PNAND-->
+<div data-oob=1 hidden><p class=bh>镜像格式<small>选择文件后按大小自动判断</small></p>
+<div class=box>
+<label class="fr wide"><span class=fl>带 OOB<small>由「备份下载 → 整片下载」导出的文件</small></span><span class="fc end"><input type=radio name=stfmt value=oob checked onchange="stfmtset(1)"></span></label>
+<label class="fr wide"><span class=fl>不带 OOB<small>原厂系统里 dd 出来的文件</small></span><span class="fc end"><input type=radio name=stfmt value=dd onchange="stfmtset(1)"></span></label>
+</div>
+<div id=stpw hidden><p class=bh>重算校验码的参数<small>默认取「备份下载 → 原厂格式」里的</small></p><div class=box id=sfp2></div></div>
+<p class=note id=stfn></p></div>
+<!--#endif-->
 <p class=note>镜像须来自本机备份，可在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。长度上限为 flash 容量 <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启</b>。写入期间指示灯<b>流水</b>，与其他页面一致；本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
@@ -281,7 +295,11 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 
 <div class=pane id=p10>
 <h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>
-<div class=seg data-seg=g10 role=tablist><button type=button role=tab data-s=s101 aria-controls=s101 aria-selected=true onclick=seg(this)>UBI 卷</button><button type=button role=tab data-s=s102 aria-controls=s102 aria-selected=false onclick=seg(this)>原始区段</button></div>
+<div class=seg data-seg=g10 role=tablist><button type=button role=tab data-s=s101 aria-controls=s101 aria-selected=true onclick=seg(this)>UBI 卷</button><button type=button role=tab data-s=s102 aria-controls=s102 aria-selected=false onclick=seg(this)>原始区段</button>
+<!--#if PNAND-->
+<button type=button role=tab data-s=s103 aria-controls=s103 aria-selected=false onclick=seg(this) id=sftab hidden>原厂格式</button>
+<!--#endif-->
+</div>
 <div class=sp data-g=g10 id=s101 data-on>
 <div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>
 </div>
@@ -292,9 +310,26 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text id=dumplen class=mono placeholder="留空到片尾" style="width:130px"><span class=fn id=dumphint>留空读至片尾</span></span></div>
 </div>
 <p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>
-<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
+<p class=note data-oob=0><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
+<!--#if PNAND-->
+<p class=note data-oob=1 hidden><b>这台连 OOB 一起原样读出</b>，每页 <span class=oobpg>2048 + 128</span> 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；<b>只能写回本机</b>。偏移与长度按 flash 计，须按页对齐。</p>
+<!--#endif-->
 <div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
 </div>
+<!--#if PNAND-->
+<div class=sp data-g=g10 id=s103>
+<p class=note>原厂系统里 <code>dd</code> 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。<b>自动识别只能在首次迁移前做</b>，那时闪存还是原厂内容；参数也可以手动填写。</p>
+<div class=box><table class=kv id=sfmt><tr><td>正在读取…</td></tr></table></div>
+<p class=bh>参数<small>自动识别的结果填在这里，也可以手动改</small></p>
+<div class=box id=sfp1></div>
+<p class=note id=sfv1 hidden></p>
+<div class=row><span class="st wrap" id=sfh></span><button type=button class=pb id=sfa onclick=sfauto()>自动识别</button><button type=button class=pb id=sft onclick=sftry()>用这组参数试读</button><button type=button class="pb pri" id=sfs onclick=sfsave()>保存</button></div>
+<p class=note>已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。</p>
+<p class=bh>用 dd 备份核对<small>可选。确认坏块标记的位置，并找出原厂挪动过的块</small></p>
+<div class=box><div class=fr><span class=fl>dd 备份<small class=mono>all_flash.bin</small></span><label class=fc><input type=file id=sfdd data-l="dd 备份"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div></div>
+<div class=row><span class="st wrap" id=sfdh></span><button type=button class=pb id=sfb onclick=sfcheck()>核对</button></div>
+</div>
+<!--#endif-->
 <div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
 <div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span></div>
 <div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
@@ -503,7 +538,10 @@ function busy(on){var a=$('#app');
 if(on)a.setAttribute('data-busy','');else a.removeAttribute('data-busy');
 $$('.nav').forEach(function(b){b.disabled=!!on})}
 function files(p){return $$('input[type=file]',p).filter(function(i){return i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files[0]}})}
-function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);refresh()}
+function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);if(i.name=='stock'&&cecc())stguess(f);
+/* dd 核对那个文件框有自己的结果行，别让它去改页面底部那行 */
+if(i.id=='sfdd'){sfst('#sfdh','','已选 '+f.name+' · '+sz(f.size));return}
+refresh()}
 function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):'未选择文件'}
 /* 每个文件框都能拖：大框是 .drop，表格里的是它所在的 .fr */
 function drag(d,i){if(!d||d.__drag)return;d.__drag=1;
@@ -522,6 +560,13 @@ function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;
  * 松勾。用户亲手动过这个开关之后不再代他决定 —— dataset.t 记的就是这个。
  */
 function stwipe(){var w=$('[name=wipe]');if(w&&!w.dataset.t)w.checked=hex($('[name=stockoff]').value)===0}
+/*
+ * 并口 NAND 的那一半（带 OOB 的整片备份、原厂闪存格式）在页尾单独一段脚本里，
+ * 只编进带并口 NAND 驱动的 U-Boot（gen.py 的 PNAND 标记）。SPI NAND 上只剩
+ * 这两个空壳；那段脚本在的时候，后声明的同名函数盖掉它们。
+ */
+function cecc(){return false}
+function oobmode(){}
 function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
 function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
 /*
@@ -735,7 +780,7 @@ $('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t
 :t.indexOf('already')>=0?'此前已设置，下次开机将停在本页面'
 :'已设置。下次开机停在本页面，再下次开机恢复正常引导'})}
 function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
-if(f)$('#dumphint').textContent='读至片尾，'+sz(f.size);
+if(f)$('#dumphint').textContent='读至片尾，'+sz(cecc()?rawlen(f.size):f.size);
 if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
 if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}
 (INFO.fv||[]).forEach(function(v){fv[v.n]=v.s});
@@ -830,8 +875,10 @@ if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';r
 if(l===0){$('#dlh').textContent='长度为 0';return}
 if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}
 if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}
+/* 带 OOB 的按页读：偏移与长度都得落在页边界上，文件长度按页连 OOB 算 */
+var ob=cecc();if(ob&&(o%f.page||(l!==null&&l%f.page))){$('#dlh').textContent='偏移与长度须按页 '+sz(f.page)+' 对齐';return}
 DLWHAT=!o&&l===null?'all':'';
-sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16)),'0x'+o.toString(16)+' 起的区段',l)}
+sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16))+(ob?'&oob=1':''),'0x'+o.toString(16)+' 起的区段'+(ob?'（连 OOB）':''),ob&&l!==null?rawlen(l):l)}
 /* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */
 var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|web_uboot_|envver|httpd_|ubi_)/;
 function getenv(){var b=$('#envb');b.disabled=true;ENVQ=1;get('/env',function(st,t){ENVQ=0;b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
@@ -960,12 +1007,12 @@ $('#ubih').textContent='逻辑擦除块 '+sz(ub.leb)+' × '+ub.pebs
 +(av==null?'':'。刷机可用 '+Math.floor(room/1048576)+' MiB：当前空闲 '
 +sz(av)+'，加上写入时会腾出的 fit 与 rootfs_data')}
 function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
-var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
+var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page)+(INFO.flash.oob?' · OOB '+sz(INFO.flash.oob):''):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
 if(INFO.uboot)$('#based').textContent=INFO.uboot;
 $('#logtab').hidden=!INFO.log;
 if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});
-dlfill();
+dlfill();oobmode();
 FV=INFO.fv||[];fvrows();wcfill();
 if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}
 ubibar();
@@ -1114,12 +1161,20 @@ else{W.push('固件仅载入内存，不写入闪存；引导失败断电即恢�
 if(!/recovery/i.test(rows[0].f.name))W.push('这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit 卷里，试运行不写闪存也就用不到它，内核多半起不来');}
 y.textContent='启动它'}
 $('#atitle').textContent=$('h1',p).textContent;
-if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash;if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+rows[0].f.size>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(rows[0].f.size)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-rows[0].f.size:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
+if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash,sm=cecc()?stfv():'',L=rows[0].f.size;
+/* 带 OOB 的文件比它在 flash 上占的长：按页连 OOB 折回去，而且得是整块 */
+if(sm=='oob'){if(L%rawlen(f.erase))E.push('带 OOB 的镜像长度应为 '+sz(rawlen(f.erase))+' 的整数倍（一个擦除块连 OOB）');L=flashlen(L);W.push('连 OOB 原样写入，只能写回备份它的这台机器')}
+if(sm=='dd'){var sb=sfbad(SF),sv=sfsaved();if(sb)E.push(esc(sb));else{W.push('按这组参数重算校验码：'+esc(sfdesc(SF)));
+if(!sv||sv.st!='ok')W.push('原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了');
+else if(!sfsame())W.push('这组参数与「原厂格式」里的不同，只用于这次写入');
+else if(sv.src!='dd')W.push('没有用 dd 备份核对过，坏块标记的位置未确认')}}
+if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+L>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(L)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-L:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
 if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');
 /* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */
 if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '
-+'<a href="#" onclick="gobk();return false">整片下载</a>')}
++'<a href="#" onclick="gobk();return false">整片下载</a>');
+if(cecc())W.push(sfok()?'原厂闪存格式已识别，重建 UBI 后自动保存':'原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响')}
 else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '
 +'<a href="#" onclick="gobk();return false">去备份</a>')}}if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
 /*
@@ -1203,7 +1258,7 @@ x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
 /* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；
    偏移在请求行里，设备收到第一个包就知道该写到哪 */
 if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);var wp=$('[name=wipe]',p);
-x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16)+(wp&&wp.checked?'&wipe=1':''));x.send(rows[0].f);return}
+x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16)+(wp&&wp.checked?'&wipe=1':'')+(cecc()?'&fmt='+stfv()+(stfv()=='dd'?'&p='+sfp(SF):''):''));x.send(rows[0].f);return}
 x.open('POST','/');x.send(fd)}
 function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
 /* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
@@ -2001,6 +2056,14 @@ var I18P={
 "（":" (",
 "）":")",
 "，":", ",
+"这颗闪存自己做 ECC，整片备份不带 OOB":"This flash does its own ECC; its whole-chip backup carries no OOB",
+"偏移与长度须按页对齐":"Offset and length must be page-aligned",
+"这颗闪存自己做 ECC，不用选镜像格式":"This flash does its own ECC; no image format applies",
+"原厂闪存格式缺失或与这颗闪存不符":"The stock flash format is missing or does not fit this chip",
+"内存不足":"Out of memory",
+"带 OOB 的镜像 ":"The image with OOB is ",
+"，不是整数个 ":", not a whole number of ",
+" 字节的页":"-byte pages",
 };
 /* i18n-dict end */
 var LANG='zh',I18RE=null,I18R=null,I18ON=0,
@@ -2066,4 +2129,298 @@ else{I18ON=0;if(I18OB)I18OB.disconnect();if(!I18R)i18rev();i18off(document.body)
 try{if((localStorage.getItem('xglang')||(/^zh/i.test(navigator.language||'')?'zh':'en'))=='en')setlang('en')}catch(e){}
 bind();info();hbstart();
 </script>
+<!--#if PNAND-->
+<script data-pn>
+/*
+ * 并口 NAND 的那一半，只编进带并口 NAND 驱动的 U-Boot。字典在这里补进主脚本的
+ * I18N / I18P；主脚本末尾可能已经按浏览器语言切到了英文，补完重翻一遍。
+ */
+var I18N_PN={
+"原厂格式":"Stock format",
+"这台连 OOB 一起原样读出":"This board reads raw, OOB included",
+"，每页 ":": each page is ",
+" 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；":" bytes, with no ECC check. The check bytes the stock firmware wrote stay in the file, so the stock firmware reads it after a raw write-back; ",
+"只能写回本机":"it only goes back to this unit",
+"。偏移与长度按 flash 计，须按页对齐。":". Offset and length count flash bytes and must be page-aligned.",
+"原厂系统里 ":"An image ",
+"用 dd 备份核对":"Verify against a dd backup",
+"可选。确认坏块标记的位置，并找出原厂挪动过的块":"Optional. Confirms where the bad-block marker sits and finds blocks the stock firmware moved",
+"dd 备份":"dd backup",
+"核对":"Verify",
+"镜像格式":"Image format",
+"选择文件后按大小自动判断":"Picked from the file size once a file is chosen",
+"状态":"State",
+"格式":"Format",
+"依据":"Basis",
+"保存":"Save",
+"已识别":"Detected",
+"未识别：闪存已不是原厂内容":"Not detected: flash no longer holds the stock content",
+"本机型的已知格式":"The known format for this model",
+"内置于本 U-Boot":"Built into this U-Boot",
+"已存入环境变量":"Stored in the environment",
+"重建 UBI 后自动保存":"Saved automatically once UBI is rebuilt",
+"连 OOB 原样写回":"Written back raw, OOB included",
+"，只能写回备份它的这台机器。":"; it only goes back to the unit it was backed up from.",
+"没有用 dd 备份核对过，坏块标记的位置未确认。":"Not verified against a dd backup, so the bad-block marker position is unconfirmed.",
+"原厂闪存格式未识别":"The stock flash format is not known",
+"先选择 dd 备份":"Choose a dd backup first",
+"正在读取样本页…":"Reading sample pages…",
+"设备没有给出样本页":"The device gave no sample pages",
+"文件太小，没有覆盖到任何一页样本":"The file is too short to cover any sample page",
+"读取文件失败":"Could not read the file",
+"正在比对…":"Comparing…",
+"设备没有给出比对结果":"The device gave no result",
+"连 OOB 原样写入，只能写回备份它的这台机器":"Written raw, OOB included; it only goes back to the unit it was backed up from",
+"原厂闪存格式已识别，重建 UBI 后自动保存":"The stock flash format is detected and will be saved once UBI is rebuilt",
+" 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。":"'d from the stock system has no OOB, so its check bytes have to be recomputed in the stock flash format on the way back. ",
+"自动识别只能在首次迁移前做":"Detection only works before the first migration",
+"，那时闪存还是原厂内容；参数也可以手动填写。":", while flash still holds the stock content. The parameters can also be filled in by hand.",
+"参数":"Parameters",
+"自动识别的结果填在这里，也可以手动改":"Detection fills these in; they can also be changed by hand",
+"自动识别":"Detect",
+"用这组参数试读":"Test-read with these",
+"存放":"Stored",
+"带 OOB":"With OOB",
+"由「备份下载 → 整片下载」导出的文件":"A file from Backup → Download whole chip",
+"不带 OOB":"Without OOB",
+"原厂系统里 dd 出来的文件":"A file dd'd from the stock system",
+"重算校验码的参数":"Parameters for the check bytes",
+"默认取「备份下载 → 原厂格式」里的":"Taken from Backup → Stock format unless changed",
+"ECC 强度":"ECC strength",
+"每 512 字节能纠正的位数":"Bits it can correct per 512 bytes",
+"每扇区 spare":"Spare per sector",
+"跟在每 512 字节后面的字节数":"Bytes that follow each 512 bytes of data",
+"数据取反":"Data inversion",
+"校验前是否先把数据按位取反":"Whether the data is bit-inverted before the check bytes are computed",
+"关":"Off",
+"开":"On",
+"FDM 字节数":"FDM bytes",
+"spare 里存放用户数据的字节数":"Bytes of the spare that hold user data",
+"参与校验的 FDM":"FDM covered by ECC",
+"FDM 里被校验码覆盖的字节数":"FDM bytes the check bytes cover",
+"坏块标记交换":"Bad-block marker swap",
+"页内一个数据字节与 OOB 第一个字节对调":"One data byte in the page trades places with the first OOB byte",
+"已手动设置":"Set by hand",
+"未识别：所有参数都读不通，原厂可能没用 SoC 的 ECC。可以手动填写，或改用带 OOB 的整片备份":"Not detected: no parameters read the stock pages, so the stock firmware may not use the SoC's ECC. Fill them in by hand, or use a whole-chip backup with OOB",
+"未识别：闪存已不是原厂内容，可以手动填写":"Not detected: flash no longer holds the stock content. The parameters can be filled in by hand",
+"手动填写":"Filled in by hand",
+"已存入环境变量 web_uboot_stock_nand":"Stored in the environment as web_uboot_stock_nand",
+"正在自动识别…":"Detecting…",
+"设备没有给出识别结果":"The device gave no detection result",
+"识别完成，参数已填入":"Detected; the parameters are filled in",
+"所有参数都读不通原厂写的页":"No parameters read the pages the stock firmware wrote",
+"闪存已不是原厂内容，无法自动识别":"Flash no longer holds the stock content, so nothing can be detected",
+"正在试读…":"Test-reading…",
+"设备没有给出试读结果":"The device gave no test-read result",
+"已记下，重建 UBI 后自动保存":"Noted; saved automatically once UBI is rebuilt",
+"参数不成立，先改好上面的参数":"The parameters do not add up. Fix them above first",
+"参与校验的 FDM 字节数不能多于 FDM 字节数":"FDM covered by ECC cannot exceed the FDM bytes",
+"按上面这组参数重算校验码后写入。":"The check bytes are recomputed with the parameters above before writing. ",
+"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。":"The stock format was never detected and these parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is written.",
+"这组参数与「原厂格式」里的不同，只用于这次写入。":"These differ from the ones under Stock format and are used for this write only.",
+"已用 dd 备份核对过。":"Verified against a dd backup.",
+"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了":"The stock format was never detected and these parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is written",
+"这组参数与「原厂格式」里的不同，只用于这次写入":"These differ from the ones under Stock format and are used for this write only",
+"没有用 dd 备份核对过，坏块标记的位置未确认":"Not verified against a dd backup, so the bad-block marker position is unconfirmed",
+"全部对不上：这不是本机的 dd 备份，或者这组参数不对":"Nothing matches: this is not a dd backup of this unit, or the parameters are wrong",
+"原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响":"The stock flash format is not known: restoring stock from a dd backup will need the parameters filled in by hand. A whole-chip backup with OOB is not affected",
+"已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。":"On a migrated board, Save writes to the U-Boot environment right away. Before the first migration it is only kept in RAM and written once UBI is rebuilt.",
+};
+var I18P_PN={
+" · 数据取反关":" · data inversion off",
+" · 数据取反开":" · data inversion on",
+" 字节，其中 ":" bytes, ",
+" 字节参与校验":" of them covered by ECC",
+" · 坏块标记交换关":" · bad-block marker swap off",
+" · 坏块标记交换开":" · bad-block marker swap on",
+"与 dd 备份比对 ":"Matches the dd backup on ",
+" 页一致":" pages",
+"抽样 ":"All ",
+" 页全部读通":" sampled pages read",
+"正在计算 ":"Computing crc32 of ",
+" 页的 crc32…":" pages…",
+"一致，可以用这份 dd 备份刷回原厂":"Matches: this dd backup can restore stock",
+"（文件比闪存小，只核对了它覆盖的部分）":" (the file is shorter than flash; only the part it covers was checked)",
+" 个块对不上：":" blocks do not match: ",
+"。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对":". The stock firmware moved them elsewhere (bad-block remapping), so after a write-back they sit in the wrong place",
+"偏移与长度须按页 ":"Offset and length must be aligned to the page, ",
+"（连 OOB）":" (with OOB)",
+"带 OOB 的镜像长度应为 ":"An image with OOB must be a multiple of ",
+" 的整数倍（一个擦除块连 OOB）":" (one erase block with its OOB)",
+" 组参数都能读通原厂写的页，需用 dd 备份核对区分":" sets of parameters read the stock pages; verify against a dd backup to tell them apart",
+"（纠正了 ":" (",
+" 个位翻转）":" bit flips corrected)",
+" 页读通：参数多半不对":" pages read: the parameters are most likely wrong",
+" 页全部读不通":" pages: none read",
+"：闪存已不是原厂内容，试读说明不了什么":". Flash no longer holds the stock content, so a test read proves nothing",
+" 字节超过每个扇区能分到的 OOB ":" bytes is more than the OOB each sector gets, ",
+" 的校验码 ":" check bytes of ",
+" 字节加上 FDM ":" bytes plus FDM of ",
+" 字节，超过 spare ":" bytes exceed the spare of ",
+"按这组参数重算校验码：":"Check bytes recomputed with these parameters: ",
+};
+(function(){var k;for(k in I18N_PN)I18N[k]=I18N_PN[k];for(k in I18P_PN)I18P[k]=I18P_PN[k];
+if(I18RE)i18re();if(I18R)i18rev();
+/* 已按缺了这部分的字典翻过的节点，片段替换可能已经改掉一半：先还原成中文再整页重翻 */
+if(I18ON){i18off(document.body);i18on(document.body)}})();
+/*
+ * 并口 NAND（/info 的 flash.cecc）：ECC 由 SoC 按设定计算，原厂与本 U-Boot 的
+ * 设定不同，只读写数据的整片备份在原厂内容上读出来是空洞、写回去原厂读不懂。
+ * 所以这种闪存的整片备份连 OOB 原样读写；原厂系统 dd 出来的只有数据，要按识别
+ * 出的原厂格式（/info 的 sfmt）重算校验码。SPI NAND 由芯片自己算，这些都不出现。
+ */
+function cecc(){var f=INFO&&INFO.flash;return !!(f&&f.cecc&&f.oob)}
+/* flash 上 n 字节在带 OOB 的文件里有多长，反过来也一样 */
+function rawlen(n){var f=INFO.flash;return n/f.page*(f.page+f.oob)}
+function flashlen(n){var f=INFO.flash;return n/(f.page+f.oob)*f.page}
+function oobmode(){var c=cecc(),f=INFO&&INFO.flash;
+$$('[data-oob]').forEach(function(e){e.hidden=(e.getAttribute('data-oob')=='1')!=c});
+$('#sftab').hidden=!c;
+if(c)$$('.oobpg').forEach(function(e){e.textContent=f.page+' + '+f.oob});
+if(!c&&$('#s103').hasAttribute('data-on'))seg($('[data-s=s101]'));
+if(c){sfinit();sffill();sfform()}stfmtnote()}
+/*
+ * 原厂格式的参数。SF 是两处参数框共用的那一份：「原厂格式」里改、「刷回原厂」
+ * 里改都改它，所以两边永远一致。设备报来的（自动识别、dd 核对、保存过的）
+ * 只在第一次、以及设备那边换了一份的时候覆盖它；用户改过的不被轮询冲掉。
+ * spare 是每个 512 字节扇区后面跟的字节数，校验码与 FDM 都在里面。
+ */
+var SF=null,SFSEEN='';
+var SFDEF={ecc:8,spare:28,inv:1,fdm:8,fecc:8,swap:0};
+function sfkey(s){return [s.ecc,s.spare,s.inv,s.fdm,s.fecc,s.swap==null?'':s.swap].join('.')}
+function sfinit(){var s=INFO&&INFO.sfmt,k,x;
+if(s&&s.ecc){k=sfkey(s);if(k!=SFSEEN){SFSEEN=k;SF={};for(x in SFDEF)SF[x]=s[x]==null?SFDEF[x]:s[x]}}
+if(!SF){SF={};for(x in SFDEF)SF[x]=SFDEF[x]}}
+function sfsaved(){var s=INFO&&INFO.sfmt;return s&&s.ecc?s:null}
+/* 坏块标记交换没核对过（null）时不算差别：参数框里只是先填了个「关」 */
+function sfsame(){var s=sfsaved(),x;if(!s)return false;
+for(x in SFDEF)if(!(x=='swap'&&s.swap==null)&&s[x]!=SF[x])return false;return true}
+function sfok(){var s=INFO&&INFO.sfmt;return !!(s&&s.st=='ok')}
+function sfdesc(s){return 'ECC'+s.ecc+' · spare '+s.spare+' · 数据取反'+(s.inv?'开':'关')+' · FDM '+s.fdm+' 字节，其中 '+s.fecc+' 字节参与校验'
++(s.swap==null?'':' · 坏块标记交换'+(s.swap?'开':'关'))}
+/* 校验码 13 位一档，按字节取整；和 FDM 一起得装进 spare，spare 又不能超过 OOB 均摊到每个扇区的量 */
+function sfbad(s){var f=INFO.flash,room=f.oob/(f.page/512),par=Math.ceil(s.ecc*13/8);
+if(s.spare>room)return 'spare '+s.spare+' 字节超过每个扇区能分到的 OOB '+room+' 字节';
+if(s.fecc>s.fdm)return '参与校验的 FDM 字节数不能多于 FDM 字节数';
+if(s.fdm+par>s.spare)return 'ECC'+s.ecc+' 的校验码 '+par+' 字节加上 FDM '+s.fdm+' 字节，超过 spare '+s.spare+' 字节';
+return ''}
+function sfopt(v,list,cur){return list.map(function(x){return '<option value="'+x[0]+'"'+(x[0]==cur?' selected':'')+'>'+x[1]+'</option>'}).join('')}
+function sfrange(a,b,st,unit){var r=[],i;for(i=a;i<=b;i+=st)r.push([i,unit?i+unit:String(i)]);return r}
+/* 两个参数框同一个样子，只是 id 前缀不同 */
+function sfform(){['sfp1','sfp2'].forEach(function(id){var b=$('#'+id),h='';if(!b)return;
+[['ecc','ECC 强度','每 512 字节能纠正的位数',sfrange(4,16,2).map(function(x){return [x[0],'ECC'+x[0]]})],
+['spare','每扇区 spare','跟在每 512 字节后面的字节数',[[16,'16 字节'],[26,'26 字节'],[27,'27 字节'],[28,'28 字节']]],
+['inv','数据取反','校验前是否先把数据按位取反',[[0,'关'],[1,'开']]],
+['fdm','FDM 字节数','spare 里存放用户数据的字节数',sfrange(0,8,1,' 字节')],
+['fecc','参与校验的 FDM','FDM 里被校验码覆盖的字节数',sfrange(0,8,1,' 字节')],
+['swap','坏块标记交换','页内一个数据字节与 OOB 第一个字节对调',[[0,'关'],[1,'开']]]].forEach(function(r){
+h+='<div class=fr><span class=fl>'+r[1]+'<small>'+r[2]+'</small></span><span class=fc><select data-k="'+r[0]+'" onchange="sfset(this)">'+sfopt(0,r[3],SF[r[0]])+'</select></span></div>'});
+b.innerHTML=h});sfcheckv()}
+function sfset(e){var k=e.getAttribute('data-k');SF[k]=+e.value;
+$$('select[data-k='+k+']').forEach(function(x){x.value=e.value});sfcheckv();stfmtnote()}
+/* 参数不成立就把话说在参数框底下，按钮也跟着灰掉 */
+function sfcheckv(){var m=sfbad(SF),n=$('#sfv1');
+n.hidden=!m;n.className='note bad';n.innerHTML=m?'<b>'+esc(m)+'</b>':'';
+$('#sft').disabled=!!m;$('#sfs').disabled=!!m||sfsame()&&!!sfsaved().saved}
+/* 结果那一行带颜色：ok 绿、warn 橙、bad 红 */
+function sfst(id,cls,t){var e=$(id);e.className='st wrap'+(cls?' '+cls:'');e.textContent=t}
+function sffill(){var t=$('#sfmt'),s=INFO&&INFO.sfmt,h='',c,v;if(!t||!cecc())return;
+if(!s)s={st:'na'};
+c=s.st=='ok'?0:s.st=='none'?2:1;
+v=s.st=='ok'?(s.src=='manual'?'已手动设置':'已识别')
+:s.st=='amb'?(s.k|0)+' 组参数都能读通原厂写的页，需用 dd 备份核对区分'
+:s.st=='none'?'未识别：所有参数都读不通，原厂可能没用 SoC 的 ECC。可以手动填写，或改用带 OOB 的整片备份'
+:'未识别：闪存已不是原厂内容，可以手动填写';
+h+='<tr><td>状态</td><td class=s'+c+'><span class="dot s'+c+'"></span>'+esc(v)+'</td></tr>';
+if(s.ecc)h+='<tr><td>参数</td><td class=mono>'+esc(sfdesc(s))+'</td></tr>'
++'<tr><td>依据</td><td>'+esc(s.src=='board'?'本机型的已知格式':s.src=='dd'?'与 dd 备份比对 '+s.n+' 页一致':s.src=='manual'?'手动填写':'抽样 '+s.n+' 页全部读通')+'</td></tr>'
++'<tr><td>存放</td><td'+(s.saved||s.src=='board'?'':' class=s1')+'>'+esc(s.src=='board'?'内置于本 U-Boot':s.saved?'已存入环境变量 web_uboot_stock_nand':INFO.ubi?'未保存':'重建 UBI 后自动保存')+'</td></tr>';
+t.innerHTML=h}
+function sfgo(){nav($('.nav[data-p=p10]'));seg($('[data-s=s103]'));return false}
+function sfp(s){return [s.ecc,s.spare,s.inv,s.fdm,s.fecc,s.swap].join(',')}
+/* 设备那边换了一份 sfmt（识别、核对、保存）：收下，参数框跟着它走 */
+function sftake(x){if(!x)return;INFO.sfmt=x;SFSEEN='';SF=null;sfinit();sffill();sfform();stfmtnote()}
+function sfauto(){var b=$('#sfa');b.disabled=true;sfst('#sfh','','正在自动识别…');
+get('/sfmt?probe=1',function(st,t){var r=null;b.disabled=false;try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.st){sfst('#sfh','bad','设备没有给出识别结果');return}
+if(r.st=='ok'){sftake(r.sfmt);sfst('#sfh','ok','识别完成，参数已填入')}
+else if(r.st=='amb')sfst('#sfh','warn',(r.k|0)+' 组参数都能读通原厂写的页，需用 dd 备份核对区分')
+else if(r.st=='none')sfst('#sfh','bad','所有参数都读不通原厂写的页')
+else sfst('#sfh','warn','闪存已不是原厂内容，无法自动识别')})}
+function sftry(){var b=$('#sft');b.disabled=true;sfst('#sfh','','正在试读…');
+get('/sfmt?try='+sfp(SF),function(st,t){var r=null;b.disabled=false;try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.n){sfst('#sfh','bad','设备没有给出试读结果');return}
+if(r.ok==r.n)sfst('#sfh','ok',r.n+' 页全部读通'+(r.fix?'（纠正了 '+r.fix+' 个位翻转）':''));
+else if(r.ok)sfst('#sfh','warn',r.ok+' / '+r.n+' 页读通：参数多半不对');
+else sfst('#sfh','bad',r.n+' 页全部读不通'+(INFO.sfmt&&INFO.sfmt.st=='na'?'：闪存已不是原厂内容，试读说明不了什么':''))})}
+function sfsave(){var b=$('#sfs');b.disabled=true;
+get('/sfmt?save='+sfp(SF),function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.sfmt){b.disabled=false;sfst('#sfh','bad','设备没有接受：'+((t||'').trim()||st));return}
+sftake(r.sfmt);sfst('#sfh',r.sfmt.saved?'ok':'warn',r.sfmt.saved?'已存入环境变量':'已记下，重建 UBI 后自动保存')})}
+/* 刷回原厂那一页：选哪种文件、用哪组参数，说明跟着走；no-stock 构建里这些元素都不在 */
+function stfv(){var r=$('[name=stfmt]:checked');return r?r.value:'oob'}
+function stfmtset(u){var r=$('[name=stfmt]:checked');if(u&&r)r.dataset.t=1;stfmtnote()}
+function stfmtnote(){var n=$('#stfn'),w=$('#stpw'),dd,s=sfsaved();if(!n||!w||!cecc())return;
+dd=stfv()=='dd';w.hidden=!dd;
+if(!dd){n.className='note ok';n.innerHTML='<b>连 OOB 原样写回</b>，只能写回备份它的这台机器。';return}
+var m=sfbad(SF);
+if(m){n.className='note bad';n.innerHTML='<b>'+esc(m)+'</b>';return}
+n.className='note'+(s&&s.st=='ok'&&sfsame()&&s.src=='dd'?' ok':'');
+n.innerHTML='<b>按上面这组参数重算校验码后写入。</b>'
++(!s||s.st!='ok'?'原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。'
+:!sfsame()?'这组参数与「原厂格式」里的不同，只用于这次写入。'
+:s.src!='dd'?'没有用 dd 备份核对过，坏块标记的位置未确认。':'已用 dd 备份核对过。')}
+/* 两种整片文件大小不同：带 OOB 的每页多出 oob 字节。用户亲手选过就不再猜 */
+function stguess(f){var F=INFO&&INFO.flash,rb,v='',r;if(!cecc())return;
+r=$('[name=stfmt]:checked');if(r&&r.dataset.t)return;
+rb=rawlen(F.erase);
+if(f.size==rawlen(F.size))v='oob';else if(f.size==F.size)v='dd';
+else if(f.size%rb==0&&f.size%F.erase)v='oob';else if(f.size%F.erase==0&&f.size%rb)v='dd';
+if(v)$$('[name=stfmt]').forEach(function(x){x.checked=x.value==v});
+stfmtnote()}
+/*
+ * 用 dd 备份核对：设备挑出读得通的样本页，这边从文件同一偏移各取一页算 crc32
+ * 交回去，设备拿按这组参数解出的内容比（坏块标记交换与否两种排法都比）。
+ * 只读不写；文件不上传，只传几十个 crc32。
+ */
+var CRCT=null;
+function crc32(u){var t=CRCT,c,i,j;if(!t){t=CRCT=[];for(i=0;i<256;i++){c=i;for(j=0;j<8;j++)c=c&1?0xedb88320^(c>>>1):c>>>1;t[i]=c>>>0}}
+c=-1;for(i=0;i<u.length;i++)c=t[(c^u[i])&255]^(c>>>8);return (c^-1)>>>0}
+function sfcheck(){var i=$('#sfdd'),f=i&&i.files&&i.files[0],b=$('#sfb'),F=INFO&&INFO.flash;
+if(!f){sfst('#sfdh','warn','先选择 dd 备份');return}
+if(sfbad(SF)){sfst('#sfdh','bad','参数不成立，先改好上面的参数');return}
+b.disabled=true;sfst('#sfdh','','正在读取样本页…');
+get('/sfmt',function(st,t){var r=null,pg,out=[],k=0;try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.pages){b.disabled=false;sfst('#sfdh','bad','设备没有给出样本页');return}
+pg=r.pages.filter(function(o){return o+F.page<=f.size});
+if(!pg.length){b.disabled=false;sfst('#sfdh','bad','文件太小，没有覆盖到任何一页样本');return}
+sfst('#sfdh','','正在计算 '+pg.length+' 页的 crc32…');
+(function nx(){if(k>=pg.length){sfsend(out,pg.length<r.pages.length);return}
+var rd=new FileReader(),o=pg[k];
+rd.onload=function(){out.push(o.toString(16)+':'+crc32(new Uint8Array(rd.result)).toString(16));k++;nx()};
+rd.onerror=function(){b.disabled=false;sfst('#sfdh','bad','读取文件失败')};
+rd.readAsArrayBuffer(f.slice(o,o+F.page))})()})}
+/*
+ * 设备只收 320 字节以内的请求行，所以 crc32 分批送，一批 8 页；比完了由这边汇总。
+ * 全部对上才让设备记下「与 dd 备份比对一致」，坏块标记交换也就定了。
+ */
+function sfsend(list,part){var b=$('#sfb'),F=INFO.flash,n=list.length,s0=0,s1=0,bad=[],i=0;
+sfst('#sfdh','','正在比对…');
+(function nx(){if(i>=n){fin();return}
+var sl=list.slice(i,i+8);i+=8;
+get('/sfmt?p='+sfp(SF)+'&chk='+sl.join(','),function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
+if(!r||r.n==null){b.disabled=false;sfst('#sfdh','bad','设备没有给出比对结果');return}
+s0+=r.s0|0;s1+=r.s1|0;(r.bad||[]).forEach(function(o){bad.push(o)});nx()})})();
+function fin(){var bl=[],m,x;
+bad.forEach(function(o){var k=o-o%F.erase;if(bl.indexOf(k)<0)bl.push(k)});
+if(!bad.length&&(s0==n||s1==n)){x={};for(m in SF)x[m]=SF[m];x.swap=s0==n?0:1;
+get('/sfmt?dd='+sfp(x)+'&n='+n,function(st,t){var r=null;b.disabled=false;try{r=JSON.parse(t)}catch(e){}
+if(r&&r.sfmt)sftake(r.sfmt);
+sfst('#sfdh','ok','一致，可以用这份 dd 备份刷回原厂'+(part?'（文件比闪存小，只核对了它覆盖的部分）':''))});return}
+b.disabled=false;
+m=bl.map(function(o){return '0x'+o.toString(16)}).join('、');
+if(bad.length<n)sfst('#sfdh','warn',bl.length+' 个块对不上：'+m+'。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对');
+else sfst('#sfdh','bad','全部对不上：这不是本机的 dd 备份，或者这组参数不对')}}
+</script>
+<!--#endif-->
 </body></html>

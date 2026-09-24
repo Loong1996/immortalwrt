@@ -227,6 +227,8 @@
  * confines DMA invalidation to this buffer.
  */
 static u8 airoha_dma_buffer[SZ_8K] __aligned(ARCH_DMA_MINALIGN);
+/* The chip this driver registered; see airoha_nand_is(). */
+static struct mtd_info *airoha_nand_mtd;
 
 static const u16 airoha_nfi_page_size[] = { SZ_512, SZ_2K, SZ_4K };
 static const u8 airoha_nfi_spare_size[] = { 16, 26, 27, 28 };
@@ -985,6 +987,7 @@ static int airoha_nfc_dma_transfer(struct airoha_nfc *nfc, void *buf,
 	enum dma_data_direction direction = read ? DMA_FROM_DEVICE : DMA_TO_DEVICE;
 	dma_addr_t dma_addr;
 	u32 config, count, misc, status, trigger;
+	u16 done;
 	int ret;
 
 	if (!dma_len || controller_len > FIELD_MAX(MISC_RD_BYTE_NUM))
@@ -1051,6 +1054,21 @@ static int airoha_nfc_dma_transfer(struct airoha_nfc *nfc, void *buf,
 		       read ? "read" : "write", controller_len, count, sectors,
 		       status);
 
+	/*
+	 * In NFI mode the decoder corrects the sectors in DRAM, behind the
+	 * DMA, and a sector is only final once its DECDONE bit is up.  The
+	 * unmap below invalidates the cache over the buffer, so it has to
+	 * wait for that too, or a line refetched in between keeps the bytes
+	 * from before the correction -- the order mtk_nand keeps in Linux.
+	 * Errors are left to the caller's per-sector wait, which says which
+	 * sector stalled.
+	 */
+	if (!ret && read && (config & CNFG_HW_ECC_EN))
+		(void)readw_poll_timeout(nfc->ecc_regs + ECC_DECDONE, done,
+					 (done & GENMASK(sectors - 1, 0)) ==
+					 GENMASK(sectors - 1, 0),
+					 ECC_ENGINE_TIMEOUT);
+
 	nfi_write32(nfc, NFI_CON, 0);
 	dma_unmap_single(dma_addr, dma_len, direction);
 	return ret;
@@ -1071,7 +1089,7 @@ static int airoha_nfc_read_page_hwecc(struct mtd_info *mtd,
 	config = FIELD_PREP(CNFG_OP_MODE, CNFG_OP_READ) |
 		 CNFG_AHB | CNFG_DMA_BURST_EN | CNFG_READ_MODE |
 		 CNFG_AUTO_FMT_EN | CNFG_HW_ECC_EN |
-		 CNFG_ECC_DATA_SOURCE_INV;
+		 (nfc->data_inv ? CNFG_ECC_DATA_SOURCE_INV : 0);
 	rc = airoha_nfc_begin_page_read(nand, page, config, true);
 	if (rc) {
 		ret = rc;
@@ -1236,7 +1254,8 @@ static int airoha_nfc_write_page_hwecc(struct mtd_info *mtd,
 	airoha_nfc_hw_reset(nfc);
 	config = FIELD_PREP(CNFG_OP_MODE, CNFG_OP_PROGRAM) |
 		 CNFG_AHB | CNFG_DMA_BURST_EN | CNFG_AUTO_FMT_EN |
-		 CNFG_HW_ECC_EN | CNFG_ECC_DATA_SOURCE_INV;
+		 CNFG_HW_ECC_EN |
+		 (nfc->data_inv ? CNFG_ECC_DATA_SOURCE_INV : 0);
 	nfi_write32(nfc, NFI_CNFG, config);
 	airoha_ecc_encoder_op(nfc, true);
 	airoha_nfc_write_fdm(nfc);
@@ -1427,6 +1446,7 @@ static int airoha_nfc_init_chip(struct airoha_nfc *nfc)
 	int ret;
 
 	nand_set_controller_data(nand, nfc);
+	nfc->data_inv = true;
 
 	/*
 	 * block_bad() reads the physical OOB marker when an eraseblock is accessed.
@@ -1485,6 +1505,7 @@ static int airoha_nfc_init_chip(struct airoha_nfc *nfc)
 	}
 
 	nand_register(0, mtd);
+	airoha_nand_mtd = mtd;
 	printf("EN7581 parallel NAND registered: ECC%u/%u, spare %u/sector\n",
 	       nand->ecc.strength, nand->ecc.size, nfc->spare_per_sector);
 	return 0;
@@ -1572,6 +1593,7 @@ void airoha_nfc_spl_init(struct airoha_nfc *nfc)
 	airoha_nfc_set_regs(nfc);
 
 	nand_set_controller_data(nand, nfc);
+	nfc->data_inv = true;
 
 	nand->options |= NAND_NO_SUBPAGE_WRITE;
 
@@ -1614,4 +1636,377 @@ void board_nand_init(void)
 					  &dev);
 	if (ret && ret != -ENODEV)
 		pr_err("Failed to initialize EN7581 parallel NAND: %d\n", ret);
+}
+
+/*
+ * Page formats other than this driver's own, for the stock firmware's pages.
+ *
+ * The controller's format is a handful of registers -- ECC strength and
+ * codeword length, spare and FDM sizes, data inversion -- that attach_chip()
+ * programs once.  The calls below snapshot them, program another format for
+ * one page, and write the snapshot back, so nothing else ever sees a format
+ * but this driver's own.
+ */
+struct airoha_nfc_saved {
+	u32 enccnfg, deccnfg;
+	u16 pagefmt;
+	int strength, bytes;
+	u32 spare_per_sector;
+	bool data_inv;
+};
+
+/* The flash as a whole: a partition is resolved to its master and offset. */
+static struct mtd_info *airoha_nand_master(struct mtd_info *mtd, loff_t *ofs)
+{
+	while (mtd && mtd->parent) {
+		if (ofs)
+			*ofs += mtd->offset;
+		mtd = mtd->parent;
+	}
+	return mtd;
+}
+
+/* By identity: an SPI NAND is MTD_NANDFLASH too, but no nand_chip. */
+bool airoha_nand_is(struct mtd_info *mtd)
+{
+	mtd = airoha_nand_master(mtd, NULL);
+	return mtd && mtd == airoha_nand_mtd;
+}
+
+void airoha_nand_get_fmt(struct mtd_info *mtd, struct airoha_nand_fmt *f)
+{
+	struct nand_chip *nand = mtd_to_nand(airoha_nand_master(mtd, NULL));
+	struct airoha_nfc *nfc = nand_get_controller_data(nand);
+
+	f->ecc = nand->ecc.strength;
+	f->spare = nfc->spare_per_sector;
+	f->inv = nfc->data_inv;
+	f->fdm = NFI_FDM_SIZE;
+	f->fecc = NFI_FDM_SIZE;
+	f->swap = 0;
+}
+
+static int airoha_nfc_index(const u8 *tab, int n, u32 v)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		if (tab[i] == v)
+			return i;
+	return -1;
+}
+
+/* The same rules the page applies before it lets a format through. */
+static int airoha_nfc_fmt_ok(struct airoha_nfc *nfc,
+			     const struct airoha_nand_fmt *f)
+{
+	struct nand_chip *nand = &nfc->nand;
+	struct mtd_info *mtd = nand_to_mtd(nand);
+
+	if (airoha_nfc_index(airoha_ecc_strength,
+			     ARRAY_SIZE(airoha_ecc_strength), f->ecc) < 0 ||
+	    airoha_nfc_index(airoha_nfi_spare_size,
+			     ARRAY_SIZE(airoha_nfi_spare_size), f->spare) < 0)
+		return -EINVAL;
+	if (f->fdm > NFI_FDM_SIZE || f->fecc > f->fdm || f->inv > 1 ||
+	    f->swap > 1)
+		return -EINVAL;
+	if (f->spare > mtd->oobsize / nand->ecc.steps)
+		return -EINVAL;
+	if (f->fdm + DIV_ROUND_UP(f->ecc * ECC_PARITY_BITS, 8) > f->spare)
+		return -EINVAL;
+	return 0;
+}
+
+int airoha_nand_check_fmt(struct mtd_info *mtd, const struct airoha_nand_fmt *f)
+{
+	struct nand_chip *nand = mtd_to_nand(airoha_nand_master(mtd, NULL));
+
+	return airoha_nfc_fmt_ok(nand_get_controller_data(nand), f);
+}
+
+static void airoha_nfc_save(struct airoha_nfc *nfc, struct airoha_nfc_saved *s)
+{
+	struct nand_chip *nand = &nfc->nand;
+
+	s->enccnfg = ecc_read32(nfc, ECC_ENCCNFG);
+	s->deccnfg = ecc_read32(nfc, ECC_DECCNFG);
+	s->pagefmt = nfi_read16(nfc, NFI_PAGEFMT);
+	s->strength = nand->ecc.strength;
+	s->bytes = nand->ecc.bytes;
+	s->spare_per_sector = nfc->spare_per_sector;
+	s->data_inv = nfc->data_inv;
+}
+
+static void airoha_nfc_restore(struct airoha_nfc *nfc,
+			       const struct airoha_nfc_saved *s)
+{
+	struct nand_chip *nand = &nfc->nand;
+
+	airoha_ecc_encoder_op(nfc, false);
+	ecc_write32(nfc, ECC_ENCCNFG, s->enccnfg);
+	airoha_ecc_decoder_op(nfc, false);
+	ecc_write32(nfc, ECC_DECCNFG, s->deccnfg);
+	nfi_write16(nfc, NFI_PAGEFMT, s->pagefmt);
+	nand->ecc.strength = s->strength;
+	nand->ecc.bytes = s->bytes;
+	nfc->spare_per_sector = s->spare_per_sector;
+	nfc->data_inv = s->data_inv;
+	/* The page cache may hold a page read in the other format. */
+	nand->pagebuf = -1;
+}
+
+/* Program @f from the same fields attach_chip() builds its own format out of. */
+static int airoha_nfc_apply(struct airoha_nfc *nfc,
+			    const struct airoha_nand_fmt *f)
+{
+	struct nand_chip *nand = &nfc->nand;
+	struct mtd_info *mtd = nand_to_mtd(nand);
+	int ei, si, pi;
+	u32 msg;
+
+	if (airoha_nfc_fmt_ok(nfc, f))
+		return -EINVAL;
+	ei = airoha_nfc_index(airoha_ecc_strength,
+			      ARRAY_SIZE(airoha_ecc_strength), f->ecc);
+	si = airoha_nfc_index(airoha_nfi_spare_size,
+			      ARRAY_SIZE(airoha_nfi_spare_size), f->spare);
+	for (pi = 0; pi < ARRAY_SIZE(airoha_nfi_page_size); pi++)
+		if (airoha_nfi_page_size[pi] == mtd->writesize)
+			break;
+	if (pi >= ARRAY_SIZE(airoha_nfi_page_size))
+		return -EINVAL;
+
+	nand->ecc.strength = f->ecc;
+	nand->ecc.bytes = DIV_ROUND_UP(f->ecc * ECC_PARITY_BITS, 8);
+	nfc->spare_per_sector = f->spare;
+	nfc->data_inv = f->inv;
+
+	/* The codeword is the sector's data plus the FDM bytes it covers. */
+	msg = (nand->ecc.size + f->fecc) * 8;
+	airoha_ecc_encoder_op(nfc, false);
+	ecc_write32(nfc, ECC_ENCCNFG, ei | FIELD_PREP(ENC_MODE, ENC_MODE_NFI) |
+		    FIELD_PREP(ENC_CNFG_MSG, msg));
+	airoha_ecc_decoder_op(nfc, false);
+	ecc_write32(nfc, ECC_DECCNFG, ei | FIELD_PREP(DEC_MODE, DEC_MODE_NFI) |
+		    FIELD_PREP(DEC_CS, msg + f->ecc * ECC_PARITY_BITS) |
+		    FIELD_PREP(DEC_CON, DEC_CON_CORRECT) | DEC_EMPTY_EN);
+	nfi_write16(nfc, NFI_PAGEFMT, FIELD_PREP(PAGEFMT_PAGE, pi) |
+		    FIELD_PREP(PAGEFMT_SPARE, si) |
+		    FIELD_PREP(PAGEFMT_FDM, f->fdm) |
+		    FIELD_PREP(PAGEFMT_FDM_ECC, f->fecc));
+	return 0;
+}
+
+/*
+ * Where the first OOB column lands in the data once the page is laid out as
+ * sectors of 512 + spare: sector writesize / (512 + spare), at the remainder.
+ */
+static u32 airoha_nfc_bbm_pos(struct airoha_nfc *nfc, u32 spare)
+{
+	struct nand_chip *nand = &nfc->nand;
+	struct mtd_info *mtd = nand_to_mtd(nand);
+	u32 unit = nand->ecc.size + spare;
+
+	return mtd->writesize / unit * nand->ecc.size + mtd->writesize % unit;
+}
+
+static struct airoha_nfc *airoha_nand_page(struct mtd_info **mtd, loff_t *ofs,
+					   int *page)
+{
+	struct nand_chip *nand;
+
+	*mtd = airoha_nand_master(*mtd, ofs);
+	if (!airoha_nand_is(*mtd) || *ofs < 0 || *ofs >= (*mtd)->size ||
+	    (*ofs & ((*mtd)->writesize - 1)))
+		return NULL;
+	nand = mtd_to_nand(*mtd);
+	*page = (int)(*ofs >> nand->page_shift);
+	nand->select_chip(*mtd, 0);
+	return nand_get_controller_data(nand);
+}
+
+/*
+ * The whole physical page in one DMA: a custom sector of (page + OOB) / steps
+ * with ECC and auto-format off, the way the vendor SDK reads SPI NAND through
+ * the same NFI.  The formatted raw path only moves steps * (512 + spare) and
+ * never touches the bytes past the last sector's spare.
+ */
+static int airoha_nfc_phys(struct airoha_nfc *nfc, int page, u8 *buf,
+			   bool read)
+{
+	struct nand_chip *nand = &nfc->nand;
+	struct mtd_info *mtd = nand_to_mtd(nand);
+	u8 column_cycles = mtd->writesize > 512 ? 2 : 1;
+	u8 row_cycles = nand->options & NAND_ROW_ADDR_3 ? 3 : 2;
+	size_t len = mtd->writesize + mtd->oobsize;
+	u32 sec = len / nand->ecc.steps;
+	u8 status;
+	int ret;
+
+	if (len > sizeof(airoha_dma_buffer) || len % nand->ecc.steps ||
+	    sec > FIELD_MAX(SECCUS_SIZE))
+		return -EINVAL;
+
+	if (!read) {
+		size_t i;
+
+		/* An erased page is left alone rather than programmed with 0xff. */
+		for (i = 0; i < len && buf[i] == 0xff; i++)
+			;
+		if (i == len)
+			return 0;
+		memcpy(airoha_dma_buffer, buf, len);
+	}
+
+	airoha_nfc_hw_reset(nfc);
+	nfi_write32(nfc, NFI_SECCUS_SIZE,
+		    SECCUS_SIZE_EN | FIELD_PREP(SECCUS_SIZE, sec));
+	if (read) {
+		nfi_write32(nfc, NFI_CNFG,
+			    FIELD_PREP(CNFG_OP_MODE, CNFG_OP_READ) |
+			    CNFG_AHB | CNFG_DMA_BURST_EN | CNFG_READ_MODE);
+		ret = airoha_nfc_issue_command(nfc, NAND_CMD_READ0);
+		if (!ret)
+			ret = airoha_nfc_send_address(nfc, 0, page,
+						      column_cycles, row_cycles);
+		if (!ret && mtd->writesize > 512)
+			ret = airoha_nfc_issue_command(nfc, NAND_CMD_READSTART);
+		if (!ret)
+			ret = airoha_nfc_wait_ready(nfc);
+		if (!ret)
+			ret = airoha_nfc_dma_transfer(nfc, airoha_dma_buffer,
+						      len, len,
+						      nand->ecc.steps, true);
+		if (!ret)
+			memcpy(buf, airoha_dma_buffer, len);
+	} else {
+		nfi_write32(nfc, NFI_CNFG,
+			    FIELD_PREP(CNFG_OP_MODE, CNFG_OP_PROGRAM) |
+			    CNFG_AHB | CNFG_DMA_BURST_EN);
+		ret = airoha_nfc_issue_command(nfc, NAND_CMD_SEQIN);
+		if (!ret)
+			ret = airoha_nfc_send_address(nfc, 0, page,
+						      column_cycles, row_cycles);
+		if (!ret)
+			ret = airoha_nfc_dma_transfer(nfc, airoha_dma_buffer,
+						      len, len,
+						      nand->ecc.steps, false);
+		if (!ret)
+			ret = airoha_nfc_issue_command(nfc, NAND_CMD_PAGEPROG);
+		if (!ret)
+			ret = airoha_nfc_wait_ready(nfc);
+	}
+
+	nfi_write32(nfc, NFI_SECCUS_SIZE, 0);
+	nfi_write32(nfc, NFI_CNFG, FIELD_PREP(CNFG_OP_MODE, CNFG_OP_IDLE));
+	nand->pagebuf = -1;
+	if (ret || read)
+		return ret;
+
+	ret = nand_status_op(nand, &status);
+	if (ret)
+		return ret;
+	return status & NAND_STATUS_FAIL ? -EIO : 0;
+}
+
+int airoha_nand_read_phys(struct mtd_info *mtd, loff_t ofs, u8 *buf)
+{
+	struct airoha_nfc *nfc;
+	int page;
+
+	nfc = airoha_nand_page(&mtd, &ofs, &page);
+	if (!nfc)
+		return -EINVAL;
+	return airoha_nfc_phys(nfc, page, buf, true);
+}
+
+int airoha_nand_write_phys(struct mtd_info *mtd, loff_t ofs, const u8 *buf)
+{
+	struct airoha_nfc *nfc;
+	int page;
+
+	nfc = airoha_nand_page(&mtd, &ofs, &page);
+	if (!nfc)
+		return -EINVAL;
+	return airoha_nfc_phys(nfc, page, (u8 *)buf, false);
+}
+
+/*
+ * One page's data decoded as @f.  0, -EBADMSG when a sector does not decode,
+ * or the transfer's own error; *flips is the most any sector needed.
+ */
+int airoha_nand_read_as(struct mtd_info *mtd, loff_t ofs,
+			const struct airoha_nand_fmt *f, u8 *data,
+			unsigned int *flips)
+{
+	struct airoha_nfc_saved sv;
+	struct airoha_nfc *nfc;
+	struct nand_chip *nand;
+	unsigned int failed;
+	int page, ret;
+
+	nfc = airoha_nand_page(&mtd, &ofs, &page);
+	if (!nfc)
+		return -EINVAL;
+	nand = &nfc->nand;
+
+	airoha_nfc_save(nfc, &sv);
+	ret = airoha_nfc_apply(nfc, f);
+	if (!ret) {
+		failed = mtd->ecc_stats.failed;
+		/*
+		 * Into the driver's own buffer and copied out: the DMA lands
+		 * wherever it is pointed, and a caller's buffer need not be
+		 * cache-line aligned.
+		 */
+		ret = airoha_nfc_read_page_hwecc(mtd, nand, NULL, 1, page);
+		if (ret >= 0)
+			memcpy(data, airoha_dma_buffer, mtd->writesize);
+		if (ret >= 0) {
+			if (flips)
+				*flips = ret;
+			ret = mtd->ecc_stats.failed != failed ? -EBADMSG : 0;
+		}
+		/* A trial that does not decode is not a failing page. */
+		mtd->ecc_stats.failed = failed;
+		if (!ret && f->swap)
+			swap(data[airoha_nfc_bbm_pos(nfc, f->spare)],
+			     nand->oob_poi[0]);
+	}
+	airoha_nfc_restore(nfc, &sv);
+	return ret;
+}
+
+/* One page's data encoded as @f, FDM left erased: a dd image carries none. */
+int airoha_nand_write_as(struct mtd_info *mtd, loff_t ofs,
+			 const struct airoha_nand_fmt *f, const u8 *data)
+{
+	struct airoha_nfc_saved sv;
+	struct airoha_nfc *nfc;
+	struct nand_chip *nand;
+	u8 *page_buf;
+	int page, ret;
+
+	nfc = airoha_nand_page(&mtd, &ofs, &page);
+	if (!nfc)
+		return -EINVAL;
+	nand = &nfc->nand;
+
+	page_buf = malloc_cache_aligned(mtd->writesize);
+	if (!page_buf)
+		return -ENOMEM;
+	memcpy(page_buf, data, mtd->writesize);
+	memset(nand->oob_poi, 0xff, mtd->oobsize);
+	if (f->swap)
+		swap(page_buf[airoha_nfc_bbm_pos(nfc, f->spare)],
+		     nand->oob_poi[0]);
+
+	airoha_nfc_save(nfc, &sv);
+	ret = airoha_nfc_apply(nfc, f);
+	if (!ret)
+		ret = airoha_nfc_write_page_hwecc(mtd, nand, page_buf, 1, page);
+	airoha_nfc_restore(nfc, &sv);
+	free(page_buf);
+	return ret;
 }

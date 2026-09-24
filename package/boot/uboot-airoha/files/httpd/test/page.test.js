@@ -23,6 +23,9 @@ const HTML = path.join(HERE, 'preview.html');
 // checked is what the STOCK markers cut out -- and that is decided while the
 // page is rendered, not while it runs.
 const HTML_NOSTOCK = path.join(HERE, 'preview-nostock.html');
+// And as an SPI NAND board serves it: the parallel NAND half (PNAND) is not
+// compiled in, and the main script runs on its two stubs.
+const HTML_NOPN = path.join(HERE, 'preview-nopnand.html');
 const PY = process.env.PYTHON ||
 	(process.platform === 'win32' ? 'python' : 'python3');
 
@@ -31,6 +34,7 @@ const SRC = path.join(HERE, '..', 'page.html');
 const PREVIEW = path.join(HERE, '..', 'preview.py');
 execFileSync(PY, [PREVIEW, SRC, HTML], { stdio: 'inherit' });
 execFileSync(PY, [PREVIEW, '--no-stock', SRC, HTML_NOSTOCK], { stdio: 'inherit' });
+execFileSync(PY, [PREVIEW, '--no-pnand', SRC, HTML_NOPN], { stdio: 'inherit' });
 let pass = 0, fail = 0;
 
 function ok(name, cond, extra) {
@@ -2645,6 +2649,161 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
     ok('自动挑的也没有中文残留', zhLeft(w).length === 0, zhLeft(w).join(' | '));
     w.setlang('zh');
     ok('点回中文能覆盖自动选的', txt(w, '.nav.n1') === '日常刷机', txt(w, '.nav.n1'));
+  }
+
+  console.log('\n--- 并口 NAND：带 OOB 的整片备份与原厂格式 ---');
+  {
+    const w = await boot();
+    ok('SPI NAND 上没有原厂格式标签', $(w, '#sftab').hidden);
+    ok('SPI NAND 上整片下载不带 OOB', !/oob=1/.test((() => { let u = ''; w.sink = x => { u = x; }; w.dumpall(); return u; })()));
+    ok('SPI NAND 上刷回原厂没有格式选择',
+       w.document.querySelectorAll('#p4 [data-oob="1"]:not([hidden])').length === 0);
+
+    setsel(w, 'dev', 'pnand');
+    await sleep(800);
+    ok('并口 NAND 出现原厂格式标签', !$(w, '#sftab').hidden);
+    ok('设备详情带 OOB 大小', /OOB 128 B/.test(txt(w, '#dev')), txt(w, '#dev').slice(0, 80));
+    ok('片尾长度按带 OOB 算', /272\.0 MiB/.test(txt(w, '#dumphint')), txt(w, '#dumphint'));
+    let url = null, len = null;
+    w.sink = (u, what, n) => { url = u; len = n; };
+    w.dumpall();
+    ok('整片下载带 oob=1', url === '/dump?off=0x0&oob=1', url);
+    $(w, '#dumpoff').value = '0x20000'; $(w, '#dumplen').value = '0x20000';
+    w.dumpraw();
+    ok('区段下载的长度按带 OOB 折算', len === 139264, len);
+    $(w, '#dumpoff').value = '0x100'; $(w, '#dumplen').value = '';
+    url = null; w.dumpraw();
+    ok('偏移不按页对齐就拦下', url === null && /按页/.test(txt(w, '#dlh')), txt(w, '#dlh'));
+
+    ok('识别结果标成已识别', /已识别/.test(txt(w, '#sfmt')), txt(w, '#sfmt').slice(0, 40));
+    ok('状态那格是绿的', $(w, '#sfmt tr td:nth-child(2)').className === 's0');
+    ok('还没重建 UBI 就说重建后自动保存', /重建 UBI 后自动保存/.test(txt(w, '#sfmt')));
+    const p1 = [...w.document.querySelectorAll('#sfp1 select')];
+    ok('参数框六项', p1.length === 6, p1.length);
+    ok('参数框填的是识别结果',
+       p1.map(e => e.getAttribute('data-k') + '=' + e.value).join(' ') === 'ecc=8 spare=28 inv=0 fdm=8 fecc=1 swap=0',
+       p1.map(e => e.getAttribute('data-k') + '=' + e.value).join(' '));
+
+    w.sftry(); await sleep(500);
+    ok('原厂参数试读全部读通', /48 页全部读通/.test(txt(w, '#sfh')) && /ok/.test($(w, '#sfh').className), txt(w, '#sfh'));
+    const inv = $(w, '#sfp1 select[data-k=inv]'); inv.value = '1'; inv.onchange();
+    ok('两处参数框同步', $(w, '#sfp2 select[data-k=inv]').value === '1');
+    w.sftry(); await sleep(500);
+    ok('参数不对就读不通、标红', /读不通/.test(txt(w, '#sfh')) && /bad/.test($(w, '#sfh').className), txt(w, '#sfh'));
+    const ecc = $(w, '#sfp1 select[data-k=ecc]'); ecc.value = '16'; ecc.onchange();
+    ok('参数不成立当场说清', /超过 spare 28 字节/.test(txt(w, '#sfv1')), txt(w, '#sfv1'));
+    ok('参数不成立时试读灰掉', $(w, '#sft').disabled);
+    ecc.value = '8'; ecc.onchange(); inv.value = '0'; inv.onchange();
+    ok('改回来按钮恢复', !$(w, '#sft').disabled && $(w, '#sfv1').hidden);
+
+    w.sfsave(); await sleep(500);
+    ok('原厂那次保存只记在内存', /重建 UBI 后自动保存/.test(txt(w, '#sfh')) && /warn/.test($(w, '#sfh').className), txt(w, '#sfh'));
+    const dd = { size: 268435456, name: 'all_flash.bin', slice: (a, b) => new w.Blob([new Uint8Array(b - a)]) };
+    Object.defineProperty($(w, '#sfdd'), 'files', { value: [dd], configurable: true });
+    $(w, '#sfdd').onchange();
+    ok('选了 dd 文件在自己那行说', /all_flash\.bin/.test(txt(w, '#sfdh')), txt(w, '#sfdh'));
+    w.sfcheck(); await sleep(3000);
+    ok('dd 核对一致', /一致/.test(txt(w, '#sfdh')) && /ok/.test($(w, '#sfdh').className), txt(w, '#sfdh'));
+    ok('核对后依据换成 dd、坏块标记交换也定了',
+       /与 dd 备份比对 48 页一致/.test(txt(w, '#sfmt')) && /坏块标记交换关/.test(txt(w, '#sfmt')),
+       txt(w, '#sfmt'));
+
+    setsel(w, 'dd', 'part');
+    w.sfcheck(); await sleep(3000);
+    ok('被挪过的块列出来、标橙', /2 个块对不上：0x2a00000、0x9c00000/.test(txt(w, '#sfdh')) &&
+       /warn/.test($(w, '#sfdh').className), txt(w, '#sfdh'));
+
+    $(w, '.nav[data-p=p4]').click();
+    const st = $(w, '#p4 [name=stock]');
+    Object.defineProperty(st, 'files', { value: [{ size: 285212672, name: 'x.bin' }], configurable: true });
+    st.onchange();
+    ok('272 MiB 认成带 OOB', $(w, '[name=stfmt]:checked').value === 'oob');
+    ok('带 OOB 不显示参数框', $(w, '#stpw').hidden);
+    ok('带 OOB 的说明是绿的', /ok/.test($(w, '#stfn').className) && /只能写回/.test(txt(w, '#stfn')));
+    w.ask();
+    ok('带 OOB 按 flash 长度算', /起写入 256\.0 MiB/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+    Object.defineProperty(st, 'files', { value: [{ size: 268435456, name: 'all_flash.bin' }], configurable: true });
+    st.onchange();
+    ok('256 MiB 认成不带 OOB', $(w, '[name=stfmt]:checked').value === 'dd');
+    ok('不带 OOB 展开参数框', !$(w, '#stpw').hidden);
+    const fe = $(w, '#sfp2 select[data-k=fecc]'); fe.value = '8'; fe.onchange();
+    ok('改了参数说只用于这次', /只用于这次写入/.test(txt(w, '#stfn')), txt(w, '#stfn'));
+    w.ask();
+    ok('确认框写明参数', /其中 8 字节参与校验/.test(txt(w, '#abody')), txt(w, '#abody').slice(0, 120));
+    let posted = null;
+    const XO = w.XMLHttpRequest;
+    w.XMLHttpRequest = function () { const x = new XO(); const o = x.open; x.open = function (m, u) { posted = u; return o.call(x, m, u); }; return x; };
+    /* 假文件不是 Blob，FormData 收不下；刷回原厂本来也只发裸文件 */
+    const FD = w.FormData;
+    w.FormData = function () { this.append = function () {}; };
+    w.go();
+    w.FormData = FD;
+    ok('上传带上格式与参数', /&fmt=dd&p=8,28,0,8,8,0$/.test(posted || ''), posted);
+    w.XMLHttpRequest = XO;
+  }
+  {
+    const w = await boot();
+    setsel(w, 'dev', 'pnand');
+    await sleep(800);
+    $(w, '.nav[data-p=p4]').click();
+    Object.defineProperty($(w, '#p4 [name=stock]'), 'files', { value: [{ size: 200000, name: 'odd.bin' }], configurable: true });
+    $(w, '#p4 [name=stock]').onchange();
+    w.ask();
+    ok('带 OOB 的长度不成整块就拦', /整数倍/.test(txt(w, '#abody')) && $(w, '#yes').hidden, txt(w, '#abody').slice(0, 80));
+    w.hide();
+    setsel(w, 'sf', 'none');
+    await sleep(800);
+    ok('所有参数都读不通时标红', $(w, '#sfmt tr td:nth-child(2)').className === 's2', txt(w, '#sfmt'));
+    setsel(w, 'sf', 'amb');
+    await sleep(800);
+    ok('两组都读得通说要 dd 核对', /2 组参数都能读通/.test(txt(w, '#sfmt')), txt(w, '#sfmt'));
+    $(w, '.nav[data-p=p2]').click();
+    $(w, '#p2 [name=format]').checked = true;
+    w.ask();
+    ok('首次迁移确认框提到原厂格式', /原厂闪存格式/.test(txt(w, '#abody')), txt(w, '#abody').slice(0, 200));
+    w.hide();
+    setsel(w, 'dev', 'pnandmig');
+    setsel(w, 'sf', 'na');
+    await sleep(800);
+    ok('已迁移的机器显示存进了环境变量', /已存入环境变量 web_uboot_stock_nand/.test(txt(w, '#sfmt')), txt(w, '#sfmt'));
+    w.sfauto(); await sleep(500);
+    ok('已迁移的机器自动识别说闪存已不是原厂内容', /已不是原厂内容/.test(txt(w, '#sfh')), txt(w, '#sfh'));
+    w.setlang('en');
+    await sleep(300);
+    $(w, '.nav[data-p=p10]').click(); w.seg($(w, '[data-s=s103]'));
+    $(w, '.nav[data-p=p4]').click();
+    await sleep(300);
+    ok('并口 NAND 的英文界面没有中文残留', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+  }
+
+  console.log('\n--- SPI NAND 构建：不带并口 NAND 那一半 ---');
+  {
+    const w = await boot(HTML_NOPN);
+    ok('没有原厂格式标签', !$(w, '#sftab') && !$(w, '#s103'));
+    ok('没有那段脚本', !w.document.querySelector('script[data-pn]'));
+    ok('空壳在', w.cecc() === false && typeof w.oobmode === 'function');
+    let url = null;
+    w.sink = (u) => { url = u; };
+    w.dumpall();
+    ok('整片下载照旧', url === '/dump?off=0x0', url);
+    $(w, '.nav[data-p=p4]').click();
+    const st = $(w, '#p4 [name=stock]');
+    Object.defineProperty(st, 'files', { value: [{ size: 268435456, name: 'all_flash.bin' }], configurable: true });
+    st.onchange();
+    w.ask();
+    ok('刷回原厂确认框照旧', /起写入 256\.0 MiB/.test(txt(w, '#abody')) && !/OOB/.test(txt(w, '#abody')),
+       txt(w, '#abody').slice(0, 80));
+    w.hide();
+    $(w, '.nav[data-p=p2]').click();
+    $(w, '#p2 [name=format]').checked = true;
+    w.ask();
+    ok('首次迁移确认框不提原厂格式', !/原厂闪存格式/.test(txt(w, '#abody')));
+    w.hide();
+    w.setlang('en');
+    await sleep(200);
+    ok('英文界面没有中文残留', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+    ok('没有脚本错误', w.__errs.length === 0, w.__errs.join(' | '));
   }
 
   console.log('\n--- 英文下后插进来的内容 ---');

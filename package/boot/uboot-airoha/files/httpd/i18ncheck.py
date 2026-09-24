@@ -41,6 +41,10 @@ def dictionaries(page):
         return json.loads(re.sub(r',\s*}$', '}', page[a:z + 2]))
 
     n, p = one('I18N'), one('I18P')
+    # The parallel NAND half keeps its own, merged into these at run time.
+    if 'var I18N_PN={\n' in page:
+        n.update(one('I18N_PN'))
+        p.update(one('I18P_PN'))
     rx = re.compile('|'.join(re.escape(k)
                              for k in sorted(p, key=len, reverse=True)))
     return n, p, rx

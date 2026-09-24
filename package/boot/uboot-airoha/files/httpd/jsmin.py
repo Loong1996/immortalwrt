@@ -15,17 +15,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BLOCK = re.compile(r"^<script>\n(.*?)^</script>$", re.S | re.M)
+# The parallel NAND half, which gen.py compiles in only on boards that have
+# one (<!--#if PNAND-->).  Minified the same way, on its own.
+EXTRA = re.compile(r"^<script data-pn>\n(.*?)^</script>$", re.S | re.M)
 
 
-def minify(html):
-    blocks = list(BLOCK.finditer(html))
-    if len(blocks) != 1:
-        sys.exit("jsmin: expected one <script> block on lines of its own, "
-                 "found %d" % len(blocks))
-    m = blocks[0]
-    body = m.group(1)
+def terse(body):
     if "@@" in body or "<!--#" in body:
-        sys.exit("jsmin: gen.py markers inside the main script")
+        sys.exit("jsmin: gen.py markers inside a script")
     r = subprocess.run(["node", os.path.join(HERE, "minify.js")],
                        input=body.encode(), capture_output=True)
     if r.returncode:
@@ -34,4 +31,16 @@ def minify(html):
     code = r.stdout.decode()
     if "</script" in code.lower():
         sys.exit("jsmin: minified script contains </script")
-    return html[:m.start(1)] + code + "\n" + html[m.end(1):]
+    return code
+
+
+def minify(html):
+    blocks = list(BLOCK.finditer(html))
+    if len(blocks) != 1:
+        sys.exit("jsmin: expected one <script> block on lines of its own, "
+                 "found %d" % len(blocks))
+    m = blocks[0]
+    html = html[:m.start(1)] + terse(m.group(1)) + "\n" + html[m.end(1):]
+    for m in reversed(list(EXTRA.finditer(html))):
+        html = html[:m.start(1)] + terse(m.group(1)) + "\n" + html[m.end(1):]
+    return html

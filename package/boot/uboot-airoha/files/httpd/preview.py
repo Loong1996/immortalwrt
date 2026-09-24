@@ -103,6 +103,36 @@ CHECK = [
     ["U-Boot MAC", 0, "90:03:2e:12:34:56，与出厂数据一致", "出厂数据"],
     ["流水灯", 0, "5 个：green:power、green:wan、green:wan-online、green:usb-1、green:usb-2", "指示灯"],
 ]
+# FiberHome HG5382A: parallel NAND, so the SoC does the ECC and the whole-chip
+# backup reads raw with OOB.  "pnand" is the first boot from stock (the stock
+# UBI does not read back here, the stock format was just probed); "pnandmig" is
+# the same board after the migration, format saved in the environment.
+PNAND_INFO = {
+    "model": "FiberHome HG5382A",
+    "flash": {"name": "nand0", "size": 268435456, "erase": 131072,
+              "page": 2048, "oob": 128, "cecc": 1},
+    "parts": [{"n": "bl2", "o": 0, "s": 131072},
+              {"n": "ubi", "o": 131072, "s": 268304384}],
+    "fv": [{"n": "factory", "s": 0x100000}],
+    "sfmt": {"st": "ok", "ecc": 8, "spare": 28, "inv": 0, "fdm": 8,
+             "fecc": 1, "swap": None, "n": 48, "k": 0, "src": "probe",
+             "saved": 0},
+    "ubi": {"leb": 126976, "pebs": 2046, "avail": 0, "fip": 1,
+            "vols": [
+                {"i": 0, "n": "fip", "t": "static", "s": 1142784,
+                 "u": 417792},
+                {"i": 1, "n": "ubootenv", "t": "dynamic", "s": 126976,
+                 "u": 126976},
+                {"i": 2, "n": "ubootenv2", "t": "dynamic", "s": 126976,
+                 "u": 126976},
+                {"i": 3, "n": "factory", "t": "dynamic", "s": 1142784,
+                 "u": 1142784},
+                {"i": 4, "n": "fit", "t": "dynamic", "s": 13078528,
+                 "u": 13078528},
+                {"i": 5, "n": "rootfs_data", "t": "dynamic",
+                 "s": 237699072, "u": 237699072}]},
+}
+
 ENV = [
     ("arch", "arm"),
     ("baudrate", "115200"),
@@ -173,7 +203,7 @@ httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3c
 # The stub.  Plain ES5 like the page itself.
 STUB = r"""
 <script>(function(){
-var D=@DATA@,S={dev:'ok',post:'ok',conn:'up'},T0=Date.now(),DOWN=0;
+var D=@DATA@,S={dev:'ok',post:'ok',conn:'up',sf:'ok',dd:'ok'},T0=Date.now(),DOWN=0;
 
 /*
  * 擦尾报的块数。设备是从镜像占到的最后一个擦除块之后起算的，这里照抄，
@@ -185,6 +215,13 @@ function wiped(u,tot){
      first=off+Math.ceil(tot/f.erase)*f.erase,
      nb=Math.max(0,Math.floor((f.size-first)/f.erase));
  return ' wiped '+nb}
+/* 识别、核对、保存之后设备那份 sfmt 就换了 */
+var SFCUR=null;
+/* 样本页：全片均匀挑 48 页；「两块被挪过」的就是其中这两页所在的块 */
+var SFPG=[],SFMOVED=[0x2a00000,0x9c00000];
+(function(){for(var q=0;q<48;q++)SFPG.push(0x100000+q*0x520000);SFPG[3]=SFMOVED[0];SFPG[20]=SFMOVED[1]})();
+/* 桩里「原厂真正的格式」：试读和核对拿它比 */
+var SFTRUE='8,28,0,8,1';
 var DSEQ=0,DINFO={seq:0,len:0,crc:'00000000',holes:0,name:''};
 var DBUSY=0,DSENT=0,DTOTAL=0,DTICK=null;
 /* 真设备的日志会一直长，跟随功能不自己长就看不出在跟 */
@@ -193,13 +230,20 @@ setInterval(function(){LOGSEQ++;
 LOGX+='httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3'+(LOGSEQ%9)+'\n'},3000);
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
-function info(){var i=JSON.parse(JSON.stringify(D.info));
+function info(){var i=JSON.parse(JSON.stringify(D.info)),k;
+if(S.dev.indexOf('pnand')==0){for(k in D.pnand)i[k]=JSON.parse(JSON.stringify(D.pnand[k]));
+ /* 原厂那次：原厂 UBI 读不出；已迁移那次：格式早已存进环境变量，dd 也核对过 */
+ if(S.dev=='pnand')i.ubi=null;else{i.sfmt.src='dd';i.sfmt.saved=1;i.sfmt.swap=0}
+ if(S.sf=='amb')i.sfmt={st:'amb',k:2};else if(S.sf!='ok')i.sfmt={st:S.sf};
+ /* 已迁移的板子闪存早不是原厂内容了，但存下来的那份还在 */
+ if(S.dev=='pnandmig'&&S.sf=='na'){i.sfmt=JSON.parse(JSON.stringify(D.pnand.sfmt));i.sfmt.st='ok';i.sfmt.src='dd';i.sfmt.saved=1;i.sfmt.swap=0}
+ if(SFCUR)i.sfmt=JSON.parse(JSON.stringify(SFCUR))}
 if(S.dev=='noubi')i.ubi=null;
 if(S.dev=='nofip'){i.ubi.fip=0;i.ubi.vols=i.ubi.vols.filter(function(v){return v.n!='fip'})}
 if(S.dev=='nolog')i.log=0;
 return i}
 function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3]}});
-if(S.dev=='noubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
+if(S.dev=='noubi'||S.dev=='pnand')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
 {n:'UBI',s:2,v:'无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
 {n:'ubootenv 卷',s:2,v:'无法读取，UBI 未挂载，环境仅存于内存，断电丢失',g:'环境'},
 {n:'U-Boot MAC',s:0,v:'90:03:2e:12:34:56',g:'出厂数据'},
@@ -240,6 +284,29 @@ function body(u){
   if(sv)D.info.net.saved={mode:md,ip:ip,mask:mk};
   return 'ok '+md+' '+ip+' '+mk+(sv?' saved':' ram')}
  if(u=='/check')return JSON.stringify({items:check()});
+ /* 样本页：全片均匀挑 48 页读得通的；带 chk= 时按预览条选的结果答 */
+ if(u=='/sfmt')return JSON.stringify({pages:SFPG});
+ if(u.indexOf('/sfmt?')==0){var q=u.slice(6),pm=/(?:^|&)(?:p|try|save|dd)=([0-9,]+)/.exec(q),
+  pv=pm?pm[1].split(',').map(Number):null,
+  ok=pv&&pv.slice(0,5).join(',')==SFTRUE&&S.dev=='pnand'&&S.sf!='none',
+  mk=function(src,sv){return {st:'ok',ecc:pv[0],spare:pv[1],inv:pv[2],fdm:pv[3],fecc:pv[4],swap:pv[5],n:48,k:0,src:src,saved:sv}};
+  if(q=='probe=1'){if(S.dev!='pnand'||S.sf=='na')return JSON.stringify({st:'na'});
+   if(S.sf=='none')return JSON.stringify({st:'none'});
+   if(S.sf=='amb')return JSON.stringify({st:'amb',k:2});
+   var f0=JSON.parse(JSON.stringify(D.pnand.sfmt));SFCUR=f0;return JSON.stringify({st:'ok',sfmt:f0})}
+  if(q.indexOf('try=')==0)return JSON.stringify(ok?{n:48,ok:48,fix:3}:{n:48,ok:0,fix:0});
+  /* 没有 UBI（原厂那次）只记在内存里，重建之后才存得进去 */
+  /* 存的就是设备现有那份：依据不变；改过的算手动填写 */
+  if(q.indexOf('save=')==0){var cur=info().sfmt,same=cur&&cur.ecc&&[cur.ecc,cur.spare,cur.inv,cur.fdm,cur.fecc,cur.swap==null?0:cur.swap].join(',')==pv.join(',');
+   SFCUR=mk(same?cur.src:'manual',S.dev=='pnand'?0:1);if(same)SFCUR.swap=cur.swap;
+   return JSON.stringify({sfmt:SFCUR})}
+  /* 一批最多 8 页；每页按参数解出来比 crc32，桩只看参数对不对、预览条选了什么 */
+  if(q.indexOf('chk=')>=0){var ls=q.slice(q.indexOf('chk=')+4).split(',').map(function(x){return parseInt(x.split(':')[0],16)}),
+   good=pv&&pv.slice(0,5).join(',')==SFTRUE&&S.dd!='bad',
+   bd=ls.filter(function(o){return !good||(S.dd=='part'&&SFMOVED.indexOf(o)>=0)});
+   return JSON.stringify({n:ls.length,s0:ls.length-bd.length,s1:0,bad:bd})}
+  if(q.indexOf('dd=')==0){var nm=/&n=(\d+)/.exec(q);SFCUR=mk('dd',S.dev=='pnand'?0:1);SFCUR.n=nm?+nm[1]:48;
+   return JSON.stringify({sfmt:SFCUR})}}
  /* 一段 4 MiB，和设备的 SCAN_SLICE 一样；坏块与 ECC 是编的，但位置固定 */
  if(u.indexOf('/scan')==0){
   var sz=D.info.flash.size,blk=D.info.flash.erase,sl=4<<20,
@@ -349,10 +416,12 @@ document.addEventListener('DOMContentLoaded',function(){
  /* 这条是预览自己的，不属于设备那张页面：别让语言切换去动它 */
  b.id='pvbar';b.setAttribute('data-raw','');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option><option value=vbad>回读校验没通过</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option><option value=pnand>并口 NAND 首次迁移前（HG5382A）</option><option value=pnandmig>并口 NAND 已迁移（HG5382A）</option></select> 原厂格式 <select id=pvsf><option value=ok>已识别</option><option value=amb>两种都读得通</option><option value=none>原厂不用 SoC ECC</option><option value=na>闪存已不是原厂内容</option></select> dd 核对 <select id=pvdd><option value=ok>一致</option><option value=part>两块被挪过</option><option value=bad>全对不上</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option><option value=vbad>回读校验没通过</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
- var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn');
- sel.onchange=function(){S.dev=sel.value;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};
+ var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn'),sf=b.querySelector('#pvsf'),dd=b.querySelector('#pvdd');
+ sf.onchange=function(){S.sf=sf.value;SFCUR=null;window.info&&window.info()};
+ dd.onchange=function(){S.dd=dd.value};
+ sel.onchange=function(){S.dev=sel.value;SFCUR=null;if(window.CHK!==undefined)window.CHK=null;window.ENV=null;window.info&&window.info()};
  ps.onchange=function(){S.post=ps.value};
  cn.onchange=function(){S.conn=cn.value};
  /*
@@ -367,8 +436,10 @@ document.addEventListener('DOMContentLoaded',function(){
   */
  window.dlstart=function(u,n){
   /* 长度留空时由设备算到片尾，这里照做，好让进度和 crc32 都有个数 */
+  var fl=info().flash;
   if(n===null){var o=/off=0x([0-9a-f]+)/.exec(u);
-   n=D.info.flash.size-(o?parseInt(o[1],16):0)}
+   n=fl.size-(o?parseInt(o[1],16):0);
+   if(/oob=1/.test(u))n=n/fl.page*(fl.page+fl.oob)}
   /* 第一个窗口读完就开始传，所以静默很短；crc32 要等整份传完才有 */
   var send=Math.max(1200,Math.min(n/1e4,30000)),t0=Date.now();
   fall(send);
@@ -378,31 +449,39 @@ document.addEventListener('DOMContentLoaded',function(){
   setTimeout(function(){DSEQ++;clearInterval(DTICK);
    DBUSY=0;DSENT=n;
    DINFO={seq:DSEQ,len:n,crc:(0x3f2a91c4+DSEQ*7).toString(16),holes:0,
-          name:'nokia-xg-040g-md-'+(/vol=([^&]+)/.exec(u)||[0,'flash'])[1]+'.bin'}},
+          name:info().model.toLowerCase().replace(/[^a-z0-9]+/g,'-')+'-'+(/vol=([^&]+)/.exec(u)||[0,'flash'])[1]+(/oob=1/.test(u)?'-oob':'')+'.bin'}},
    send)};
 });
 })();</script>
 """
 
 
-def render(html, stock=True):
+def render(html, stock=True, pnand=True):
+    # Markers nest (PNAND sits inside STOCK on the restore page), so keep a
+    # stack.  PNAND is in unless --no-pnand: with it the stub decides whether
+    # the board has parallel NAND, the way /info does on a real one; without
+    # it the page is what an SPI NAND build serves.
     out = []
-    skip = False
+    keep = [True]
     for line in html.splitlines():
         s = line.strip()
         if s == "<!--#if STOCK-->":
-            skip = not stock
+            keep.append(keep[-1] and stock)
+            continue
+        if s == "<!--#if PNAND-->":
+            keep.append(keep[-1] and pnand)
             continue
         if s == "<!--#endif-->":
-            skip = False
+            keep.pop()
             continue
-        if skip:
+        if not keep[-1]:
             continue
         out.append(line)
     html = "\n".join(out) + "\n"
     for k, v in MACROS.items():
         html = html.replace("@@%s@@" % k, v)
     data = json.dumps({"info": INFO, "check": CHECK, "log": LOG,
+                       "pnand": PNAND_INFO,
                        "env": [{"k": k, "v": v} for k, v in ENV]},
                       ensure_ascii=False)
     stub = STUB.replace("@DATA@", data)
@@ -410,15 +489,18 @@ def render(html, stock=True):
 
 
 def main():
-    args = [a for a in sys.argv[1:] if a not in ("--no-stock", "--raw")]
+    args = [a for a in sys.argv[1:]
+            if a not in ("--no-stock", "--no-pnand", "--raw")]
     stock = "--no-stock" not in sys.argv[1:]
+    pnand = "--no-pnand" not in sys.argv[1:]
     html = open(args[0], encoding="utf-8").read()
     if "--raw" not in sys.argv[1:]:
         html = minify(html)
     # argv[2] is written over, so it is the destination and never the source.
     dst = args[1] if len(args) > 1 else "preview.html"
-    open(dst, "w", encoding="utf-8", newline="").write(render(html, stock))
-    print("wrote", dst, "(no stock)" if not stock else "")
+    open(dst, "w", encoding="utf-8", newline="").write(render(html, stock, pnand))
+    print("wrote", dst, "(no stock)" if not stock else "",
+          "(no pnand)" if not pnand else "")
 
 
 if __name__ == "__main__":

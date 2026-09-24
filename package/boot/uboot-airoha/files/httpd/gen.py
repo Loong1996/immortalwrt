@@ -8,6 +8,8 @@ httpd.c.  Markers understood inside the HTML:
 
   <!--#if STOCK-->  ...  <!--#endif-->   compiled in only with
                                           CONFIG_CMD_HTTPD_STOCK_RESTORE
+  <!--#if PNAND-->  ...  <!--#endif-->   only with the parallel NAND
+                                          driver, CONFIG_NAND_AIROHA_EN7581
   @@NAME@@                                spliced as the C macro NAME
 
 Every source line becomes one string literal ending in \\n.  The HTML
@@ -55,6 +57,8 @@ def convert(html):
             continue
         if line == "<!--#if STOCK-->":
             res.append("#if IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE)")
+        elif line == "<!--#if PNAND-->":
+            res.append("#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)")
         elif line == "<!--#endif-->":
             res.append("#endif")
         else:

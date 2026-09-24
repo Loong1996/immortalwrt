@@ -152,6 +152,7 @@ DECLARE_GLOBAL_DATA_PTR;
 #define CONN_DRAIN		((void *)22)
 #define CONN_WIPECFG		((void *)23)
 #define CONN_DHCPGW		((void *)24)
+#define CONN_SFMT		((void *)25)
 
 /*
  * Commands run after the response has been flushed and net_loop() returned.
@@ -313,10 +314,16 @@ static const char resp_form[] =
 	"input::placeholder{color:var(--c3)}\n"
 	".note{color:var(--c2);font-size:.92em;line-height:1.45;margin:.45rem .2rem 0}\n"
 	".note b{color:var(--org);font-weight:500}\n"
+	".note.ok b{color:var(--grn)}.note.bad b{color:var(--red)}\n"
 	".act{display:flex;align-items:center;justify-content:flex-end;gap:.8rem;margin-top:auto;padding-"
 		"top:1.4rem}\n"
 	".st{color:var(--c2);margin-right:auto;font-variant-numeric:tabular-nums;min-width:0;overflow:hid"
 		"den;text-overflow:ellipsis;white-space:nowrap}\n"
+	".st.ok{color:var(--grn)}.st.warn{color:var(--org)}.st.bad{color:var(--red)}\n"
+	"/* 结果可能是一整句话，不能被截成省略号 */\n"
+	".st.wrap{white-space:normal}\n"
+	"input[type=radio]{accent-color:var(--blue);width:15px;height:15px;margin:0;flex:none;cursor:poin"
+		"ter}\n"
 	"@media (min-width:701px){.side{position:sticky;top:0;align-self:start;height:100vh;overflow-y:au"
 		"to;scrollbar-width:none}\n"
 	".side::-webkit-scrollbar{display:none}}\n"
@@ -488,7 +495,7 @@ static const char resp_form[] =
 	".dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.38rem;background:"
 		"var(--c3)}\n"
 	".dot.s0{background:var(--grn)}.dot.s1{background:var(--org)}.dot.s2{background:var(--red)}\n"
-	".kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}\n"
+	".kv td.s0{color:var(--grn)}.kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}\n"
 	".kv td.hot{color:var(--red)}\n"
 	".kv td.cmd{color:var(--c2);font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em}\n"
 	".row{display:flex;gap:.6rem;margin-top:.6rem;justify-content:flex-end;align-items:center}\n"
@@ -636,6 +643,19 @@ static const char resp_form[] =
 		"span class=\"fc end\"><input type=checkbox class=sw name=wipe value=1 checked"
 		" onchange=\"this.dataset.t=1\"></span></div>\n"
 	"</div>\n"
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	"<div data-oob=1 hidden><p class=bh>镜像格式<small>选择文件后按大小自动判断</small></p>\n"
+	"<div class=box>\n"
+	"<label class=\"fr wide\"><span class=fl>带 OOB<small>由「备份下载 → 整片下载」导出的文件</small></span><span"
+		" class=\"fc end\"><input type=radio name=stfmt value=oob checked"
+		" onchange=\"stfmtset(1)\"></span></label>\n"
+	"<label class=\"fr wide\"><span class=fl>不带 OOB<small>原厂系统里 dd 出来的文件</small></span><span class=\"fc"
+		" end\"><input type=radio name=stfmt value=dd onchange=\"stfmtset(1)\"></span></label>\n"
+	"</div>\n"
+	"<div id=stpw hidden><p class=bh>重算校验码的参数<small>默认取「备份下载 → 原厂格式」里的</small></p><div class=box"
+		" id=sfp2></div></div>\n"
+	"<p class=note id=stfn></p></div>\n"
+#endif
 	"<p class=note>镜像须来自本机备份，可在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。长度上限为 flash 容量"
 		" <span id=upmax>—</span>。<b>页面不校验镜像内容、机型与偏移是否匹配</b>，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；<b>写入一旦开始，中断将使闪存处于"
 		"不一致状态，须重传至成功后方可重启</b>。写入期间指示灯<b>流水</b>，与其他页面一致；本页写入与接收同时进行，<b>网线与电源都不能断</b>，进度以本页进度条为准。</p>\n"
@@ -666,8 +686,12 @@ static const char resp_form[] =
 	"<h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>\n"
 	"<div class=seg data-seg=g10 role=tablist><button type=button role=tab data-s=s101"
 		" aria-controls=s101 aria-selected=true onclick=seg(this)>UBI 卷</button><button type=button"
-		" role=tab data-s=s102 aria-controls=s102 aria-selected=false"
-		" onclick=seg(this)>原始区段</button></div>\n"
+		" role=tab data-s=s102 aria-controls=s102 aria-selected=false onclick=seg(this)>原始区段</button>\n"
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	"<button type=button role=tab data-s=s103 aria-controls=s103 aria-selected=false"
+		" onclick=seg(this) id=sftab hidden>原厂格式</button>\n"
+#endif
+	"</div>\n"
 	"<div class=sp data-g=g10 id=s101 data-on>\n"
 	"<div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>\n"
 	"</div>\n"
@@ -681,11 +705,36 @@ static const char resp_form[] =
 		" id=dumphint>留空读至片尾</span></span></div>\n"
 	"</div>\n"
 	"<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>\n"
-	"<p class=note><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部"
+	"<p class=note data-oob=0><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部"
 		" <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>\n"
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	"<p class=note data-oob=1 hidden><b>这台连 OOB 一起原样读出</b>，每页 <span class=oobpg>2048 + 128</span>"
+		" 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；<b>只能写回本机</b>。偏移与长度按 flash 计，须按页对齐。</p>\n"
+#endif
 	"<div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button"
 		" type=button class=\"pb pri\" onclick=dumpraw()>下载区段</button></div>\n"
 	"</div>\n"
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	"<div class=sp data-g=g10 id=s103>\n"
+	"<p class=note>原厂系统里 <code>dd</code> 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。<b>自动识别只能在首次迁移前做</b>，那时闪存还是原厂内容"
+		"；参数也可以手动填写。</p>\n"
+	"<div class=box><table class=kv id=sfmt><tr><td>正在读取…</td></tr></table></div>\n"
+	"<p class=bh>参数<small>自动识别的结果填在这里，也可以手动改</small></p>\n"
+	"<div class=box id=sfp1></div>\n"
+	"<p class=note id=sfv1 hidden></p>\n"
+	"<div class=row><span class=\"st wrap\" id=sfh></span><button type=button class=pb id=sfa"
+		" onclick=sfauto()>自动识别</button><button type=button class=pb id=sft"
+		" onclick=sftry()>用这组参数试读</button><button type=button class=\"pb pri\" id=sfs"
+		" onclick=sfsave()>保存</button></div>\n"
+	"<p class=note>已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。</p>\n"
+	"<p class=bh>用 dd 备份核对<small>可选。确认坏块标记的位置，并找出原厂挪动过的块</small></p>\n"
+	"<div class=box><div class=fr><span class=fl>dd 备份<small"
+		" class=mono>all_flash.bin</small></span><label class=fc><input type=file id=sfdd data-l=\"dd"
+		" 备份\"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div></div>\n"
+	"<div class=row><span class=\"st wrap\" id=sfdh></span><button type=button class=pb id=sfb"
+		" onclick=sfcheck()>核对</button></div>\n"
+	"</div>\n"
+#endif
 	"<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div"
 		" class=box><table class=kv id=dll></table></div></div>\n"
 	"<div class=act><span class=st id=dlh>选择卷，或填写偏移与长度</span></div>\n"
@@ -935,7 +984,8 @@ static const char resp_form[] =
 		"0]}})}function onfile(e){var t=e.files[0],o=e.parentNode,n=$(\".fn\",o);if(t){n.textContent=t.name"
 		",n.classList.add(\"has\"),o.classList.add(\"has\");var"
 		" a=$(\".fs\",o);a||((a=document.createElement(\"span\")).className=\"fs\",n.parentNode.insertBefore(a,"
-		"n.nextSibling)),a.textContent=sz(t.size),refresh()}}function refresh(){var"
+		"n.nextSibling)),a.textContent=sz(t.size),\"stock\"==e.name&&cecc()&&stguess(t),\"sfdd\"!=e.id?refres"
+		"h():sfst(\"#sfdh\",\"\",\"已选 \"+t.name+\" · \"+sz(t.size))}}function refresh(){var"
 		" e=pane(),t=$(\".st\",e);if(t){var o=files(e),n=0;o.forEach(function(e){n+=e.f.size}),t.textConten"
 		"t=o.length?\"已选 \"+o.length+\" 个文件 · \"+sz(n):\"未选择文件\"}}function"
 		" drag(e,t){e&&!e.__drag&&(e.__drag=1,e.ondragover=function(t){t.preventDefault(),e.classList.add"
@@ -946,13 +996,13 @@ static const char resp_form[] =
 		"st?e.closest(\".drop\")||e.closest(\".fr\"):null,e)})}function hex(e){return"
 		" e=(e||\"\").trim(),/^(0x)?[0-9a-fA-F]{1,8}$/.test(e)?parseInt(e,16):-1}function stwipe(){var"
 		" e=$(\"[name=wipe]\");e&&!e.dataset.t&&(e.checked=0===hex($(\"[name=stockoff]\").value))}function"
-		" fvrows(){var e=\"\";FV.forEach(function(t){e+=\"<div class=fr><span"
-		" class=fl>\"+esc(t.n)+(t.d?\"<small>\"+esc(t.d)+\"</small>\":\"\")+'</span><label class=fc><input"
-		" type=file name=\"fvol_'+esc(t.n)+'\" data-l=\"'+esc(t.n)+'\"><span class=pb>选择文件…</span><span"
-		" class=fn>未选择</span></label></div>'}),$(\"#fv\").innerHTML=e,$(\"#fvh\").hidden=!FV.length,bind()}fu"
-		"nction get(e,t){var o=new XMLHttpRequest;o.onload=function(){t(o.status,o.responseText)},o.onerr"
-		"or=function(){t(0,\"\")},o.open(\"GET\",e),o.send()}function"
-		" info(){INFOQ?INFOQ=2:(INFOQ=1,get(\"/info\",function(e,t){var"
+		" cecc(){return!1}function oobmode(){}function fvrows(){var e=\"\";FV.forEach(function(t){e+=\"<div"
+		" class=fr><span class=fl>\"+esc(t.n)+(t.d?\"<small>\"+esc(t.d)+\"</small>\":\"\")+'</span><label"
+		" class=fc><input type=file name=\"fvol_'+esc(t.n)+'\" data-l=\"'+esc(t.n)+'\"><span"
+		" class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'}),$(\"#fv\").innerHTML=e,$(\"#fvh\")."
+		"hidden=!FV.length,bind()}function get(e,t){var o=new"
+		" XMLHttpRequest;o.onload=function(){t(o.status,o.responseText)},o.onerror=function(){t(0,\"\")},o."
+		"open(\"GET\",e),o.send()}function info(){INFOQ?INFOQ=2:(INFOQ=1,get(\"/info\",function(e,t){var"
 		" o=null,n=2==INFOQ;if(INFOQ=0,200==e)try{o=JSON.parse(t)}catch(e){}INFO=o,fill(),n&&info()}))}fu"
 		"nction netget(){GONE||get(\"/net\",function(e,t){var"
 		" o=null;try{o=JSON.parse(t)}catch(e){}o&&o.net&&(NET=o,INFO&&(INFO.net=o.net,INFO.ports=o.ports)"
@@ -1026,7 +1076,7 @@ static const char resp_form[] =
 		"<div class=w>不保存：只管本次开机，下次开机回到 <b>\"+esc(bootdesc())+\"</b></div>\",INFO&&INFO.net&&INFO.net.ack&&\""
 		"server\"!=t&&(e+=\"<div class=w><b>本机用的是设备发的地址</b>：本机这个地址马上就没人续租了，\"+(\"static\"==t?\"需手动把本机配成"
 		" \"+esc(o.replace(/\\.\\d+$/,\".x\"))+\" 的一个地址\":\"请改用上级路由那个网络里的机器\")+\"</div>\"),$(\"#abody\").innerHTML=e;v"
-		"ar i=$(\"#yes\");i.hidden=!1,i.textContent=\"应用\",YES=function(){donetmode(t,o,n,a)},$(\"#mask\").setA"
+		"ar s=$(\"#yes\");s.hidden=!1,s.textContent=\"应用\",YES=function(){donetmode(t,o,n,a)},$(\"#mask\").setA"
 		"ttribute(\"data-on\",\"\")}function donetmode(e,t,o,n){get(\"/netmode?mode=\"+e+(\"client\"==e?\"\":\"&ip=\""
 		"+encodeURIComponent(t)+\"&mask=\"+encodeURIComponent(o))+\"&save=\"+(n?1:0),function(o,a){200==o&&/^"
 		"ok /.test((a||\"\").trim())?(hbstop(),\"client\"==e?gone(\"正在获取地址\",\"获取成功后设备位于新地址，请在上级路由的客户端列表中按"
@@ -1066,14 +1116,15 @@ static const char resp_form[] =
 		"ving failed\")>=0?\"已设置，但未能保存到闪存：断电后失效，请在「诊断」中确认 ubootenv"
 		" 卷\":o.indexOf(\"already\")>=0?\"此前已设置，下次开机将停在本页面\":\"已设置。下次开机停在本页面，再下次开机恢复正常引导\"):$(\"#boh\").textConten"
 		"t=\"设置失败（\"+t+\"）\"})}function dlfill(){var e=$(\"#dl\"),t=INFO&&INFO.flash,o={},n=\"\";t&&($(\"#dumphint"
-		"\").textContent=\"读至片尾，\"+sz(t.size)),INFO?INFO.ubi?((INFO.fv||[]).forEach(function(e){o[e.n]=e.s})"
-		",(INFO.ubi.vols||[]).slice().sort(function(e,t){return(o[t.n]?1:0)-(o[e.n]?1:0)||(e.n<t.n?-1:e.n"
-		">t.n?1:0)}).forEach(function(e){var t=e.u||e.s;o[e.n]&&t>o[e.n]&&(t=o[e.n]),n+=\"<tr><td>\"+esc(e."
-		"n)+(o[e.n]?\"<span class=tag>出厂数据</span>\":\"\")+\"</td><td>\"+esc(e.t)+\"</td><td"
-		" class=n>\"+sz(t)+'</td><td class=b><button type=button class=\"pb dlb\""
-		" data-v=\"'+esc(e.n)+'\">下载</button></td></tr>'}),e.innerHTML=n,dlbind(e)):e.innerHTML=\"<tr><td"
-		" class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>\":e.innerHTML=INFOQ?\"<tr><td>正"
-		"在读取…</td></tr>\":\"<tr><td class=empty>读取失败，刷新页面重试</td></tr>\"}function"
+		"\").textContent=\"读至片尾，\"+sz(cecc()?rawlen(t.size):t.size)),INFO?INFO.ubi?((INFO.fv||[]).forEach(fu"
+		"nction(e){o[e.n]=e.s}),(INFO.ubi.vols||[]).slice().sort(function(e,t){return(o[t.n]?1:0)-(o[e.n]"
+		"?1:0)||(e.n<t.n?-1:e.n>t.n?1:0)}).forEach(function(e){var"
+		" t=e.u||e.s;o[e.n]&&t>o[e.n]&&(t=o[e.n]),n+=\"<tr><td>\"+esc(e.n)+(o[e.n]?\"<span"
+		" class=tag>出厂数据</span>\":\"\")+\"</td><td>\"+esc(e.t)+\"</td><td class=n>\"+sz(t)+'</td><td"
+		" class=b><button type=button class=\"pb dlb\" data-v=\"'+esc(e.n)+'\">下载</button></td></tr>'}),e.inn"
+		"erHTML=n,dlbind(e)):e.innerHTML=\"<tr><td class=empty><b>UBI"
+		" 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>\":e.innerHTML=INFOQ?\"<tr><td>正在读取…</td></tr>\":\"<t"
+		"r><td class=empty>读取失败，刷新页面重试</td></tr>\"}function"
 		" dlbind(e){e.__b||(e.__b=1,e.addEventListener(\"click\",function(t){for(var"
 		" o=t.target;o&&o!=e;){if(o.getAttribute&&/(^| )dlb( |$)/.test(o.className||\"\"))return void"
 		" dlvol(o.getAttribute(\"data-v\"));o=o.parentNode}}))}function dlstart(e,t){var"
@@ -1108,12 +1159,14 @@ static const char resp_form[] =
 		"s)&&(t=o.s)}),sink(\"/dump?vol=\"+encodeURIComponent(e),e+\" 卷\",t)}function"
 		" dumpall(){INFO&&INFO.flash?($(\"#dumpoff\").value=\"0x0\",$(\"#dumplen\").value=\"\",dumpraw()):$(\"#dlh"
 		"\").textContent=\"无法读取闪存信息\"}function dumpraw(){var"
-		" e=INFO&&INFO.flash,t=hex($(\"#dumpoff\").value),o=$(\"#dumplen\").value.trim(),n=o?hex(o):null;t<0?"
-		"$(\"#dlh\").textContent=\"起始偏移不是有效的十六进制数\":null!==n&&n<0?$(\"#dlh\").textContent=\"长度不是有效的十六进制数\":0!==n?"
-		"e&&t>=e.size?$(\"#dlh\").textContent=\"起始偏移超出 flash 容量"
-		" \"+sz(e.size):e&&null!==n&&t+n>e.size?$(\"#dlh\").textContent=\"偏移加长度超过 flash 容量"
-		" \"+sz(e.size):(DLWHAT=t||null!==n?\"\":\"all\",sink(\"/dump?off=0x\"+t.toString(16)+(null===n?\"\":\"&len"
-		"=0x\"+n.toString(16)),\"0x\"+t.toString(16)+\" 起的区段\",n)):$(\"#dlh\").textContent=\"长度为 0\"}var"
+		" e=INFO&&INFO.flash,t=hex($(\"#dumpoff\").value),o=$(\"#dumplen\").value.trim(),n=o?hex(o):null;if(t"
+		"<0)$(\"#dlh\").textContent=\"起始偏移不是有效的十六进制数\";else if(null!==n&&n<0)$(\"#dlh\").textContent=\"长度不是有效的十六"
+		"进制数\";else if(0!==n)if(e&&t>=e.size)$(\"#dlh\").textContent=\"起始偏移超出 flash 容量 \"+sz(e.size);else"
+		" if(e&&null!==n&&t+n>e.size)$(\"#dlh\").textContent=\"偏移加长度超过 flash 容量 \"+sz(e.size);else{var"
+		" a=cecc();a&&(t%e.page||null!==n&&n%e.page)?$(\"#dlh\").textContent=\"偏移与长度须按页 \"+sz(e.page)+\""
+		" 对齐\":(DLWHAT=t||null!==n?\"\":\"all\",sink(\"/dump?off=0x\"+t.toString(16)+(null===n?\"\":\"&len=0x\"+n.to"
+		"String(16))+(a?\"&oob=1\":\"\"),\"0x\"+t.toString(16)+\" 起的区段\"+(a?\"（连"
+		" OOB）\":\"\"),a&&null!==n?rawlen(n):n))}else $(\"#dlh\").textContent=\"长度为 0\"}var"
 		" ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_butt"
 		"ons|web_uboot_|envver|httpd_|ubi_)/;function getenv(){var"
 		" e=$(\"#envb\");e.disabled=!0,ENVQ=1,get(\"/env\",function(t,o){ENVQ=0,e.disabled=!1;var"
@@ -1131,9 +1184,9 @@ static const char resp_form[] =
 		" e,t=$(\"#bmenu\"),o={},n=\"\";ENV?(ENV.env.forEach(function(t){var"
 		" n=/^bootmenu_(\\d+)$/.exec(t.k);n&&(o[+n[1]]=t.v),\"bootmenu_delay\"==t.k&&(e=t.v)}),Object.keys(o"
 		").map(Number).sort(function(e,t){return e-t}).forEach(function(e){var"
-		" t=o[e],a=t.indexOf(\"=\"),i=a<0?t:t.slice(0,a),s=a<0?\"\":t.slice(a+1),r=/\\x1b\\[[0-9;]*3[147]m/.tes"
-		"t(i);i=i.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\"),n+=\"<tr><td class=n>\"+bmkey(e)+\".</td><td\"+(r?\""
-		" class=hot\":\"\")+\">\"+esc(i)+\"</td><td class=cmd>\"+esc(s)+\"</td></tr>\"}),t.innerHTML=n||\"<tr><td"
+		" t=o[e],a=t.indexOf(\"=\"),s=a<0?t:t.slice(0,a),i=a<0?\"\":t.slice(a+1),r=/\\x1b\\[[0-9;]*3[147]m/.tes"
+		"t(s);s=s.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\"),n+=\"<tr><td class=n>\"+bmkey(e)+\".</td><td\"+(r?\""
+		" class=hot\":\"\")+\">\"+esc(s)+\"</td><td class=cmd>\"+esc(i)+\"</td></tr>\"}),t.innerHTML=n||\"<tr><td"
 		" class=empty>没有 bootmenu_* 条目</td></tr>\",$(\"#bmh\").textContent=n?\"设备启动时的菜单，序号即串口上按的键\"+(e?\"；\"+e+\""
 		" 秒内无按键则执行 bootcmd\":\"\")+\"。红色条目会写入闪存\":\"环境中没有引导菜单：串口不会停顿，直接执行"
 		" bootcmd\"):t.innerHTML=\"<tr><td>正在读取…</td></tr>\"}function"
@@ -1163,31 +1216,32 @@ static const char resp_form[] =
 		" class=empty>读不到网络信息</td></tr>\"}var VCOL={fip:\"#5e5ce6\",fit:\"#0a84ff\",rootfs_data:\"#30d158\",uboo"
 		"tenv:\"#8e8e93\",ubootenv2:\"#8e8e93\",ri:\"#ff9f0a\",bosa:\"#af52de\"},VPOOL=[\"#00b4a0\",\"#a2845e\",\"#ff4"
 		"53a\",\"#64748b\"],VRECL={fit:1,rootfs_data:1};function ubibar(){var"
-		" e,t,o,n=$(\"#vbar\"),a=$(\"#vleg\"),i=INFO&&INFO.ubi,s=0,r=0,l=\"\",d=\"\";if(!i||!i.pebs||!i.leb)retur"
-		"n n.hidden=!0,a.hidden=!0,void($(\"#ubih\").textContent=\"\");e=i.leb*i.pebs,(i.vols||[]).slice().so"
+		" e,t,o,n=$(\"#vbar\"),a=$(\"#vleg\"),s=INFO&&INFO.ubi,i=0,r=0,l=\"\",d=\"\";if(!s||!s.pebs||!s.leb)retur"
+		"n n.hidden=!0,a.hidden=!0,void($(\"#ubih\").textContent=\"\");e=s.leb*s.pebs,(s.vols||[]).slice().so"
 		"rt(function(e,t){return(0|e.i)-(0|t.i)}).forEach(function(e,t){var"
 		" o=VCOL[e.n]||VPOOL[t%VPOOL.length],n=VRECL[e.n]?\""
-		" re\":\"\",a=0|e.s;s+=a,VRECL[e.n]&&(r+=a),l+='<i class=\"'+n+'\" style=\"flex:'+a+\" 0"
+		" re\":\"\",a=0|e.s;i+=a,VRECL[e.n]&&(r+=a),l+='<i class=\"'+n+'\" style=\"flex:'+a+\" 0"
 		" 0;background:\"+o+'\" title=\"'+esc(e.n)+\" \"+sz(a)+'\"></i>',d+='<span><em class=\"'+n+'\""
 		" style=\"background:'+o+'\"></em>'+esc(e.n)+\" \"+sz(a)+(VRECL[e.n]?\" ·"
-		" 写入时腾出\":\"\")+\"</span>\"}),(o=e-s)<0&&(o=0),null==(t=null==i.avail?null:(0|i.avail)*i.leb)||t>o?(l+"
+		" 写入时腾出\":\"\")+\"</span>\"}),(o=e-i)<0&&(o=0),null==(t=null==s.avail?null:(0|s.avail)*s.leb)||t>o?(l+"
 		"='<i class=free style=\"flex:'+o+' 0 0\" title=\"空闲与预留 '+sz(o)+'\"></i>',d+=\"<span><em"
 		" class=free></em>空闲与 UBI 预留 \"+sz(o)+\"</span>\"):(r+=t,l+='<i class=free style=\"flex:'+t+' 0 0\""
 		" title=\"空闲 '+sz(t)+'\"></i><i class=rsv style=\"flex:'+(o-t)+' 0 0\" title=\"UBI 预留"
 		" '+sz(o-t)+'\"></i>',d+=\"<span><em class=free></em>空闲 \"+sz(t)+'</span><span><em"
 		" style=\"background:var(--c3)\"></em>UBI 预留 '+sz(o-t)+\"</span>\"),n.innerHTML=l,a.innerHTML=d,n.hid"
-		"den=!1,a.hidden=!1,$(\"#ubih\").textContent=\"逻辑擦除块 \"+sz(i.leb)+\" × \"+i.pebs+\"。宽度为各卷的预留容量，按卷 ID"
+		"den=!1,a.hidden=!1,$(\"#ubih\").textContent=\"逻辑擦除块 \"+sz(s.leb)+\" × \"+s.pebs+\"。宽度为各卷的预留容量，按卷 ID"
 		" 排列；UBI 卷在闪存中并不连续，此图不表示物理位置\"+(null==t?\"\":\"。刷机可用 \"+Math.floor(r/1048576)+\" MiB：当前空闲"
 		" \"+sz(t)+\"，加上写入时会腾出的 fit 与 rootfs_data\")}function fill(){var"
 		" e=$(\"#dev\"),t=$(\"#ubi\"),o=\"\";return banner(),netfill(),INFO?([[\"机型\",INFO.model],[\"SoC\",INFO.soc"
 		"],[\"内存\",INFO.ram?sz(INFO.ram):\"\"],[\"闪存\",INFO.flash?INFO.flash.name+\" \"+sz(INFO.flash.size)+\" ·"
-		" 擦除块 \"+sz(INFO.flash.erase)+\" · 页 \"+sz(INFO.flash.page):\"\"],[\"分区\",(INFO.parts||[]).map(function("
-		"e){return e.n+\" 0x\"+e.o.toString(16)+\"–0x\"+(e.o+e.s).toString(16)}).join(\" ·"
+		" 擦除块 \"+sz(INFO.flash.erase)+\" · 页 \"+sz(INFO.flash.page)+(INFO.flash.oob?\" · OOB"
+		" \"+sz(INFO.flash.oob):\"\"):\"\"],[\"分区\",(INFO.parts||[]).map(function(e){return e.n+\""
+		" 0x\"+e.o.toString(16)+\"–0x\"+(e.o+e.s).toString(16)}).join(\" ·"
 		" \")],[\"MAC\",INFO.mac],[\"U-Boot\",INFO.uboot]].forEach(function(e){e[1]&&(o+=\"<tr><td>\"+e[0]+\"</td"
 		"><td class=mono>\"+esc(e[1])+\"</td></tr>\")}),e.innerHTML=o,INFO.uboot&&($(\"#based\").textContent=I"
 		"NFO.uboot),$(\"#logtab\").hidden=!INFO.log,INFO.flash&&$$(\"#upmax\").forEach(function(e){e.textCont"
-		"ent=sz(INFO.flash.size)}),dlfill(),FV=INFO.fv||[],fvrows(),wcfill(),INFO.ubi?(ubibar(),o=\"<tr><t"
-		"h class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th"
+		"ent=sz(INFO.flash.size)}),dlfill(),oobmode(),FV=INFO.fv||[],fvrows(),wcfill(),INFO.ubi?(ubibar()"
+		",o=\"<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th"
 		" class=n>已用</th></tr>\",(INFO.ubi.vols||[]).slice().sort(function(e,t){return"
 		" e.n<t.n?-1:e.n>t.n?1:0}).forEach(function(e){o+=\"<tr><td"
 		" class=n>\"+(null==e.i?\"\":0|e.i)+\"</td><td>\"+esc(e.n)+\"</td><td>\"+esc(e.t)+\"</td><td"
@@ -1197,20 +1251,20 @@ static const char resp_form[] =
 		" e=$(\"#chkb\"),t=$(\"#chk\");CHKQ=1,silent(),e.disabled=!0,e.textContent=\"检查中…\",t.innerHTML=\"<tr><t"
 		"d colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>\",get(\"/check\",function(o,n){CHKQ=0,e.disable"
 		"d=!1,e.textContent=\"重新检查\";var a=null;try{a=JSON.parse(n)}catch(e){}if(503!=o)if(a&&a.items){CHK="
-		"a.items;var i=\"\",s=[0,0,0],r=\"\";a.items.forEach(function(e){var"
-		" t=Math.max(0,Math.min(2,0|e.s));s[t]++,e.g&&e.g!=r&&(r=e.g,i+=\"<tr><th class=g"
-		" colspan=2>\"+esc(r)+\"</th></tr>\"),i+='<tr><td><span class=\"dot"
-		" s'+t+'\"></span>'+esc(e.n)+'</td><td class=\"s'+t+'\">'+esc(e.v)+\"</td></tr>\"}),t.innerHTML=i,$(\"#"
-		"chkh\").textContent=s[2]?s[2]+\" 项异常 · \"+s[1]+\" 项注意 · \"+s[0]+\" 项正常\":s[1]?s[1]+\" 项注意 · \"+s[0]+\""
-		" 项正常\":\"全部 \"+s[0]+\" 项正常\"}else t.innerHTML=\"<tr><td colspan=2"
+		"a.items;var s=\"\",i=[0,0,0],r=\"\";a.items.forEach(function(e){var"
+		" t=Math.max(0,Math.min(2,0|e.s));i[t]++,e.g&&e.g!=r&&(r=e.g,s+=\"<tr><th class=g"
+		" colspan=2>\"+esc(r)+\"</th></tr>\"),s+='<tr><td><span class=\"dot"
+		" s'+t+'\"></span>'+esc(e.n)+'</td><td class=\"s'+t+'\">'+esc(e.v)+\"</td></tr>\"}),t.innerHTML=s,$(\"#"
+		"chkh\").textContent=i[2]?i[2]+\" 项异常 · \"+i[1]+\" 项注意 · \"+i[0]+\" 项正常\":i[1]?i[1]+\" 项注意 · \"+i[0]+\""
+		" 项正常\":\"全部 \"+i[0]+\" 项正常\"}else t.innerHTML=\"<tr><td colspan=2"
 		" class=empty>读取失败，刷新页面重试</td></tr>\";else t.innerHTML=\"<tr><td colspan=2"
 		" class=empty>设备正在写入，稍后再试</td></tr>\"})}function logfollow(){clearTimeout(LOGT),LOGT=null,LOGGEN++"
 		";var e=$(\"#logf\").checked;$(\"#logb\").disabled=e,e&&(LOGN=0,logset(\"\",1),logtick())}function"
 		" logtick(){if($(\"#logf\").checked){var e=LOGGEN;get(\"/log?from=\"+LOGN,function(t,o){if(e==LOGGEN&"
 		"&$(\"#logf\").checked){var n=200==t&&o?o.indexOf(\"\\n\"):-1;if(n>0){var"
 		" a=parseInt(o.slice(0,n),10);if(a>=LOGN){LOGN=a;var"
-		" i=o.slice(n+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\").replace(/\\r/g,\"\");if(i){var"
-		" s=$(\"#log\");s.textContent+=i,s.scrollTop=s.scrollHeight}}}LOGT=setTimeout(logtick,2e3)}})}}var"
+		" s=o.slice(n+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\").replace(/\\r/g,\"\");if(s){var"
+		" i=$(\"#log\");i.textContent+=s,i.scrollTop=i.scrollHeight}}}LOGT=setTimeout(logtick,2e3)}})}}var"
 		" SCAN=null;function scanrun(){var e=$(\"#scanb\"),t=$(\"#scanprog\");if(SCAN)return"
 		" SCAN.stop=1,SCAN=null,e.textContent=\"重新扫描\",t.className=\"prog"
 		" bad\",$(\".pwhat\",t).textContent=\"已停止\",void($(\"#scanh\").textContent=\"已停止，结果仅覆盖已扫描的部分\");SCAN={off:"
@@ -1227,19 +1281,19 @@ static const char resp_form[] =
 		"2&&e.faill.push(t)}),scanshow(e,n.done),n.done)return"
 		" SCAN=null,void($(\"#scanb\").textContent=\"重新扫描\");scanstep()}}))}function"
 		" hx(e){return\"0x\"+e.toString(16)}function scanshow(e,t){var"
-		" o=$(\"#scanprog\"),n=e.size?e.off/e.size:0,a=Date.now(),i=(a-e.rt)/1e3,s=\"\";i>=1.5&&(e.rate=(e.of"
-		"f-e.rn)/i,e.rt=a,e.rn=e.off),$(\".pbar\",o).style.width=100*n+\"%\",$(\".pct\",o).textContent=sz(e.off"
+		" o=$(\"#scanprog\"),n=e.size?e.off/e.size:0,a=Date.now(),s=(a-e.rt)/1e3,i=\"\";s>=1.5&&(e.rate=(e.of"
+		"f-e.rn)/s,e.rt=a,e.rn=e.off),$(\".pbar\",o).style.width=100*n+\"%\",$(\".pct\",o).textContent=sz(e.off"
 		")+\" / \"+sz(e.size)+\" · \"+(100*n).toFixed(0)+\"%\"+(!t&&e.rate>0?\" · \"+spd(e.rate)+\" · 剩余"
 		" \"+dur((e.size-e.off)/e.rate):\"\"),t&&(o.className=\"prog\"+(e.fail?\" bad\":\""
-		" ok\"),$(\".pwhat\",o).textContent=e.fail?\"扫描完成，存在无法读出的页\":\"扫描完成\"),s+=\"<tr><td>已扫描</td><td>\"+sz(e.of"
-		"f)+(e.size?\" / \"+sz(e.size):\"\")+\"（擦除块 \"+sz(e.blk||0)+\"）</td></tr>\",s+='<tr><td><span class=\"dot"
+		" ok\"),$(\".pwhat\",o).textContent=e.fail?\"扫描完成，存在无法读出的页\":\"扫描完成\"),i+=\"<tr><td>已扫描</td><td>\"+sz(e.of"
+		"f)+(e.size?\" / \"+sz(e.size):\"\")+\"（擦除块 \"+sz(e.blk||0)+\"）</td></tr>\",i+='<tr><td><span class=\"dot"
 		" s'+(e.bad?1:0)+'\"></span>坏块</td><td class=s'+(e.bad?1:0)+\">\"+(e.bad?e.bad+\""
-		" 个：\"+e.badl.map(hx).join(\"、\")+(e.bad>e.badl.length?\" …\":\"\"):\"无\")+\"</td></tr>\",s+='<tr><td><span"
+		" 个：\"+e.badl.map(hx).join(\"、\")+(e.bad>e.badl.length?\" …\":\"\"):\"无\")+\"</td></tr>\",i+='<tr><td><span"
 		" class=\"dot s'+(e.ecc?1:0)+'\"></span>ECC 纠错</td><td class=s'+(e.ecc?1:0)+\">\"+(e.ecc?e.ecc+\""
-		" 页在读取时被纠正。少量属正常；成片出现表明颗粒退化，应尽快备份\":\"无\")+\"</td></tr>\",s+='<tr><td><span class=\"dot"
+		" 页在读取时被纠正。少量属正常；成片出现表明颗粒退化，应尽快备份\":\"无\")+\"</td></tr>\",i+='<tr><td><span class=\"dot"
 		" s'+(e.fail?2:0)+'\"></span>读失败</td><td class=s'+(e.fail?2:0)+\">\"+(e.fail?e.fail+\""
 		" 页：\"+e.faill.map(hx).join(\"、\")+(e.fail>e.faill.length?\" …\":\"\")+\"。ECC"
-		" 无法纠正，这些位置的数据已丢失\":\"无\")+\"</td></tr>\",$(\"#scan\").innerHTML=s,$(\"#scanh\").textContent=t?e.fail?\"扫描完"
+		" 无法纠正，这些位置的数据已丢失\":\"无\")+\"</td></tr>\",$(\"#scan\").innerHTML=i,$(\"#scanh\").textContent=t?e.fail?\"扫描完"
 		"成，\"+e.fail+\" 页无法读出\":e.bad||e.ecc?\"扫描完成，见上表\":\"扫描完成，全片可读\":\"\"}function logset(e,t){var"
 		" o=$(\"#log\");return t?o.setAttribute(\"data-raw\",\"\"):o.removeAttribute(\"data-raw\"),o.textContent="
 		"e,o}function getlog(){var e=$(\"#logb\"),t=$(\"#log\");e.disabled=!0,t.hasAttribute(\"data-ph\")&&(t.r"
@@ -1279,51 +1333,57 @@ static const char resp_form[] =
 		"a\");a.href=n,a.download=e,document.body.appendChild(a),a.click(),document.body.removeChild(a),se"
 		"tTimeout(function(){URL.revokeObjectURL(n)},1e3)}catch(e){}}function"
 		" plan(){return[\"将固件载入内存并直接引导\",\"<b>不写入闪存</b>；引导失败断电即恢复原系统\"]}function ask(){var"
-		" e=pane(),t=files(e),o=[],n=[],a=\"\",i=$(\"#yes\");if(\"p5\"==e.id)return"
-		" applyaddr(),!1;if(\"p10\"==e.id||\"p11\"==e.id||\"p12\"==e.id)return!1;YES=null,i.textContent=\"仍要写入\";"
-		"var s=$(\"[name=tryboot]\",e);if(s&&s.checked&&(t.some(function(e){return\"firmware\"==e.k})?t.lengt"
+		" e=pane(),t=files(e),o=[],n=[],a=\"\",s=$(\"#yes\");if(\"p5\"==e.id)return"
+		" applyaddr(),!1;if(\"p10\"==e.id||\"p11\"==e.id||\"p12\"==e.id)return!1;YES=null,s.textContent=\"仍要写入\";"
+		"var i=$(\"[name=tryboot]\",e);if(i&&i.checked&&(t.some(function(e){return\"firmware\"==e.k})?t.lengt"
 		"h>1?n.push(\"试跑仅接收固件本身，其他文件不会被写入\"):(o.push(\"固件仅载入内存，不写入闪存；引导失败断电即恢复原系统\"),/recovery/i.test(t[0].f."
 		"name)||o.push(\"这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit"
-		" 卷里，试运行不写闪存也就用不到它，内核多半起不来\")):n.push(\"试跑需要选择一个恢复固件\"),i.textContent=\"启动它\"),$(\"#atitle\").textConten"
+		" 卷里，试运行不写闪存也就用不到它，内核多半起不来\")):n.push(\"试跑需要选择一个恢复固件\"),s.textContent=\"启动它\"),$(\"#atitle\").textConten"
 		"t=$(\"h1\",e).textContent,\"p4\"==e.id&&t.length){var"
-		" r=hex($(\"[name=stockoff]\",e).value),l=INFO&&INFO.flash;if(r<0)n.push(\"写入偏移不是有效的十六进制数\");else{l&&"
-		"r%l.erase&&n.push(\"写入偏移未按擦除块 \"+sz(l.erase)+\" 对齐\"),l&&r+t[0].f.size>l.size&&n.push(\"偏移加镜像长度超过"
-		" flash 容量 \"+sz(l.size)),o.push(\"自 flash 偏移 0x\"+(r<0?\"?\":r.toString(16))+\" 起写入"
-		" \"+sz(t[0].f.size)+(r?\"\":\"，覆盖 bootloader 及其后全部内容\")),o.push(\"写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启\""
-		");var d=$(\"[name=wipe]\",e),c=l?l.size-r-t[0].f.size:0;l&&c>0&&o.push(d&&d.checked?\"镜像之后剩余的"
-		" \"+sz(c)+\" 将被擦成空白\":\"镜像之后剩余的 \"+sz(c)+\" 保留原有内容不动\"),r||o.push(\"写入后本页面不再可用，重新迁移需经串口\")}}if(\"p3\"==e.id"
-		"){var f=$(\"[name=ubivol]\",e).value.trim(),h=t.some(function(e){return\"ubifile\"==e.k});h&&!f&&n.p"
-		"ush(\"选择了卷内容但未填写卷名\"),f&&!h&&n.push(\"填写了卷名但未选择卷内容\"),f&&!/^[A-Za-z0-9_.-]{1,63}$/.test(f)&&n.push(\""
-		"卷名仅限字母、数字与 _ - .\"),h&&f&&o.push(\"卷 \"+esc(f)+\" 不存在时按文件长度创建\")}if(\"p2\"==e.id){var"
-		" u=$(\"[name=format]\",e).checked,p=t.some(function(e){return\"fip\"==e.k}),b=t.some(function(e){ret"
-		"urn\"bl2\"==e.k});if(u&&!p&&n.push(\"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
-		" 设备将无法启动\"),u&&!b&&n.push(\"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot"
-		" 的话重启起不来，只能拆串口救\"),INFO&&INFO.ubi&&!INFO.ubi.fip&&!p&&n.push(\"闪存里没有 U-Boot（fip 卷），本次必须同时上传"
-		" U-Boot 文件\"),!INFO||INFO.ubi||u||n.push(\"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot"
-		" 与固件\"),u&&o.push(\"重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置\"),u)if(INFO&&INFO.ubi){var"
-		" m=bkmissing();m.length&&o.unshift(esc(m.join(\"、\"))+' 未备份 · <a href=\"#\" onclick=\"gobk();return"
+		" r=hex($(\"[name=stockoff]\",e).value),l=INFO&&INFO.flash,d=cecc()?stfv():\"\",c=t[0].f.size;if(\"oob"
+		"\"==d&&(c%rawlen(l.erase)&&n.push(\"带 OOB 的镜像长度应为 \"+sz(rawlen(l.erase))+\" 的整数倍（一个擦除块连"
+		" OOB）\"),c=flashlen(c),o.push(\"连 OOB 原样写入，只能写回备份它的这台机器\")),\"dd\"==d){var"
+		" f=sfbad(SF),h=sfsaved();f?n.push(esc(f)):(o.push(\"按这组参数重算校验码：\"+esc(sfdesc(SF))),h&&\"ok\"==h.st?s"
+		"fsame()?\"dd\"!=h.src&&o.push(\"没有用 dd 备份核对过，坏块标记的位置未确认\"):o.push(\"这组参数与「原厂格式」里的不同，只用于这次写入\"):o.push("
+		"\"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了\"))}if(r<0)n.push(\"写入偏移不是有效的十六进制数\");else{l&&r%l.erase&&n.push(\""
+		"写入偏移未按擦除块 \"+sz(l.erase)+\" 对齐\"),l&&r+c>l.size&&n.push(\"偏移加镜像长度超过 flash 容量"
+		" \"+sz(l.size)),o.push(\"自 flash 偏移 0x\"+(r<0?\"?\":r.toString(16))+\" 起写入 \"+sz(c)+(r?\"\":\"，覆盖"
+		" bootloader 及其后全部内容\")),o.push(\"写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启\");var"
+		" u=$(\"[name=wipe]\",e),p=l?l.size-r-c:0;l&&p>0&&o.push(u&&u.checked?\"镜像之后剩余的 \"+sz(p)+\""
+		" 将被擦成空白\":\"镜像之后剩余的 \"+sz(p)+\" 保留原有内容不动\"),r||o.push(\"写入后本页面不再可用，重新迁移需经串口\")}}if(\"p3\"==e.id){var"
+		" b=$(\"[name=ubivol]\",e).value.trim(),m=t.some(function(e){return\"ubifile\"==e.k});m&&!b&&n.push(\""
+		"选择了卷内容但未填写卷名\"),b&&!m&&n.push(\"填写了卷名但未选择卷内容\"),b&&!/^[A-Za-z0-9_.-]{1,63}$/.test(b)&&n.push(\"卷名仅限字"
+		"母、数字与 _ - .\"),m&&b&&o.push(\"卷 \"+esc(b)+\" 不存在时按文件长度创建\")}if(\"p2\"==e.id){var"
+		" v=$(\"[name=format]\",e).checked,g=t.some(function(e){return\"fip\"==e.k}),w=t.some(function(e){ret"
+		"urn\"bl2\"==e.k});if(v&&!g&&n.push(\"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
+		" 设备将无法启动\"),v&&!w&&n.push(\"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot"
+		" 的话重启起不来，只能拆串口救\"),INFO&&INFO.ubi&&!INFO.ubi.fip&&!g&&n.push(\"闪存里没有 U-Boot（fip 卷），本次必须同时上传"
+		" U-Boot 文件\"),!INFO||INFO.ubi||v||n.push(\"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot"
+		" 与固件\"),v&&o.push(\"重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置\"),v)if(INFO&&INFO.ubi){var"
+		" k=bkmissing();k.length&&o.unshift(esc(k.join(\"、\"))+' 未备份 · <a href=\"#\" onclick=\"gobk();return"
 		" false\">去备份</a>')}else bkall().all||o.unshift('原厂系统请先整片备份 · <a href=\"#\" onclick=\"gobk();return"
-		" false\">整片下载</a>');t.some(function(e){return\"bl2\"==e.k||\"fip\"==e.k})||o.push(\"未选择 BL2 或"
-		" U-Boot，本次只写入固件\")}var v=null,g=null,w=$(\"[name=format]\",e)&&$(\"[name=format]\",e).checked;(INFO&&"
-		"INFO.parts||[]).forEach(function(e){\"bl2\"==e.n&&(v=e)}),(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forE"
-		"ach(function(e){\"fip\"==e.n&&(g=e)});var I=g&&!w?g.s:1048576;t.forEach(function(e){\"bl2\"==e.k&&v&"
-		"&e.f.size>v.s-2048&&n.push(\"BL2 文件 \"+sz(e.f.size)+\"，超过 bl2 分区自 0x800 起可写的"
-		" \"+sz(v.s-2048)),\"fip\"==e.k&&I&&e.f.size>I&&n.push(\"U-Boot 文件 \"+sz(e.f.size)+\"，超过 fip 卷的"
-		" \"+sz(I))}),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||INFO.ubi||n.push(\"闪存里没有可挂载的"
+		" false\">整片下载</a>'),cecc()&&o.push(sfok()?\"原厂闪存格式已识别，重建 UBI 后自动保存\":\"原厂闪存格式未识别：以后用 dd"
+		" 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响\");t.some(function(e){return\"bl2\"==e.k||\"fip\"==e.k})||o.push(\"未选择"
+		" BL2 或 U-Boot，本次只写入固件\")}var I=null,y=null,B=$(\"[name=format]\",e)&&$(\"[name=format]\",e).checked;("
+		"INFO&&INFO.parts||[]).forEach(function(e){\"bl2\"==e.n&&(I=e)}),(INFO&&INFO.ubi&&INFO.ubi.vols||[]"
+		").forEach(function(e){\"fip\"==e.n&&(y=e)});var N=y&&!B?y.s:1048576;t.forEach(function(e){\"bl2\"==e"
+		".k&&I&&e.f.size>I.s-2048&&n.push(\"BL2 文件 \"+sz(e.f.size)+\"，超过 bl2 分区自 0x800 起可写的"
+		" \"+sz(I.s-2048)),\"fip\"==e.k&&N&&e.f.size>N&&n.push(\"U-Boot 文件 \"+sz(e.f.size)+\"，超过 fip 卷的"
+		" \"+sz(N))}),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||INFO.ubi||n.push(\"闪存里没有可挂载的"
 		" UBI，请先在「引导升级」里完成首次迁移\"),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||!INFO.ubi||INFO.ubi.fip||o.push(\"闪存里没有"
 		" U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot"
 		" 文件\"),(\"p1\"==e.id||\"p2\"==e.id&&t.some(function(e){return\"firmware\"==e.k}))&&o.push(\"rootfs_data"
-		" 将被清空\");var k=0;t.forEach(function(e){k+=e.f.size}),\"p4\"!=e.id&&INFO&&INFO.uploadmax&&k+4096>INF"
-		"O.uploadmax&&n.push(\"本次上传 \"+sz(k)+\"，超过设备单次可接收的 \"+sz(INFO.uploadmax)+\"：内存不足，设备将拒绝\");var"
-		" y=INFO&&INFO.model;return y&&t.some(function(e){return MDK[e.k]})&&(a+=\"<div"
-		" class=r><span>本机</span><span class=v>\"+esc(y)+\"</span></div>\"),t.forEach(function(e){var"
-		" t=fcheck(e.k,e.f.name,y);a+=\"<div class=r><span>\"+esc(e.l)+\"</span>\"+(t?'<span class=vc><span"
+		" 将被清空\");var T=0;t.forEach(function(e){T+=e.f.size}),\"p4\"!=e.id&&INFO&&INFO.uploadmax&&T+4096>INF"
+		"O.uploadmax&&n.push(\"本次上传 \"+sz(T)+\"，超过设备单次可接收的 \"+sz(INFO.uploadmax)+\"：内存不足，设备将拒绝\");var"
+		" C=INFO&&INFO.model;return C&&t.some(function(e){return MDK[e.k]})&&(a+=\"<div"
+		" class=r><span>本机</span><span class=v>\"+esc(C)+\"</span></div>\"),t.forEach(function(e){var"
+		" t=fcheck(e.k,e.f.name,C);a+=\"<div class=r><span>\"+esc(e.l)+\"</span>\"+(t?'<span class=vc><span"
 		" class=\"v'+(t.c?\" \"+t.c:\"\")+'\">':\"<span class=v>\")+esc(e.f.name)+\" ·"
 		" \"+sz(e.f.size)+\"</span>\"+(t?'<span class=\"md'+(t.c?\""
 		" \"+t.c:\"\")+'\">'+t.t+\"</span></span>\":\"\")+\"</div>\"}),t.length||(a=\"<div"
 		" class=r><span>未选择任何文件</span></div>\"),n.forEach(function(e){a+=\"<div"
 		" class=e>\"+e+\"</div>\"}),o.forEach(function(e){a+=\"<div"
-		" class=w>\"+e+\"</div>\"}),$(\"#abody\").innerHTML=a,i.hidden=!t.length||n.length>0,$(\"#mask\").setAtt"
+		" class=w>\"+e+\"</div>\"}),$(\"#abody\").innerHTML=a,s.hidden=!t.length||n.length>0,$(\"#mask\").setAtt"
 		"ribute(\"data-on\",\"\"),!1}var EXT={firmware:\".itb\",bl2:\".bin\",fip:\".fip\",stock:\".bin\"},MDK={firmwa"
 		"re:1,bl2:1,fip:1};function fmodel(e){var t=/an75\\d\\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|in"
 		"itramfs|preloader|bl31)/i.exec(e);return t?t[1].toUpperCase():\"\"}function mnorm(e){return"
@@ -1333,29 +1393,30 @@ static const char resp_form[] =
 		" 与本机一致\"}:{c:\"bad\",t:esc(n)+\" · 本机是 \"+esc(String(o).replace(/^\\S+\\s+/,\"\"))}:{c:\"\",t:esc(n)}:{c:\"b"
 		"ad\",t:\"文件名里没有机型\"}:null:null}function hide(){$(\"#mask\").removeAttribute(\"data-on\"),YES=null}funct"
 		"ion go(){var e=YES;hide(),e?e():send()}function send(){var e,t=pane(),o=files(t),n=new"
-		" FormData,a=new XMLHttpRequest,i=$(\".prog\",t),s=$(\".pbar\",i),r=$(\"button[type=submit]\",t),l=0;if"
+		" FormData,a=new XMLHttpRequest,s=$(\".prog\",t),i=$(\".pbar\",s),r=$(\"button[type=submit]\",t),l=0;if"
 		"($$(\"input[type=text]\",t).forEach(function(e){e.value.trim()&&n.append(e.name,e.value.trim())}),"
 		"$$(\"input[type=checkbox]\",t).forEach(function(e){e.checked&&n.append(e.name,\"1\")}),o.forEach(fun"
 		"ction(e){n.append(e.k,e.f,e.f.name),l+=e.f.size}),SENT={p:t,rows:o,btxt:r.textContent},WR={n:0,o"
 		"ff:0,k:0,txt:\"\",rows:[],ver:null,secs:0,left:0,rt:Date.now(),rn:0,rate:0,fin:0},clearInterval(WR"
 		"T),WRT=setInterval(wrclock,1e3),RT=Date.now(),RN=0,RATE=0,HBOFF=1,busy(1),r.disabled=!0,r.textCo"
-		"ntent=\"p4\"==t.id?\"写入中…\":\"上传中…\",i.hidden=!1,i.className=\"prog\",s.className=\"pbar\",s.style.width=\""
+		"ntent=\"p4\"==t.id?\"写入中…\":\"上传中…\",s.hidden=!1,s.className=\"prog\",i.className=\"pbar\",i.style.width=\""
 		"0\",a.upload.onprogress=function(n){if(n.lengthComputable){var"
 		" a=Math.min(n.loaded,l),r=0,d=o[0],c=0;for(e=0;e<o.length&&(d=o[e],c=e,!(a<r+o[e].f.size||e==o.l"
-		"ength-1));e++)r+=o[e].f.size;s.style.width=a/l*100+\"%\",$(\".pwhat\",i).textContent=(\"p4\"==t.id?\"正在"
+		"ength-1));e++)r+=o[e].f.size;i.style.width=a/l*100+\"%\",$(\".pwhat\",s).textContent=(\"p4\"==t.id?\"正在"
 		"写入 \":\"正在上传 \")+d.l+(o.length>1?\"（\"+(c+1)+\"/\"+o.length+\"）\":\"\")+\" · \"+sz(Math.min(a-r,d.f.size))+\""
-		" / \"+sz(d.f.size);var f=Date.now(),h=(f-RT)/1e3;h>=1.5&&(RATE=(a-RN)/h,RT=f,RN=a),$(\".pct\",i).te"
+		" / \"+sz(d.f.size);var f=Date.now(),h=(f-RT)/1e3;h>=1.5&&(RATE=(a-RN)/h,RT=f,RN=a),$(\".pct\",s).te"
 		"xtContent=sz(a)+\" / \"+sz(l)+\" · \"+(a/l*100).toFixed(0)+\"%\"+(RATE>0?\" · \"+spd(RATE)+\" · 剩余"
-		" \"+dur((l-a)/RATE):\"\")}},a.upload.onload=function(){s.className=\"pbar ind\";var"
-		" e=$(\"[name=wipe]\",t),o=$(\"[name=tryboot]\",t),n=!(!o||!o.checked);$(\".pwhat\",i).textContent=\"p4\""
+		" \"+dur((l-a)/RATE):\"\")}},a.upload.onload=function(){i.className=\"pbar ind\";var"
+		" e=$(\"[name=wipe]\",t),o=$(\"[name=tryboot]\",t),n=!(!o||!o.checked);$(\".pwhat\",s).textContent=\"p4\""
 		"==t.id?e&&e.checked?\"传输完成，设备正在写入最后一块并擦净尾部…\":\"传输完成，设备正在写入最后一块…\":n?\"已载入内存，即将启动\":\"上传完成，设备开始写入闪存\",$("
-		"\".pct\",i).textContent=\"p4\"==t.id||n?\"\":\"预计 \"+dur(Math.max(8,l/WRSPD))},a.onload=function(){var"
+		"\".pct\",s).textContent=\"p4\"==t.id||n?\"\":\"预计 \"+dur(Math.max(8,l/WRSPD))},a.onload=function(){var"
 		" e=a.responseText||\"\";200==a.status&&(\"p4\"==t.id?/^ok"
 		" /.test(e):'{\"ok\":1}'==e.trim())?done(e):200!=a.status?fail((a.status>=500?\"设备写入失败（\":\"设备拒绝了上传（\")"
 		"+a.status+\"）：\"+a.responseText,a.status):fail(\"设备正忙：另一个上传还没结束，请稍后重试\",409)},a.onerror=function(){f"
 		"ail(\"连接中断，请检查网线后重试\",0)},\"p4\"==t.id&&o.length){var"
 		" d=hex($(\"[name=stockoff]\",t).value),c=$(\"[name=wipe]\",t);return"
-		" a.open(\"POST\",\"/stock?off=0x\"+(d<0?0:d).toString(16)+(c&&c.checked?\"&wipe=1\":\"\")),void"
+		" a.open(\"POST\",\"/stock?off=0x\"+(d<0?0:d).toString(16)+(c&&c.checked?\"&wipe=1\":\"\")+(cecc()?\"&fmt="
+		"\"+stfv()+(\"dd\"==stfv()?\"&p=\"+sfp(SF):\"\"):\"\")),void"
 		" a.send(o[0].f)}a.open(\"POST\",\"/\"),a.send(n)}function fail(e,t){var"
 		" o=SENT.p,n=$(\".prog\",o),a=$(\"button[type=submit]\",o);clearInterval(WRT),WRT=null,clearTimeout(W"
 		"RP),WRP=null,WR&&(WR.fin=1),HBOFF=0,busy(0),n.className=\"prog"
@@ -1372,13 +1433,13 @@ static const char resp_form[] =
 		"in&&(++WR.k>1200?fail(\"未收到设备回报，请查看「诊断」中的串口日志\",500):WRP=setTimeout(wrpoll,700))}})}function"
 		" wrline(e){var t,o;if(WR&&!WR.fin)for(;(t=e.indexOf(\"\\n\",WR.n))>=0;)o=e.slice(WR.n,t).replace(/\\"
 		"r$/,\"\"),WR.n=t+1,o&&wrstep(o)}function wrstep(e){var"
-		" t,o,n,a,i,s=$(\".prog\",SENT.p),r=$(\".pbar\",s),l=e.charAt(0),d=e.slice(2).split(\""
+		" t,o,n,a,s,i=$(\".prog\",SENT.p),r=$(\".pbar\",i),l=e.charAt(0),d=e.slice(2).split(\""
 		" \");if(\"s\"==l)return t=+d[d.length-1],WR.left=0,t>0&&(d.pop(),WR.left=Math.max(2,Math.round(t/WR"
 		"SPD))),\"回读校验\"==d[0]&&(WR.vf=d.slice(1).join(\" \")),r.className=\"pbar"
-		" ind\",r.style.width=\"100%\",$(\".pwhat\",s).textContent=d.join(\""
-		" \")+\"…\",void($(\".pct\",s).textContent=WR.left?\"预计 \"+dur(WR.left):\"\");if(\"v\"==l)return"
-		" o=+d[0],n=+d[1],i=((a=Date.now())-WR.rt)/1e3,WR.left=0,r.className=\"pbar\",r.style.width=(n?o/n*"
-		"100:0)+\"%\",i>=1.5&&(WR.rate=(o-WR.rn)/i,WR.rt=a,WR.rn=o),void($(\".pct\",s).textContent=sz(o)+\" /"
+		" ind\",r.style.width=\"100%\",$(\".pwhat\",i).textContent=d.join(\""
+		" \")+\"…\",void($(\".pct\",i).textContent=WR.left?\"预计 \"+dur(WR.left):\"\");if(\"v\"==l)return"
+		" o=+d[0],n=+d[1],s=((a=Date.now())-WR.rt)/1e3,WR.left=0,r.className=\"pbar\",r.style.width=(n?o/n*"
+		"100:0)+\"%\",s>=1.5&&(WR.rate=(o-WR.rn)/s,WR.rt=a,WR.rn=o),void($(\".pct\",i).textContent=sz(o)+\" /"
 		" \"+sz(n)+\" · \"+(n?(o/n*100).toFixed(0):0)+\"%\"+(WR.rate>0?\" · \"+spd(WR.rate)+\" · 剩余"
 		" \"+dur((n-o)/WR.rate):\"\"));if(\"r\"!=l){if(\"c\"==l)return\"ok\"==d[0]?void(WR.ver=\"通过\"):(STUCK&&!STUC"
 		"KN||(STUCK||(STUCKN=[]),(WR.vf?[WR.vf]:WR.rows.map(function(e){return"
@@ -1846,9 +1907,14 @@ static const char resp_form[] =
 		" \":\"Skipped \",\" 块）\":\" block(s))\",\"写入 \":\"Writing \",\" 的卷\":\" among the volumes\",\"，页 \":\", page"
 		" \",\"平均 \":\"average \",\"卷内 \":\"The volume holds \",\" 一致\":\"\",\"，与 \":\", differs from \",\" 的 \":\"'s \",\"擦除"
 		" \":\"Erasing \",\" 字节\":\" bytes\",\" 卷\":\" volume\",\" 项\":\" entries\",\"卷 \":\"Volume \",\" 块\":\" block(s)\",\"页"
-		" \":\"page \",\"自 \":\"From \",\"）：\":\"): \",\"；\":\"; \",\"、\":\", \",\"（\":\" (\",\"）\":\")\",\"，\":\","
-		" \"},LANG=\"zh\",I18RE=null,I18R=null,I18ON=0,I18A=[\"title\",\"aria-label\",\"placeholder\",\"data-l\"],CJ"
-		"K=/[\\u4e00-\\u9fff]/;function i18re(){var e,t=[];for(e in"
+		" \":\"page \",\"自 \":\"From \",\"）：\":\"): \",\"；\":\"; \",\"、\":\", \",\"（\":\" (\",\"）\":\")\",\"，\":\", \",\"这颗闪存自己做"
+		" ECC，整片备份不带 OOB\":\"This flash does its own ECC; its whole-chip backup carries no"
+		" OOB\",\"偏移与长度须按页对齐\":\"Offset and length must be page-aligned\",\"这颗闪存自己做 ECC，不用选镜像格式\":\"This flash"
+		" does its own ECC; no image format applies\",\"原厂闪存格式缺失或与这颗闪存不符\":\"The stock flash format is"
+		" missing or does not fit this chip\",\"内存不足\":\"Out of memory\",\"带 OOB 的镜像 \":\"The image with OOB is"
+		" \",\"，不是整数个 \":\", not a whole number of \",\" 字节的页\":\"-byte"
+		" pages\"},LANG=\"zh\",I18RE=null,I18R=null,I18ON=0,I18A=[\"title\",\"aria-label\",\"placeholder\",\"data-l"
+		"\"],CJK=/[\\u4e00-\\u9fff]/;function i18re(){var e,t=[];for(e in"
 		" I18P)t.push(e);t.sort(function(e,t){return t.length-e.length}),I18RE=t.length?new"
 		" RegExp(t.map(function(e){return e.replace(/[.*+?^${}()|[\\]\\\\]/g,\"\\\\$&\")}).join(\"|\"),\"g\"):null}f"
 		"unction T(e){return\"en\"==LANG?i18s(e):e}function i18s(e){var t=I18N[e];return void"
@@ -1877,6 +1943,191 @@ static const char resp_form[] =
 		"(document.body))}}try{\"en\"==(localStorage.getItem(\"xglang\")||(/^zh/i.test(navigator.language||\"\""
 		")?\"zh\":\"en\"))&&setlang(\"en\")}catch(e){}bind(),info(),hbstart();\n"
 	"</script>\n"
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	"<script data-pn>\n"
+	"var I18N_PN={\"原厂格式\":\"Stock format\",\"这台连 OOB 一起原样读出\":\"This board reads raw, OOB included\",\"，每页"
+		" \":\": each page is \",\" 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；\":\" bytes, with no ECC check."
+		" The check bytes the stock firmware wrote stay in the file, so the stock firmware reads it"
+		" after a raw write-back; \",\"只能写回本机\":\"it only goes back to this unit\",\"。偏移与长度按 flash"
+		" 计，须按页对齐。\":\". Offset and length count flash bytes and must be page-aligned.\",\"原厂系统里 \":\"An image"
+		" \",\"用 dd 备份核对\":\"Verify against a dd backup\",\"可选。确认坏块标记的位置，并找出原厂挪动过的块\":\"Optional. Confirms where"
+		" the bad-block marker sits and finds blocks the stock firmware moved\",\"dd 备份\":\"dd"
+		" backup\",\"核对\":\"Verify\",\"镜像格式\":\"Image format\",\"选择文件后按大小自动判断\":\"Picked from the file size once a"
+		" file is chosen\",\"状态\":\"State\",\"格式\":\"Format\",\"依据\":\"Basis\",\"保存\":\"Save\",\"已识别\":\"Detected\",\"未识别：闪存已不是"
+		"原厂内容\":\"Not detected: flash no longer holds the stock content\",\"本机型的已知格式\":\"The known format for"
+		" this model\",\"内置于本 U-Boot\":\"Built into this U-Boot\",\"已存入环境变量\":\"Stored in the environment\",\"重建"
+		" UBI 后自动保存\":\"Saved automatically once UBI is rebuilt\",\"连 OOB 原样写回\":\"Written back raw, OOB"
+		" included\",\"，只能写回备份它的这台机器。\":\"; it only goes back to the unit it was backed up from.\",\"没有用 dd"
+		" 备份核对过，坏块标记的位置未确认。\":\"Not verified against a dd backup, so the bad-block marker position is"
+		" unconfirmed.\",\"原厂闪存格式未识别\":\"The stock flash format is not known\",\"先选择 dd 备份\":\"Choose a dd"
+		" backup first\",\"正在读取样本页…\":\"Reading sample pages…\",\"设备没有给出样本页\":\"The device gave no sample"
+		" pages\",\"文件太小，没有覆盖到任何一页样本\":\"The file is too short to cover any sample page\",\"读取文件失败\":\"Could not"
+		" read the file\",\"正在比对…\":\"Comparing…\",\"设备没有给出比对结果\":\"The device gave no result\",\"连 OOB"
+		" 原样写入，只能写回备份它的这台机器\":\"Written raw, OOB included; it only goes back to the unit it was backed up"
+		" from\",\"原厂闪存格式已识别，重建 UBI 后自动保存\":\"The stock flash format is detected and will be saved once UBI"
+		" is rebuilt\",\" 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。\":\"'d from the stock system has no OOB, so its"
+		" check bytes have to be recomputed in the stock flash format on the way back."
+		" \",\"自动识别只能在首次迁移前做\":\"Detection only works before the first"
+		" migration\",\"，那时闪存还是原厂内容；参数也可以手动填写。\":\", while flash still holds the stock content. The"
+		" parameters can also be filled in by hand.\",\"参数\":\"Parameters\",\"自动识别的结果填在这里，也可以手动改\":\"Detection"
+		" fills these in; they can also be changed by hand\",\"自动识别\":\"Detect\",\"用这组参数试读\":\"Test-read with"
+		" these\",\"存放\":\"Stored\",\"带 OOB\":\"With OOB\",\"由「备份下载 → 整片下载」导出的文件\":\"A file from Backup → Download"
+		" whole chip\",\"不带 OOB\":\"Without OOB\",\"原厂系统里 dd 出来的文件\":\"A file dd'd from the stock"
+		" system\",\"重算校验码的参数\":\"Parameters for the check bytes\",\"默认取「备份下载 → 原厂格式」里的\":\"Taken from Backup →"
+		" Stock format unless changed\",\"ECC 强度\":\"ECC strength\",\"每 512 字节能纠正的位数\":\"Bits it can correct per"
+		" 512 bytes\",\"每扇区 spare\":\"Spare per sector\",\"跟在每 512 字节后面的字节数\":\"Bytes that follow each 512 bytes"
+		" of data\",\"数据取反\":\"Data inversion\",\"校验前是否先把数据按位取反\":\"Whether the data is bit-inverted before the"
+		" check bytes are computed\",\"关\":\"Off\",\"开\":\"On\",\"FDM 字节数\":\"FDM bytes\",\"spare 里存放用户数据的字节数\":\"Bytes"
+		" of the spare that hold user data\",\"参与校验的 FDM\":\"FDM covered by ECC\",\"FDM 里被校验码覆盖的字节数\":\"FDM"
+		" bytes the check bytes cover\",\"坏块标记交换\":\"Bad-block marker swap\",\"页内一个数据字节与 OOB 第一个字节对调\":\"One"
+		" data byte in the page trades places with the first OOB byte\",\"已手动设置\":\"Set by"
+		" hand\",\"未识别：所有参数都读不通，原厂可能没用 SoC 的 ECC。可以手动填写，或改用带 OOB 的整片备份\":\"Not detected: no parameters read"
+		" the stock pages, so the stock firmware may not use the SoC's ECC. Fill them in by hand, or use"
+		" a whole-chip backup with OOB\",\"未识别：闪存已不是原厂内容，可以手动填写\":\"Not detected: flash no longer holds the"
+		" stock content. The parameters can be filled in by hand\",\"手动填写\":\"Filled in by hand\",\"已存入环境变量"
+		" web_uboot_stock_nand\":\"Stored in the environment as"
+		" web_uboot_stock_nand\",\"正在自动识别…\":\"Detecting…\",\"设备没有给出识别结果\":\"The device gave no detection"
+		" result\",\"识别完成，参数已填入\":\"Detected; the parameters are filled in\",\"所有参数都读不通原厂写的页\":\"No parameters"
+		" read the pages the stock firmware wrote\",\"闪存已不是原厂内容，无法自动识别\":\"Flash no longer holds the stock"
+		" content, so nothing can be detected\",\"正在试读…\":\"Test-reading…\",\"设备没有给出试读结果\":\"The device gave no"
+		" test-read result\",\"已记下，重建 UBI 后自动保存\":\"Noted; saved automatically once UBI is"
+		" rebuilt\",\"参数不成立，先改好上面的参数\":\"The parameters do not add up. Fix them above first\",\"参与校验的 FDM"
+		" 字节数不能多于 FDM 字节数\":\"FDM covered by ECC cannot exceed the FDM bytes\",\"按上面这组参数重算校验码后写入。\":\"The"
+		" check bytes are recomputed with the parameters above before writing."
+		" \",\"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。\":\"The stock format was never detected and these"
+		" parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is"
+		" written.\",\"这组参数与「原厂格式」里的不同，只用于这次写入。\":\"These differ from the ones under Stock format and are"
+		" used for this write only.\",\"已用 dd 备份核对过。\":\"Verified against a dd"
+		" backup.\",\"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了\":\"The stock format was never detected and these"
+		" parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is"
+		" written\",\"这组参数与「原厂格式」里的不同，只用于这次写入\":\"These differ from the ones under Stock format and are used"
+		" for this write only\",\"没有用 dd 备份核对过，坏块标记的位置未确认\":\"Not verified against a dd backup, so the"
+		" bad-block marker position is unconfirmed\",\"全部对不上：这不是本机的 dd 备份，或者这组参数不对\":\"Nothing matches: this"
+		" is not a dd backup of this unit, or the parameters are wrong\",\"原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带"
+		" OOB 的整片备份不受影响\":\"The stock flash format is not known: restoring stock from a dd backup will"
+		" need the parameters filled in by hand. A whole-chip backup with OOB is not"
+		" affected\",\"已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。\":\"On a migrated board, Save"
+		" writes to the U-Boot environment right away. Before the first migration it is only kept in RAM"
+		" and written once UBI is rebuilt.\"},I18P_PN={\" · 数据取反关\":\" · data inversion off\",\" · 数据取反开\":\" ·"
+		" data inversion on\",\" 字节，其中 \":\" bytes, \",\" 字节参与校验\":\" of them covered by ECC\",\" · 坏块标记交换关\":\" ·"
+		" bad-block marker swap off\",\" · 坏块标记交换开\":\" · bad-block marker swap on\",\"与 dd 备份比对 \":\"Matches"
+		" the dd backup on \",\" 页一致\":\" pages\",\"抽样 \":\"All \",\" 页全部读通\":\" sampled pages read\",\"正在计算"
+		" \":\"Computing crc32 of \",\" 页的 crc32…\":\" pages…\",\"一致，可以用这份 dd 备份刷回原厂\":\"Matches: this dd backup"
+		" can restore stock\",\"（文件比闪存小，只核对了它覆盖的部分）\":\" (the file is shorter than flash; only the part it"
+		" covers was checked)\",\" 个块对不上：\":\" blocks do not match: \",\"。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对\":\"."
+		" The stock firmware moved them elsewhere (bad-block remapping), so after a write-back they sit"
+		" in the wrong place\",\"偏移与长度须按页 \":\"Offset and length must be aligned to the page, \",\"（连 OOB）\":\""
+		" (with OOB)\",\"带 OOB 的镜像长度应为 \":\"An image with OOB must be a multiple of \",\" 的整数倍（一个擦除块连 OOB）\":\""
+		" (one erase block with its OOB)\",\" 组参数都能读通原厂写的页，需用 dd 备份核对区分\":\" sets of parameters read the"
+		" stock pages; verify against a dd backup to tell them apart\",\"（纠正了 \":\" (\",\" 个位翻转）\":\" bit flips"
+		" corrected)\",\" 页读通：参数多半不对\":\" pages read: the parameters are most likely wrong\",\" 页全部读不通\":\""
+		" pages: none read\",\"：闪存已不是原厂内容，试读说明不了什么\":\". Flash no longer holds the stock content, so a test"
+		" read proves nothing\",\" 字节超过每个扇区能分到的 OOB \":\" bytes is more than the OOB each sector gets, \",\""
+		" 的校验码 \":\" check bytes of \",\" 字节加上 FDM \":\" bytes plus FDM of \",\" 字节，超过 spare \":\" bytes exceed"
+		" the spare of \",\"按这组参数重算校验码：\":\"Check bytes recomputed with these parameters: \"};function"
+		" cecc(){var e=INFO&&INFO.flash;return!!(e&&e.cecc&&e.oob)}function rawlen(e){var"
+		" t=INFO.flash;return e/t.page*(t.page+t.oob)}function flashlen(e){var t=INFO.flash;return"
+		" e/(t.page+t.oob)*t.page}function oobmode(){var e=cecc(),t=INFO&&INFO.flash;$$(\"[data-oob]\").for"
+		"Each(function(t){t.hidden=\"1\"==t.getAttribute(\"data-oob\")!=e}),$(\"#sftab\").hidden=!e,e&&$$(\".oob"
+		"pg\").forEach(function(e){e.textContent=t.page+\" +"
+		" \"+t.oob}),!e&&$(\"#s103\").hasAttribute(\"data-on\")&&seg($(\"[data-s=s101]\")),e&&(sfinit(),sffill()"
+		",sfform()),stfmtnote()}!function(){var e;for(e in I18N_PN)I18N[e]=I18N_PN[e];for(e in"
+		" I18P_PN)I18P[e]=I18P_PN[e];I18RE&&i18re(),I18R&&i18rev(),I18ON&&(i18off(document.body),i18on(do"
+		"cument.body))}();var SF=null,SFSEEN=\"\",SFDEF={ecc:8,spare:28,inv:1,fdm:8,fecc:8,swap:0};function"
+		" sfkey(e){return[e.ecc,e.spare,e.inv,e.fdm,e.fecc,null==e.swap?\"\":e.swap].join(\".\")}function"
+		" sfinit(){var e,t,s=INFO&&INFO.sfmt;if(s&&s.ecc&&(e=sfkey(s))!=SFSEEN)for(t in"
+		" SFSEEN=e,SF={},SFDEF)SF[t]=null==s[t]?SFDEF[t]:s[t];if(!SF)for(t in"
+		" SF={},SFDEF)SF[t]=SFDEF[t]}function sfsaved(){var e=INFO&&INFO.sfmt;return"
+		" e&&e.ecc?e:null}function sfsame(){var e,t=sfsaved();if(!t)return!1;for(e in"
+		" SFDEF)if((\"swap\"!=e||null!=t.swap)&&t[e]!=SF[e])return!1;return!0}function sfok(){var"
+		" e=INFO&&INFO.sfmt;return!(!e||\"ok\"!=e.st)}function sfdesc(e){return\"ECC\"+e.ecc+\" · spare"
+		" \"+e.spare+\" · 数据取反\"+(e.inv?\"开\":\"关\")+\" · FDM \"+e.fdm+\" 字节，其中 \"+e.fecc+\""
+		" 字节参与校验\"+(null==e.swap?\"\":\" · 坏块标记交换\"+(e.swap?\"开\":\"关\"))}function sfbad(e){var"
+		" t=INFO.flash,s=t.oob/(t.page/512),a=Math.ceil(13*e.ecc/8);return e.spare>s?\"spare \"+e.spare+\""
+		" 字节超过每个扇区能分到的 OOB \"+s+\" 字节\":e.fecc>e.fdm?\"参与校验的 FDM 字节数不能多于 FDM"
+		" 字节数\":e.fdm+a>e.spare?\"ECC\"+e.ecc+\" 的校验码 \"+a+\" 字节加上 FDM \"+e.fdm+\" 字节，超过 spare \"+e.spare+\""
+		" 字节\":\"\"}function sfopt(e,t,s){return t.map(function(e){return'<option"
+		" value=\"'+e[0]+'\"'+(e[0]==s?\" selected\":\"\")+\">\"+e[1]+\"</option>\"}).join(\"\")}function"
+		" sfrange(e,t,s,a){var n,o=[];for(n=e;n<=t;n+=s)o.push([n,a?n+a:String(n)]);return o}function"
+		" sfform(){[\"sfp1\",\"sfp2\"].forEach(function(e){var t=$(\"#\"+e),s=\"\";t&&([[\"ecc\",\"ECC 强度\",\"每 512"
+		" 字节能纠正的位数\",sfrange(4,16,2).map(function(e){return[e[0],\"ECC\"+e[0]]})],[\"spare\",\"每扇区 spare\",\"跟在每"
+		" 512 字节后面的字节数\",[[16,\"16 字节\"],[26,\"26 字节\"],[27,\"27 字节\"],[28,\"28"
+		" 字节\"]]],[\"inv\",\"数据取反\",\"校验前是否先把数据按位取反\",[[0,\"关\"],[1,\"开\"]]],[\"fdm\",\"FDM 字节数\",\"spare"
+		" 里存放用户数据的字节数\",sfrange(0,8,1,\" 字节\")],[\"fecc\",\"参与校验的 FDM\",\"FDM 里被校验码覆盖的字节数\",sfrange(0,8,1,\""
+		" 字节\")],[\"swap\",\"坏块标记交换\",\"页内一个数据字节与 OOB 第一个字节对调\",[[0,\"关\"],[1,\"开\"]]]].forEach(function(e){s+=\"<div"
+		" class=fr><span class=fl>\"+e[1]+\"<small>\"+e[2]+'</small></span><span class=fc><select"
+		" data-k=\"'+e[0]+'\" onchange=\"sfset(this)\">'+sfopt(0,e[3],SF[e[0]])+\"</select></span></div>\"}),t."
+		"innerHTML=s)}),sfcheckv()}function sfset(e){var t=e.getAttribute(\"data-k\");SF[t]=+e.value,$$(\"se"
+		"lect[data-k=\"+t+\"]\").forEach(function(t){t.value=e.value}),sfcheckv(),stfmtnote()}function"
+		" sfcheckv(){var e=sfbad(SF),t=$(\"#sfv1\");t.hidden=!e,t.className=\"note"
+		" bad\",t.innerHTML=e?\"<b>\"+esc(e)+\"</b>\":\"\",$(\"#sft\").disabled=!!e,$(\"#sfs\").disabled=!!e||sfsame"
+		"()&&!!sfsaved().saved}function sfst(e,t,s){var a=$(e);a.className=\"st wrap\"+(t?\""
+		" \"+t:\"\"),a.textContent=s}function sffill(){var e,t,s=$(\"#sfmt\"),a=INFO&&INFO.sfmt,n=\"\";s&&cecc()"
+		"&&(a||(a={st:\"na\"}),e=\"ok\"==a.st?0:\"none\"==a.st?2:1,t=\"ok\"==a.st?\"manual\"==a.src?\"已手动设置\":\"已识别\":\""
+		"amb\"==a.st?(0|a.k)+\" 组参数都能读通原厂写的页，需用 dd 备份核对区分\":\"none\"==a.st?\"未识别：所有参数都读不通，原厂可能没用 SoC 的"
+		" ECC。可以手动填写，或改用带 OOB 的整片备份\":\"未识别：闪存已不是原厂内容，可以手动填写\",n+=\"<tr><td>状态</td><td class=s\"+e+'><span"
+		" class=\"dot s'+e+'\"></span>'+esc(t)+\"</td></tr>\",a.ecc&&(n+=\"<tr><td>参数</td><td"
+		" class=mono>\"+esc(sfdesc(a))+\"</td></tr><tr><td>依据</td><td>\"+esc(\"board\"==a.src?\"本机型的已知格式\":\"dd\"="
+		"=a.src?\"与 dd 备份比对 \"+a.n+\" 页一致\":\"manual\"==a.src?\"手动填写\":\"抽样 \"+a.n+\""
+		" 页全部读通\")+\"</td></tr><tr><td>存放</td><td\"+(a.saved||\"board\"==a.src?\"\":\""
+		" class=s1\")+\">\"+esc(\"board\"==a.src?\"内置于本 U-Boot\":a.saved?\"已存入环境变量"
+		" web_uboot_stock_nand\":INFO.ubi?\"未保存\":\"重建 UBI 后自动保存\")+\"</td></tr>\"),s.innerHTML=n)}function"
+		" sfgo(){return nav($(\".nav[data-p=p10]\")),seg($(\"[data-s=s103]\")),!1}function"
+		" sfp(e){return[e.ecc,e.spare,e.inv,e.fdm,e.fecc,e.swap].join(\",\")}function"
+		" sftake(e){e&&(INFO.sfmt=e,SFSEEN=\"\",SF=null,sfinit(),sffill(),sfform(),stfmtnote())}function"
+		" sfauto(){var e=$(\"#sfa\");e.disabled=!0,sfst(\"#sfh\",\"\",\"正在自动识别…\"),get(\"/sfmt?probe=1\",function(t"
+		",s){var a=null;e.disabled=!1;try{a=JSON.parse(s)}catch(e){}a&&a.st?\"ok\"==a.st?(sftake(a.sfmt),sf"
+		"st(\"#sfh\",\"ok\",\"识别完成，参数已填入\")):\"amb\"==a.st?sfst(\"#sfh\",\"warn\",(0|a.k)+\" 组参数都能读通原厂写的页，需用 dd"
+		" 备份核对区分\"):\"none\"==a.st?sfst(\"#sfh\",\"bad\",\"所有参数都读不通原厂写的页\"):sfst(\"#sfh\",\"warn\",\"闪存已不是原厂内容，无法自动识别\")"
+		":sfst(\"#sfh\",\"bad\",\"设备没有给出识别结果\")})}function sftry(){var"
+		" e=$(\"#sft\");e.disabled=!0,sfst(\"#sfh\",\"\",\"正在试读…\"),get(\"/sfmt?try=\"+sfp(SF),function(t,s){var"
+		" a=null;e.disabled=!1;try{a=JSON.parse(s)}catch(e){}a&&a.n?a.ok==a.n?sfst(\"#sfh\",\"ok\",a.n+\""
+		" 页全部读通\"+(a.fix?\"（纠正了 \"+a.fix+\" 个位翻转）\":\"\")):a.ok?sfst(\"#sfh\",\"warn\",a.ok+\" / \"+a.n+\""
+		" 页读通：参数多半不对\"):sfst(\"#sfh\",\"bad\",a.n+\" 页全部读不通\"+(INFO.sfmt&&\"na\"==INFO.sfmt.st?\"：闪存已不是原厂内容，试读说明不了什"
+		"么\":\"\")):sfst(\"#sfh\",\"bad\",\"设备没有给出试读结果\")})}function sfsave(){var"
+		" e=$(\"#sfs\");e.disabled=!0,get(\"/sfmt?save=\"+sfp(SF),function(t,s){var"
+		" a=null;try{a=JSON.parse(s)}catch(e){}if(!a||!a.sfmt)return e.disabled=!1,void"
+		" sfst(\"#sfh\",\"bad\",\"设备没有接受：\"+((s||\"\").trim()||t));sftake(a.sfmt),sfst(\"#sfh\",a.sfmt.saved?\"ok\":\""
+		"warn\",a.sfmt.saved?\"已存入环境变量\":\"已记下，重建 UBI 后自动保存\")})}function stfv(){var"
+		" e=$(\"[name=stfmt]:checked\");return e?e.value:\"oob\"}function stfmtset(e){var"
+		" t=$(\"[name=stfmt]:checked\");e&&t&&(t.dataset.t=1),stfmtnote()}function stfmtnote(){var"
+		" e,t=$(\"#stfn\"),s=$(\"#stpw\"),a=sfsaved();if(t&&s&&cecc()){if(e=\"dd\"==stfv(),s.hidden=!e,!e)retur"
+		"n t.className=\"note ok\",void(t.innerHTML=\"<b>连 OOB 原样写回</b>，只能写回备份它的这台机器。\");var"
+		" n=sfbad(SF);if(n)return t.className=\"note bad\",void(t.innerHTML=\"<b>\"+esc(n)+\"</b>\");t.classNam"
+		"e=\"note\"+(a&&\"ok\"==a.st&&sfsame()&&\"dd\"==a.src?\""
+		" ok\":\"\"),t.innerHTML=\"<b>按上面这组参数重算校验码后写入。</b>\"+(a&&\"ok\"==a.st?sfsame()?\"dd\"!=a.src?\"没有用 dd"
+		" 备份核对过，坏块标记的位置未确认。\":\"已用 dd 备份核对过。\":\"这组参数与「原厂格式」里的不同，只用于这次写入。\":\"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。"
+		"\")}}function stguess(e){var t,s,a=INFO&&INFO.flash,n=\"\";cecc()&&((s=$(\"[name=stfmt]:checked\"))&&"
+		"s.dataset.t||(t=rawlen(a.erase),e.size==rawlen(a.size)?n=\"oob\":e.size==a.size?n=\"dd\":e.size%t==0"
+		"&&e.size%a.erase?n=\"oob\":e.size%a.erase==0&&e.size%t&&(n=\"dd\"),n&&$$(\"[name=stfmt]\").forEach(fun"
+		"ction(e){e.checked=e.value==n}),stfmtnote()))}var CRCT=null;function crc32(e){var"
+		" t,s,a,n=CRCT;if(!n)for(n=CRCT=[],s=0;s<256;s++){for(t=s,a=0;a<8;a++)t=1&t?3988292384^t>>>1:t>>>"
+		"1;n[s]=t>>>0}for(t=-1,s=0;s<e.length;s++)t=n[255&(t^e[s])]^t>>>8;return(-1^t)>>>0}function"
+		" sfcheck(){var e=$(\"#sfdd\"),t=e&&e.files&&e.files[0],s=$(\"#sfb\"),a=INFO&&INFO.flash;t?sfbad(SF)?"
+		"sfst(\"#sfdh\",\"bad\",\"参数不成立，先改好上面的参数\"):(s.disabled=!0,sfst(\"#sfdh\",\"\",\"正在读取样本页…\"),get(\"/sfmt\",func"
+		"tion(e,n){var o,r=null,f=[],i=0;try{r=JSON.parse(n)}catch(e){}return"
+		" r&&r.pages?(o=r.pages.filter(function(e){return"
+		" e+a.page<=t.size})).length?(sfst(\"#sfdh\",\"\",\"正在计算 \"+o.length+\" 页的 crc32…\"),void function"
+		" e(){if(i>=o.length)sfsend(f,o.length<r.pages.length);else{var n=new"
+		" FileReader,d=o[i];n.onload=function(){f.push(d.toString(16)+\":\"+crc32(new"
+		" Uint8Array(n.result)).toString(16)),i++,e()},n.onerror=function(){s.disabled=!1,sfst(\"#sfdh\",\"b"
+		"ad\",\"读取文件失败\")},n.readAsArrayBuffer(t.slice(d,d+a.page))}}()):(s.disabled=!1,void"
+		" sfst(\"#sfdh\",\"bad\",\"文件太小，没有覆盖到任何一页样本\")):(s.disabled=!1,void"
+		" sfst(\"#sfdh\",\"bad\",\"设备没有给出样本页\"))})):sfst(\"#sfdh\",\"warn\",\"先选择 dd 备份\")}function sfsend(e,t){var"
+		" s=$(\"#sfb\"),a=INFO.flash,n=e.length,o=0,r=0,f=[],i=0;sfst(\"#sfdh\",\"\",\"正在比对…\"),function"
+		" d(){if(i>=n)!function(){var e,i,d=[];if(f.forEach(function(e){var"
+		" t=e-e%a.erase;d.indexOf(t)<0&&d.push(t)}),!f.length&&(o==n||r==n)){for(e in"
+		" i={},SF)i[e]=SF[e];return i.swap=o==n?0:1,void get(\"/sfmt?dd=\"+sfp(i)+\"&n=\"+n,function(e,a){var"
+		" n=null;s.disabled=!1;try{n=JSON.parse(a)}catch(e){}n&&n.sfmt&&sftake(n.sfmt),sfst(\"#sfdh\",\"ok\","
+		"\"一致，可以用这份 dd 备份刷回原厂\"+(t?\"（文件比闪存小，只核对了它覆盖的部分）\":\"\"))})}s.disabled=!1,e=d.map(function(e){return\"0x"
+		"\"+e.toString(16)}).join(\"、\"),f.length<n?sfst(\"#sfdh\",\"warn\",d.length+\""
+		" 个块对不上：\"+e+\"。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对\"):sfst(\"#sfdh\",\"bad\",\"全部对不上：这不是本机的 dd"
+		" 备份，或者这组参数不对\")}();else{var c=e.slice(i,i+8);i+=8,get(\"/sfmt?p=\"+sfp(SF)+\"&chk=\"+c.join(\",\"),func"
+		"tion(e,t){var a=null;try{a=JSON.parse(t)}catch(e){}if(!a||null==a.n)return s.disabled=!1,void"
+		" sfst(\"#sfdh\",\"bad\",\"设备没有给出比对结果\");o+=0|a.s0,r+=0|a.s1,(a.bad||[]).forEach(function(e){f.push(e)}"
+		"),d()})}}()}\n"
+	"</script>\n"
+#endif
 	"</body></html>\n"
 /* @@PAGE_END@@ */
 	;
@@ -3179,6 +3430,541 @@ static void info_net(struct jbuf *jb)
 }
 
 /*
+ * ---- The stock flash format (parallel NAND) --------------------------------
+ *
+ * On SPI NAND the chip does its own ECC, so what a backup reads is what the
+ * stock firmware wrote and what a restore writes is what it will read.  The
+ * parallel NAND on the HG5382A has none: the SoC's controller computes the
+ * check bytes, and the stock firmware set it up differently from this U-Boot
+ * -- every stock page fails to decode here, and every page written from a
+ * stock image comes out in a codeword the stock loader does not read.
+ *
+ * Two ways around that.  A whole-chip backup taken with its OOB (/dump?oob=1)
+ * carries the stock check bytes along and goes back as it came
+ * (/stock?fmt=oob).  An image dumped from the stock system has no OOB, so its
+ * check bytes have to be recomputed in the stock format -- which is what this
+ * section finds out, keeps and hands to /stock?fmt=dd.
+ *
+ * The format can only be found while flash still holds stock pages: before
+ * the first migration.  It is searched for on the first /info of a session
+ * whose UBI does not attach, kept in RAM, and saved as web_uboot_stock_nand
+ * once there is an environment to save it in -- right after the rebuild that
+ * creates one, see sf_after_rebuild().
+ */
+#define ENV_STOCK_NAND		"web_uboot_stock_nand"
+
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+#include "../drivers/mtd/nand/raw/airoha_en7581_nand.h"
+
+#define SF_NS		48	/* sample pages */
+#define SF_MAXOK	4	/* stop searching once this many decode */
+#define SF_BUDGET_MS	60000
+
+enum { SF_UNKNOWN, SF_OK, SF_AMB, SF_NONE, SF_NA };
+
+struct sf_state {
+	struct airoha_nand_fmt f;
+	u8	st;
+	u8	k;		/* SF_AMB: how many formats decode */
+	u8	n;		/* pages behind the verdict */
+	u8	swap_known;
+	u8	saved;		/* in the saved environment */
+	u8	pending;	/* known, nowhere to save it yet */
+	u8	loaded;		/* the environment has been looked at */
+	u8	probed;		/* the automatic search ran this session */
+	char	src[8];		/* probe, dd, manual, board */
+};
+
+static struct sf_state sf;
+
+static u32	sf_page[SF_NS];
+static int	sf_npage = -1;	/* -1 until collected */
+static u8	*sf_data;	/* one page of data */
+
+static const char *defenv_get(const char *name);
+
+static int sf_same(const struct airoha_nand_fmt *a,
+		   const struct airoha_nand_fmt *b)
+{
+	return a->ecc == b->ecc && a->spare == b->spare && a->inv == b->inv &&
+	       a->fdm == b->fdm && a->fecc == b->fecc;
+}
+
+/* "8,28,0,8,1,0" -- ecc, spare, inv, fdm, fecc, swap -- as the page sends it. */
+static int sf_parse(const char *s, struct airoha_nand_fmt *f)
+{
+	ulong v[6];
+	int i;
+
+	for (i = 0; i < 6; i++) {
+		char *end;
+
+		v[i] = simple_strtoul(s, &end, 10);
+		if (end == s || v[i] > 255)
+			return -1;
+		s = end;
+		if (i < 5) {
+			if (*s != ',')
+				return -1;
+			s++;
+		}
+	}
+	if (*s && *s != '&')
+		return -1;
+	f->ecc = v[0];
+	f->spare = v[1];
+	f->inv = v[2];
+	f->fdm = v[3];
+	f->fecc = v[4];
+	f->swap = v[5];
+
+	return 0;
+}
+
+/* "ecc=8,spare=28,inv=0,fdm=8,fecc=1,swap=0,src=dd,n=48", swap=- if unknown. */
+static void sf_load(void)
+{
+	char buf[128], v[16];
+	const char *e;
+	int i;
+
+	if (sf.loaded)
+		return;
+	sf.loaded = 1;
+	e = env_get(ENV_STOCK_NAND);
+	if (!e || strlen(e) >= sizeof(buf))
+		return;
+	strlcpy(buf, e, sizeof(buf));
+	for (i = 0; buf[i]; i++)
+		if (buf[i] == ',')
+			buf[i] = '&';
+
+#define SF_GET(key, dst)						\
+	do {								\
+		if (!qs_get(buf, key, v, sizeof(v)))			\
+			return;						\
+		dst = simple_strtoul(v, NULL, 10);			\
+	} while (0)
+	SF_GET("ecc", sf.f.ecc);
+	SF_GET("spare", sf.f.spare);
+	SF_GET("inv", sf.f.inv);
+	SF_GET("fdm", sf.f.fdm);
+	SF_GET("fecc", sf.f.fecc);
+	SF_GET("n", sf.n);
+#undef SF_GET
+	sf.swap_known = qs_get(buf, "swap", v, sizeof(v)) && isdigit(v[0]);
+	sf.f.swap = sf.swap_known ? simple_strtoul(v, NULL, 10) : 0;
+	if (!qs_get(buf, "src", sf.src, sizeof(sf.src)))
+		strlcpy(sf.src, "manual", sizeof(sf.src));
+	sf.st = SF_OK;
+	sf.saved = 1;
+}
+
+/*
+ * Only where the environment actually lives: our UBI, attached, with its env
+ * volume.  Asked of what is attached rather than by attaching: on stock
+ * flash /info has just failed to, and trying again -- or letting saveenv try
+ * -- fills the console with ECC errors for several seconds on the way to
+ * failing the same way.
+ */
+static int sf_can_save(void)
+{
+	struct ubi_device *ubi;
+	int ok;
+
+	ubi = ubi_get_device(0);
+	if (!ubi)
+		return 0;
+	ok = ubi_vol_find(ubi, "ubootenv") != NULL;
+	ubi_put_device(ubi);
+
+	return ok;
+}
+
+/* Into the environment, and saved if there is anywhere to save it. */
+static void sf_store(void)
+{
+	char val[128];
+
+	snprintf(val, sizeof(val),
+		 "ecc=%u,spare=%u,inv=%u,fdm=%u,fecc=%u,swap=%s,src=%s,n=%u",
+		 sf.f.ecc, sf.f.spare, sf.f.inv, sf.f.fdm, sf.f.fecc,
+		 !sf.swap_known ? "-" : sf.f.swap ? "1" : "0", sf.src, sf.n);
+	env_set(ENV_STOCK_NAND, val);
+	sf.saved = 0;
+	sf.pending = 1;
+	if (!sf_can_save()) {
+		printf("httpd: stock flash format kept in RAM until UBI is rebuilt\n");
+		return;
+	}
+	if (run_command("saveenv", 0)) {
+		printf("httpd: saving the stock flash format failed\n");
+		return;
+	}
+	sf.saved = 1;
+	sf.pending = 0;
+	printf("httpd: stock flash format saved: %s\n", val);
+}
+
+/*
+ * Right after a rebuild, the one moment a first migration has an environment
+ * to save into -- but only just.  The env volumes are created by _init_env on
+ * the next boot, so they are made here the same way.  And _firstboot, which
+ * runs _init_env, unset itself at the start of this boot: saving the
+ * environment as it is now would skip the whole first-boot setup (factory
+ * volume and all) next time.  It goes back to its default first, so the next
+ * boot runs exactly as it would have with nothing saved.
+ */
+static void sf_after_rebuild(void)
+{
+	const char *mk = env_get("ubi_create_env");
+	const char *fb;
+
+	if (sf.st != SF_OK || !sf.pending)
+		return;
+	/* A board whose script formats on failure is not risked for this. */
+	if (!mk || strstr(mk, "ubi_format")) {
+		printf("httpd: not creating the env volumes here; the stock "
+		       "flash format is not saved\n");
+		return;
+	}
+	if (run_command("run ubi_create_env", 0)) {
+		printf("httpd: creating the env volumes failed; the stock "
+		       "flash format is not saved\n");
+		return;
+	}
+	fb = defenv_get("_firstboot");
+	if (fb && !env_get("_firstboot"))
+		env_set("_firstboot", fb);
+	sf_store();
+}
+
+/* The environment keeps it across "env default -a". */
+static void sf_keep(const char *val)
+{
+	if (val && *val && !env_get(ENV_STOCK_NAND))
+		env_set(ENV_STOCK_NAND, val);
+}
+
+static int sf_ensure_buf(struct mtd_info *m)
+{
+	if (!sf_data)
+		sf_data = malloc(m->writesize + m->oobsize);
+
+	return sf_data ? 0 : -1;
+}
+
+/*
+ * Pages the stock firmware wrote, spread over the chip: the first page of up
+ * to SF_NS good blocks that are not erased.  Block 0 is BL2, laid out for
+ * the BootROM rather than the way the firmware writes, so it is left out.
+ */
+static void sf_samples(struct mtd_info *m)
+{
+	u32 nblk = (u32)(m->size / m->erasesize), stride, b;
+	u32 raw = m->writesize + m->oobsize, i;
+
+	if (sf_npage >= 0)
+		return;
+	sf_npage = 0;
+	if (sf_ensure_buf(m))
+		return;
+	stride = nblk / (SF_NS * 2);
+	if (!stride)
+		stride = 1;
+	for (b = 1; b < nblk && sf_npage < SF_NS; b += stride) {
+		u64 off = (u64)b * m->erasesize;
+
+		schedule();
+		if (mtd_block_isbad(m, off))
+			continue;
+		if (airoha_nand_read_phys(m, off, sf_data))
+			continue;
+		for (i = 0; i < raw && sf_data[i] == 0xff; i++)
+			;
+		if (i < raw)
+			sf_page[sf_npage++] = (u32)off;
+	}
+	printf("httpd: %d sample page(s) for the stock flash format\n",
+	       sf_npage);
+}
+
+/* How many samples decode as @f; stops at the first failure if @fast. */
+static int sf_decodes(struct mtd_info *m, const struct airoha_nand_fmt *f,
+		      int fast, unsigned int *maxflips)
+{
+	unsigned int fl;
+	int i, ok = 0;
+
+	for (i = 0; i < sf_npage; i++) {
+		if (airoha_nand_read_as(m, sf_page[i], f, sf_data, &fl)) {
+			if (fast)
+				return ok;
+			continue;
+		}
+		ok++;
+		if (maxflips && fl > *maxflips)
+			*maxflips = fl;
+	}
+
+	return ok;
+}
+
+/*
+ * Every format the controller can do, most likely first, until SF_MAXOK of
+ * them decode every sample.  One read of the first sample rules almost all
+ * of them out, so the whole search is a second or two of flash reads.
+ */
+static const u8 sf_eccs[] = { 8, 4, 6, 10, 12, 14, 16 };
+static const u8 sf_spares[] = { 28, 27, 26, 16 };
+
+static void sf_probe(struct mtd_info *m)
+{
+	struct airoha_nand_fmt f, own, hit[SF_MAXOK];
+	ulong t0 = get_timer(0);
+	int a, b, nhit = 0, tried = 0;
+
+	sf.probed = 1;
+	sf_samples(m);
+	if (!sf_npage) {
+		sf.st = SF_NA;
+		return;
+	}
+
+	/* Pages in this driver's own format mean flash is no longer stock. */
+	airoha_nand_get_fmt(m, &own);
+	if (sf_decodes(m, &own, 0, NULL) * 2 >= sf_npage) {
+		printf("httpd: flash is in this U-Boot's own format, not stock\n");
+		sf.st = SF_NA;
+		return;
+	}
+
+	printf("httpd: searching for the stock flash format\n");
+	memset(&f, 0, sizeof(f));
+	for (a = 0; a < ARRAY_SIZE(sf_eccs) && nhit < SF_MAXOK; a++)
+	for (b = 0; b < ARRAY_SIZE(sf_spares) && nhit < SF_MAXOK; b++)
+	for (f.fdm = 8; f.fdm != 0xff && nhit < SF_MAXOK; f.fdm--)
+	for (f.fecc = f.fdm; f.fecc != 0xff && nhit < SF_MAXOK; f.fecc--)
+	for (f.inv = 1; f.inv != 0xff && nhit < SF_MAXOK; f.inv--) {
+		f.ecc = sf_eccs[a];
+		f.spare = sf_spares[b];
+		f.swap = 0;
+		if (airoha_nand_check_fmt(m, &f))
+			continue;
+		if (get_timer(t0) > SF_BUDGET_MS)
+			goto out;
+		schedule();
+		tried++;
+		if (sf_decodes(m, &f, 1, NULL) == sf_npage)
+			hit[nhit++] = f;
+	}
+out:
+	printf("httpd: %d format(s) tried in %lu ms, %d decode every sample\n",
+	       tried, get_timer(t0), nhit);
+	if (!nhit) {
+		sf.st = SF_NONE;
+		return;
+	}
+	sf.f = hit[0];
+	sf.n = sf_npage;
+	sf.k = nhit;
+	sf.swap_known = 0;
+	strlcpy(sf.src, "probe", sizeof(sf.src));
+	if (nhit > 1) {
+		sf.st = SF_AMB;
+		return;
+	}
+	sf.st = SF_OK;
+	sf_store();
+}
+
+static void sf_json_fmt(struct jbuf *jb)
+{
+	jb_printf(jb, "{\"st\":\"%s\"",
+		  sf.st == SF_OK ? "ok" : sf.st == SF_AMB ? "amb" :
+		  sf.st == SF_NONE ? "none" : "na");
+	if (sf.st == SF_AMB)
+		jb_printf(jb, ",\"k\":%u", sf.k);
+	if (sf.st == SF_OK) {
+		jb_printf(jb, ",\"ecc\":%u,\"spare\":%u,\"inv\":%u,\"fdm\":%u,"
+			  "\"fecc\":%u,\"swap\":", sf.f.ecc, sf.f.spare,
+			  sf.f.inv, sf.f.fdm, sf.f.fecc);
+		if (sf.swap_known)
+			jb_printf(jb, "%u", sf.f.swap);
+		else
+			jb_printf(jb, "null");
+		jb_printf(jb, ",\"n\":%u,\"k\":0,\"saved\":%d,\"src\":", sf.n,
+			  sf.saved ? 1 : 0);
+		jb_str(jb, sf.src);
+	}
+	jb_printf(jb, "}");
+}
+
+/* For /info: searched for once, on a board whose UBI is not ours. */
+static void sf_info(struct jbuf *jb, struct mtd_info *m, int ubi_ok)
+{
+	if (!m || !airoha_nand_is(m))
+		return;
+	sf_load();
+	if (sf.st == SF_UNKNOWN && !ubi_ok && !sf.probed)
+		sf_probe(m);
+	if (sf.st == SF_UNKNOWN)
+		sf.st = SF_NA;
+	jb_printf(jb, ",\"sfmt\":");
+	sf_json_fmt(jb);
+}
+
+/*
+ * ---- GET /sfmt -----------------------------------------------------------
+ *
+ *   (none)            the sample pages, for the page to take the same
+ *                     offsets out of a dd image
+ *   probe=1           search again
+ *   try=<fmt>         how many samples decode as <fmt>
+ *   p=<fmt>&chk=o:c,  per page: does it decode as <fmt> to the crc32 c the
+ *                     page computed from its dd image, with or without the
+ *                     bad-block marker swap -- a handful per request, the
+ *                     request line holds 320 bytes
+ *   dd=<fmt>&n=N      every sample matched the dd image as <fmt>: keep it
+ *   save=<fmt>        keep <fmt> as entered
+ */
+static char sfmt_qs[320];
+static char sfmt_buf[1024];
+static int sfmt_len;
+
+static int httpd_sfmt(void)
+{
+	struct mtd_info *m = flash_master();
+	struct airoha_nand_fmt f;
+	struct jbuf jb;
+	char v[32];
+	int i;
+
+	jb_init(&jb, sfmt_buf, sizeof(sfmt_buf));
+	if (!m || !airoha_nand_is(m) || sf_ensure_buf(m)) {
+		jb_printf(&jb, JSON_HDR("404 Not Found")
+			  "{\"err\":\"no parallel NAND\"}");
+		return jb_done(&jb, "/sfmt");
+	}
+	sf_load();
+	sf_samples(m);
+	jb_printf(&jb, JSON_HDR("200 OK"));
+
+	if (!sfmt_qs[0]) {
+		jb_printf(&jb, "{\"pages\":[");
+		for (i = 0; i < sf_npage; i++)
+			jb_printf(&jb, "%s%u", i ? "," : "", sf_page[i]);
+		jb_printf(&jb, "]}");
+	} else if (qs_get(sfmt_qs, "probe", v, sizeof(v))) {
+		struct sf_state was = sf;
+		u8 st, k;
+
+		sf_probe(m);
+		st = sf.st;
+		k = sf.k;
+		/* A search that finds nothing does not throw away what was kept. */
+		if (st != SF_OK && st != SF_AMB && was.st == SF_OK)
+			sf = was;
+		jb_printf(&jb, "{\"st\":\"%s\",\"k\":%u,\"sfmt\":",
+			  st == SF_OK ? "ok" : st == SF_AMB ? "amb" :
+			  st == SF_NONE ? "none" : "na", k);
+		sf_json_fmt(&jb);
+		jb_printf(&jb, "}");
+	} else if (qs_get(sfmt_qs, "try", v, sizeof(v))) {
+		unsigned int fl = 0;
+		int ok;
+
+		if (sf_parse(v, &f) || airoha_nand_check_fmt(m, &f)) {
+			jb_printf(&jb, "{\"err\":\"bad format\"}");
+			return jb_done(&jb, "/sfmt");
+		}
+		ok = sf_decodes(m, &f, 0, &fl);
+		jb_printf(&jb, "{\"n\":%d,\"ok\":%d,\"fix\":%u}", sf_npage, ok,
+			  fl);
+	} else if (qs_get(sfmt_qs, "chk", v, 1) &&
+		   qs_get(sfmt_qs, "p", v, sizeof(v))) {
+		const char *c = strstr(sfmt_qs, "chk=") + 4;
+		int n = 0, s0 = 0, s1 = 0, first = 1;
+		char bad[160];
+		int bl = 0;
+
+		if (sf_parse(v, &f) || airoha_nand_check_fmt(m, &f)) {
+			jb_printf(&jb, "{\"err\":\"bad format\"}");
+			return jb_done(&jb, "/sfmt");
+		}
+		bad[0] = '\0';
+		while (*c && *c != '&') {
+			char *end;
+			u64 off = simple_strtoull(c, &end, 16);
+			u32 want, got[2];
+			int w;
+
+			if (*end != ':')
+				break;
+			want = simple_strtoul(end + 1, &end, 16);
+			for (w = 0; w < 2; w++) {
+				f.swap = w;
+				got[w] = airoha_nand_read_as(m, off, &f, sf_data,
+							     NULL) ? ~want :
+					 crc32(0, sf_data, m->writesize);
+			}
+			n++;
+			if (got[0] == want)
+				s0++;
+			if (got[1] == want)
+				s1++;
+			if (got[0] != want && got[1] != want && bl < (int)sizeof(bad) - 24) {
+				bl += snprintf(bad + bl, sizeof(bad) - bl, "%s%llu",
+					       first ? "" : ",", off);
+				first = 0;
+			}
+			c = end;
+			if (*c == ',')
+				c++;
+		}
+		jb_printf(&jb, "{\"n\":%d,\"s0\":%d,\"s1\":%d,\"bad\":[%s]}",
+			  n, s0, s1, bad);
+	} else if (qs_get(sfmt_qs, "dd", v, sizeof(v)) ||
+		   qs_get(sfmt_qs, "save", v, sizeof(v))) {
+		int dd = qs_get(sfmt_qs, "dd", v, sizeof(v));
+		char nv[8];
+
+		if (sf_parse(v, &f) || airoha_nand_check_fmt(m, &f)) {
+			jb_printf(&jb, "{\"err\":\"bad format\"}");
+			return jb_done(&jb, "/sfmt");
+		}
+		if (dd) {
+			strlcpy(sf.src, "dd", sizeof(sf.src));
+			sf.swap_known = 1;
+			sf.n = qs_get(sfmt_qs, "n", nv, sizeof(nv)) ?
+			       simple_strtoul(nv, NULL, 10) : sf_npage;
+		} else if (!(sf.st == SF_OK && sf_same(&sf.f, &f))) {
+			/* Different from what was found: entered by hand. */
+			strlcpy(sf.src, "manual", sizeof(sf.src));
+			sf.swap_known = 1;
+			sf.n = 0;
+		} else if (sf.swap_known || f.swap) {
+			sf.swap_known = 1;
+		}
+		sf.f = f;
+		sf.st = SF_OK;
+		sf.k = 0;
+		sf_store();
+		jb_printf(&jb, "{\"sfmt\":");
+		sf_json_fmt(&jb);
+		jb_printf(&jb, "}");
+	} else {
+		jb_printf(&jb, "{\"err\":\"unknown request\"}");
+	}
+
+	return jb_done(&jb, "/sfmt");
+}
+#else
+static void sf_after_rebuild(void) {}
+static void sf_keep(const char *val) {}
+#endif
+
+/*
  * ---- GET /info -----------------------------------------------------------
  *
  * Everything the page shows about the board, read when asked rather than
@@ -3195,7 +3981,7 @@ static int httpd_info(void)
 	struct mtd_info *master;
 	struct jbuf jb;
 	const char *s;
-	int len, i, first;
+	int len, i, first, ubi_ok = 0;
 
 #define P(...)	jb_printf(&jb, __VA_ARGS__)
 #define S(str)	jb_str(&jb, str)
@@ -3234,9 +4020,15 @@ static int httpd_info(void)
 
 		P(",\"flash\":{\"name\":");
 		S(master->name);
-		P(",\"size\":%llu,\"erase\":%u,\"page\":%u,\"oob\":%u},\"parts\":[",
+		P(",\"size\":%llu,\"erase\":%u,\"page\":%u,\"oob\":%u",
 		  (unsigned long long)master->size, master->erasesize,
 		  master->writesize, master->oobsize);
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+		/* The SoC computes the ECC: backups carry the OOB. */
+		if (airoha_nand_is(master))
+			P(",\"cecc\":1");
+#endif
+		P("},\"parts\":[");
 		first = 1;
 		list_for_each_entry(part, &master->partitions, node) {
 			P("%s{\"n\":", first ? "" : ",");
@@ -3300,6 +4092,7 @@ static int httpd_info(void)
 			}
 			P("]}");
 			ubi_put_device(ubi);
+			ubi_ok = 1;
 		} else {
 			P(",\"ubi\":null");
 		}
@@ -3307,6 +4100,9 @@ static int httpd_info(void)
 		P(",\"ubi\":null");
 	}
 
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	sf_info(&jb, master, ubi_ok);
+#endif
 	P("}");
 #undef P
 #undef S
@@ -4588,17 +5384,21 @@ static int envreset_len;
 static int httpd_envreset(void)
 {
 	struct jbuf jb;
-	char mac[20];
+	char mac[20], stock[128];
 	const char *cur;
 	int saved;
 
 	cur = env_get("ethaddr");
 	strlcpy(mac, cur ? cur : "", sizeof(mac));
+	/* The stock flash format can only be found again on stock flash. */
+	cur = env_get(ENV_STOCK_NAND);
+	strlcpy(stock, cur ? cur : "", sizeof(stock));
 
 	printf("httpd: restoring the default environment\n");
 	run_command("env default -a", 0);
 	if (mac[0] && !env_get("ethaddr"))
 		env_set("ethaddr", mac);
+	sf_keep(stock);
 
 	saved = !run_command("saveenv", 0);
 	printf("httpd: default environment %s\n",
@@ -5892,6 +6692,7 @@ static u32	dump_len;	/* total output bytes */
 static u32	dump_win;	/* window capacity */
 static u32	dump_wpos;	/* output offset the window starts at */
 static u32	dump_wlen;	/* valid bytes in it, 0 when empty */
+/* 0: a UBI volume; 1: flash, data only; 2: flash, every page with its OOB */
 static int	dump_raw;
 static u64	dump_off;	/* flash offset output offset 0 maps to */
 static char	dump_vol[UBIVOL_NAME_MAX];
@@ -6093,6 +6894,43 @@ static int dump_read_raw(u64 off, u32 len, u8 *buf)
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+/*
+ * The same with every page followed by its OOB, in the chip's own byte order
+ * and with no ECC applied -- what a programmer reads off the chip.  @pos is a
+ * file offset: the window always holds whole pages, so it maps onto flash
+ * pages one for one.
+ */
+static int dump_read_oob(u32 pos, u32 len, u8 *buf)
+{
+	struct mtd_info *m = dump_mtd;
+	u32 raw = m->writesize + m->oobsize;
+
+	if (pos % raw || len % raw)
+		return -1;
+
+	for (; len; pos += raw, len -= raw, buf += raw) {
+		u64 off = dump_off + (u64)(pos / raw) * m->writesize;
+		u64 blk = off & ~((u64)m->erasesize - 1);
+		int ret = airoha_nand_read_phys(m, off, buf);
+
+		if (!ret)
+			continue;
+		memset(buf, 0xff, raw);
+		if (blk >= dump_hole_hi) {
+			if (dump_nhole < DUMP_HOLES)
+				dump_hole[dump_nhole] = blk;
+			dump_nhole++;
+			dump_hole_hi = blk + m->erasesize;
+			printf("httpd: /dump cannot read the page at 0x%llx (%d), filling 0xff\n",
+			       off, ret);
+		}
+	}
+
+	return 0;
+}
+#endif
+
 /* Bring the window holding output offset `want` into memory. */
 static int dump_fill(u32 want)
 {
@@ -6110,6 +6948,14 @@ static int dump_fill(u32 want)
 			       dump_vol, pos);
 			return -1;
 		}
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	} else if (dump_raw == 2) {
+		if (dump_read_oob(pos, len, (u8 *)dump_base)) {
+			printf("httpd: /dump reading flash with OOB at file offset %u failed\n",
+			       pos);
+			return -1;
+		}
+#endif
 	} else if (dump_read_raw(dump_off + pos, len, (u8 *)dump_base)) {
 		printf("httpd: /dump reading flash at 0x%llx failed\n",
 		       dump_off + pos);
@@ -6231,13 +7077,46 @@ static void httpd_dump(void)
 			(u32)hextoul(l, NULL) : (u32)(dump_mtd->size - off);
 		dump_off = off;
 		snprintf(what, sizeof(what), "flash-0x%llx-0x%x", off, len);
+		if (qs_get(dump_qs, "oob", o, sizeof(o)) && o[0] == '1') {
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+			u32 ws = dump_mtd->writesize;
+
+			if (!airoha_nand_is(dump_mtd)) {
+				dump_fail("400 Bad Request",
+					  "this flash does its own ECC; back it up without OOB",
+					  "这颗闪存自己做 ECC，整片备份不带 OOB");
+				return;
+			}
+			if ((off & (ws - 1)) || (len & (ws - 1))) {
+				dump_fail("400 Bad Request",
+					  "offset and length must be page aligned",
+					  "偏移与长度须按页对齐");
+				return;
+			}
+			if (off + len > dump_mtd->size) {
+				dump_fail("400 Bad Request",
+					  "offset + length past the end of flash",
+					  "偏移加长度超过闪存容量");
+				return;
+			}
+			/* From here on len is the file: every page grows by its OOB. */
+			len = len / ws * (ws + dump_mtd->oobsize);
+			dump_raw = 2;
+			strlcat(what, "-oob", sizeof(what));
+#else
+			dump_fail("400 Bad Request",
+				  "this flash does its own ECC; back it up without OOB",
+				  "这颗闪存自己做 ECC，整片备份不带 OOB");
+			return;
+#endif
+		}
 	}
 
 	if (!len) {
 		dump_fail("400 Bad Request", "zero length", "长度为 0");
 		return;
 	}
-	if (dump_raw && off + len > dump_mtd->size) {
+	if (dump_raw == 1 && off + len > dump_mtd->size) {
 		dump_fail("400 Bad Request", "offset + length past the end of flash",
 			  "偏移加长度超过闪存容量");
 		return;
@@ -6264,6 +7143,9 @@ static void httpd_dump(void)
 			  "内存不足，无法分配读取窗口");
 		return;
 	}
+	/* Whole pages, OOB and all, so a window maps onto flash pages. */
+	if (dump_raw == 2)
+		dump_win -= dump_win % (dump_mtd->writesize + dump_mtd->oobsize);
 	if (dump_win > len)
 		dump_win = len;
 	dump_base = (top - dump_win) & ~0xffUL;
@@ -6401,6 +7283,21 @@ static int dump_tx(u32 off, void *buf, int maxlen)
 static struct mtd_info	*st_mtd;
 static ulong	st_ring;	/* == up_base; a ring of whole eraseblocks */
 static u32	st_blk;		/* eraseblock size */
+/*
+ * Body bytes per eraseblock.  st_blk for an image of data; on parallel NAND
+ * an image with OOB carries writesize + oobsize for every page
+ * (fmt=oob), and one without is written in the stock format the page
+ * names (fmt=dd) -- see "The stock flash format".
+ */
+static u32	st_unit;
+static int	st_mode;	/* ST_DATA, ST_OOB, ST_DD */
+#define ST_DATA		0
+#define ST_OOB		1
+#define ST_DD		2
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+static struct airoha_nand_fmt	st_fmt;
+static u8	*st_page;	/* the last, short page of a dd image */
+#endif
 static u32	st_nblk;	/* slots in the ring */
 static u32	st_hdr_end;	/* stream offset of the first body byte */
 static u32	st_body;	/* body length, from Content-Length */
@@ -6477,7 +7374,7 @@ static int st_begin(u32 rx_bytes)
 	char qs[96], o[24];
 	const char *p, *sp;
 	int hdr_end, n, qlen = 0;
-	ulong avail, clen;
+	ulong avail, clen, flen;
 	u32 body_here;
 
 	st_hdr_end = st_body = st_done = st_crc = 0;
@@ -6520,6 +7417,10 @@ static int st_begin(u32 rx_bytes)
 	qs[qlen > 0 ? qlen : 0] = '\0';
 	st_off = qs_get(qs, "off", o, sizeof(o)) ? hextoul(o, NULL) : 0;
 	st_wipe = qs_get(qs, "wipe", o, sizeof(o)) && o[0] == '1';
+	st_mode = ST_DATA;
+	if (qs_get(qs, "fmt", o, sizeof(o)))
+		st_mode = !strcmp(o, "oob") ? ST_OOB : !strcmp(o, "dd") ? ST_DD :
+			  ST_DATA;
 
 	p = strstr(hdr, "Content-Length:");
 	if (!p) {
@@ -6541,26 +7442,68 @@ static int st_begin(u32 rx_bytes)
 		return -1;
 	}
 	st_blk = st_mtd->erasesize;
+	st_unit = st_blk;
+	flen = clen;
+	if (st_mode != ST_DATA) {
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+		u32 raw = st_mtd->writesize + st_mtd->oobsize;
+
+		if (!airoha_nand_is(st_mtd)) {
+			st_fail("this flash does its own ECC; write the image without "
+				"a format", "这颗闪存自己做 ECC，不用选镜像格式");
+			return -1;
+		}
+		if (st_mode == ST_OOB) {
+			if (clen % raw) {
+				st_fail("%lu bytes is not a whole number of %u byte "
+					"pages with their OOB",
+					"带 OOB 的镜像 %lu 字节，不是整数个 %u 字节的页",
+					clen, raw);
+				return -1;
+			}
+			st_unit = st_blk / st_mtd->writesize * raw;
+			flen = clen / raw * st_mtd->writesize;
+		} else {
+			if (!qs_get(qs, "p", o, sizeof(o)) || sf_parse(o, &st_fmt) ||
+			    airoha_nand_check_fmt(st_mtd, &st_fmt)) {
+				st_fail("the stock flash format is missing or does not "
+					"fit this chip",
+					"原厂闪存格式缺失或与这颗闪存不符");
+				return -1;
+			}
+			if (!st_page)
+				st_page = malloc(st_mtd->writesize);
+			if (!st_page) {
+				st_fail("out of memory", "内存不足");
+				return -1;
+			}
+		}
+#else
+		st_fail("this flash does its own ECC; write the image without "
+			"a format", "这颗闪存自己做 ECC，不用选镜像格式");
+		return -1;
+#endif
+	}
 
 	if (st_off & (u64)(st_blk - 1)) {
 		st_fail("offset 0x%llx is not aligned to the 0x%x erase block",
 			"写入偏移 0x%llx 未按擦除块 0x%x 对齐", st_off, st_blk);
 		return -1;
 	}
-	if (st_off + clen > st_mtd->size) {
+	if (st_off + flen > st_mtd->size) {
 		st_fail("0x%llx + %lu bytes runs past the %llu byte flash",
 			"自 0x%llx 起写入 %lu 字节将超出闪存容量 %llu",
-			st_off, clen, (unsigned long long)st_mtd->size);
+			st_off, flen, (unsigned long long)st_mtd->size);
 		return -1;
 	}
 
 	avail = upload_max();
-	st_nblk = (u32)(avail / st_blk);
-	if (st_nblk > ST_RING_MAX / st_blk)
-		st_nblk = ST_RING_MAX / st_blk;
+	st_nblk = (u32)(avail / st_unit);
+	if (st_nblk > ST_RING_MAX / st_unit)
+		st_nblk = ST_RING_MAX / st_unit;
 	if (st_nblk < 4) {
 		st_fail("not enough memory for the receive ring, need %u bytes",
-			"内存不足以分配接收环，至少需要 %u 字节", 4 * st_blk);
+			"内存不足以分配接收环，至少需要 %u 字节", 4 * st_unit);
 		return -1;
 	}
 	st_ring = up_base;
@@ -6573,7 +7516,7 @@ static int st_begin(u32 rx_bytes)
 	 * block was erased whole and only partly written, so its own tail is
 	 * already blank; starting here is what keeps the two from overlapping.
 	 */
-	st_wipe_pos = st_off + ((clen + st_blk - 1) & ~(ulong)(st_blk - 1));
+	st_wipe_pos = st_off + ((flen + st_blk - 1) & ~(ulong)(st_blk - 1));
 	st_wipe_end = st_mtd->size;
 	if (st_wipe_pos >= st_wipe_end)
 		st_wipe = 0;
@@ -6593,14 +7536,16 @@ static int st_begin(u32 rx_bytes)
 	if (up_hi > rx_bytes)
 		rx_bytes = up_hi;
 	body_here = rx_bytes > st_hdr_end ? rx_bytes - st_hdr_end : 0;
-	if (body_here > st_nblk * st_blk)
-		body_here = st_nblk * st_blk;
+	if (body_here > st_nblk * st_unit)
+		body_here = st_nblk * st_unit;
 	if (body_here)
 		memmove((void *)st_ring,
 			(const void *)(up_base + st_hdr_end), body_here);
 
-	printf("httpd: /stock: %lu bytes to 0x%llx, ring %u x %u KiB at 0x%lx\n",
-	       clen, st_off, st_nblk, st_blk >> 10, st_ring);
+	printf("httpd: /stock: %lu bytes to 0x%llx%s, ring %u x %u KiB at 0x%lx\n",
+	       clen, st_off, st_mode == ST_OOB ? " with OOB" :
+	       st_mode == ST_DD ? " in the stock format" : "", st_nblk,
+	       st_unit >> 10, st_ring);
 
 	return 0;
 }
@@ -6609,7 +7554,7 @@ static int st_begin(u32 rx_bytes)
 static int st_put(u32 k, u32 n)
 {
 	u64 pos = st_off + (u64)k * st_blk;
-	const u8 *p = (const u8 *)(st_ring + (k % st_nblk) * st_blk);
+	const u8 *p = (const u8 *)(st_ring + (k % st_nblk) * st_unit);
 	struct erase_info ei;
 	size_t wl = 0;
 	int ret;
@@ -6642,6 +7587,36 @@ static int st_put(u32 k, u32 n)
 		return -1;
 	}
 
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	if (st_mode != ST_DATA) {
+		u32 ws = st_mtd->writesize;
+		u32 step = st_mode == ST_OOB ? ws + st_mtd->oobsize : ws;
+		u32 i;
+
+		for (i = 0; i < n; i += step, pos += ws) {
+			const u8 *src = p + i;
+
+			if (st_mode == ST_OOB) {
+				ret = airoha_nand_write_phys(st_mtd, pos, src);
+			} else {
+				/* The image may end mid-page; the rest stays erased. */
+				if (n - i < ws) {
+					memset(st_page, 0xff, ws);
+					memcpy(st_page, src, n - i);
+					src = st_page;
+				}
+				ret = airoha_nand_write_as(st_mtd, pos, &st_fmt, src);
+			}
+			if (ret) {
+				st_fail("write at 0x%llx failed (%d)",
+					"写入 0x%llx 失败（%d）", pos, ret);
+				return -1;
+			}
+		}
+
+		return 0;
+	}
+#endif
 	ret = mtd_write(st_mtd, pos, n, &wl, p);
 	if (ret || wl != n) {
 		st_fail("write at 0x%llx failed (%d, %u of %u written)",
@@ -6773,12 +7748,12 @@ static void st_commit(u32 rx_bytes)
 	if (have < st_done)
 		return;
 
-	while (have - st_done >= st_blk ||
+	while (have - st_done >= st_unit ||
 	       (have == st_body && st_done < st_body)) {
 		u32 n = have - st_done;
 
-		if (n > st_blk)
-			n = st_blk;
+		if (n > st_unit)
+			n = st_unit;
 		if (!st_started) {
 			st_started = 1;
 			/*
@@ -6793,7 +7768,7 @@ static void st_commit(u32 rx_bytes)
 			 */
 			printf("httpd: /stock: writing now, do not power off\n");
 		}
-		if (st_put(st_done / st_blk, n))
+		if (st_put(st_done / st_unit, n))
 			return;
 		st_done += n;
 
@@ -6857,19 +7832,19 @@ static int st_rx(u32 rx_offs, const u8 *src, int len)
 		b = st_done;
 	}
 
-	cap = st_done + st_nblk * st_blk;
+	cap = st_done + st_nblk * st_unit;
 	if (b >= cap)
 		return (int)pre;	/* 0 here means "send it again later" */
 	if ((u32)len > cap - b)
 		len = (int)(cap - b);
 
 	while (len) {
-		u32 k = b / st_blk, io = b % st_blk;
-		u32 n = st_blk - io;
+		u32 k = b / st_unit, io = b % st_unit;
+		u32 n = st_unit - io;
 
 		if (n > (u32)len)
 			n = (u32)len;
-		memcpy((u8 *)(st_ring + (k % st_nblk) * st_blk) + io, src, n);
+		memcpy((u8 *)(st_ring + (k % st_nblk) * st_unit) + io, src, n);
 		src += n;
 		b += n;
 		len -= n;
@@ -7100,6 +8075,19 @@ static void *httpd_classify_get(const char *req, u32 rx_bytes)
 	}
 	if (plen == 9 && !memcmp(path, "/dumpinfo", 9))
 		return CONN_DUMPINFO;
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	if (plen == 5 && !memcmp(path, "/sfmt", 5)) {
+		int k = qlen;
+
+		if (k > (int)sizeof(sfmt_qs) - 1)
+			k = sizeof(sfmt_qs) - 1;
+		if (k > 0)
+			memcpy(sfmt_qs, q + 1, k);
+		sfmt_qs[k > 0 ? k : 0] = '\0';
+
+		return CONN_SFMT;
+	}
+#endif
 	if (plen == 5 && !memcmp(path, "/dump", 5)) {
 		if (qlen > (int)sizeof(dump_qs) - 1)
 			qlen = sizeof(dump_qs) - 1;
@@ -7218,7 +8206,7 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 			    (cls == CONN_ENVRESET || cls == CONN_BOOTONCE ||
 			     cls == CONN_NETMODE || cls == CONN_REBOOT ||
 			     cls == CONN_BOOT || cls == CONN_WIPECFG ||
-			     cls == CONN_DHCPGW)) {
+			     cls == CONN_DHCPGW || cls == CONN_SFMT)) {
 				tcp->priv = CONN_WRBUSY;
 
 				return;
@@ -7264,6 +8252,10 @@ static void httpd_on_rcv_nxt_update(struct tcp_stream *tcp, u32 rx_bytes)
 				netmode_len = httpd_netmode();
 			else if (cls == CONN_DUMPINFO)
 				dumpinfo_len = httpd_dumpinfo();
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+			else if (cls == CONN_SFMT)
+				sfmt_len = httpd_sfmt();
+#endif
 			else if (cls == CONN_DUMP) {
 				if (dump_stale()) {
 					printf("httpd: the download in flight went quiet, dropping it\n");
@@ -7373,6 +8365,11 @@ static const char *httpd_response(struct tcp_stream *tcp, int *len)
 	} else if (tcp->priv == CONN_DUMPINFO) {
 		*len = dumpinfo_len;
 		return dumpinfo_buf;
+#if IS_ENABLED(CONFIG_NAND_AIROHA_EN7581)
+	} else if (tcp->priv == CONN_SFMT) {
+		*len = sfmt_len;
+		return sfmt_buf;
+#endif
 	} else {
 		s = NULL;
 	}
@@ -8307,6 +9304,7 @@ static int httpd_flash_step(void)
 
 				return FLASH_FAIL;
 			}
+			sf_after_rebuild();
 		} else {
 			printf("httpd: %s\n", CMD_ATTACH_UBI);
 			if (run_command(CMD_ATTACH_UBI, 0)) {
