@@ -1,6 +1,8 @@
 #
-# 出厂 MAC 放在 ri 卷里的机型（XG-040G-MD / TF）用它，没有 ri 卷的机型
-# （ZN504XG-D）用它保住一个固定的随机 MAC。
+# 出厂 MAC 放在 ri 卷里的机型（XG-040G-MD / TF）用它；ZN504XG-D 的出厂 MAC
+# 在 factory 卷里（原厂 reservearea 分区的原样拷贝，与 pbs05/ponwrt 相同）；
+# HG5382A 也在 factory 卷里（pbs05/fiberhome-factory 从原厂数据拼出的
+# 1 MiB 镜像，与 pbs05/ponwrt 相同）；都没有的机型用它保住一个固定的随机 MAC。
 #
 # ubi 变体的 ri 卷（存放原厂 MAC）不是镜像的一部分，需刷机时从原厂 ri 分区
 # 转存。所以该变体的 dts 里去掉了 nvmem-cells —— 一旦声明，卷缺失时
@@ -29,21 +31,52 @@ airoha_ubi_mac_valid() {
 	[ $(( 0x${1%%:*} & 1 )) -eq 0 ]
 }
 
-airoha_ubi_mac_from_ri() {
-	local v name vol mac
+# 按卷名找 UBI 卷的字符设备名（如 ubi0_3），找不到返回 1
+airoha_ubi_vol() {
+	local v name
 
 	for v in /sys/class/ubi/ubi*_*; do
 		[ -r "$v/name" ] || continue
 		read -r name < "$v/name"
-		[ "$name" = "ri" ] || continue
-		vol="${v##*/}"
-		break
+		[ "$name" = "$1" ] || continue
+		[ -c "/dev/${v##*/}" ] || return 1
+		echo "${v##*/}"
+		return 0
 	done
-	[ -n "$vol" ] && [ -c "/dev/$vol" ] || return 1
+	return 1
+}
 
-	# 偏移与共用 dtsi 中 macaddr@3e 的 reg = <0x3e 0x6> 一致
-	mac=$(dd if="/dev/$vol" bs=1 skip=62 count=6 2>/dev/null | \
+# 卷 $1 偏移 $2 处的 6 字节二进制 MAC
+airoha_ubi_mac_bin() {
+	local vol mac
+
+	vol=$(airoha_ubi_vol "$1") || return 1
+
+	mac=$(dd if="/dev/$vol" bs=1 skip="$2" count=6 2>/dev/null | \
 		hexdump -v -e '1/1 ":%02x"' | cut -c2-)
+	airoha_ubi_mac_valid "$mac" || return 1
+
+	echo "$mac"
+}
+
+# 偏移与共用 dtsi 中 macaddr@3e 的 reg = <0x3e 0x6> 一致
+airoha_ubi_mac_from_ri() {
+	airoha_ubi_mac_bin ri 62
+}
+
+# ZN504XG-D：reservearea 在 0x141024 处以 12 个十六进制 ASCII 字符存基础 MAC
+# （如 FCD5863FCE00），与 pbs05/ponwrt 的 macaddr_factory 是同一处
+airoha_ubi_mac_from_factory() {
+	local vol hex mac
+
+	vol=$(airoha_ubi_vol factory) || return 1
+
+	hex=$(dd if="/dev/$vol" bs=1 skip=$((0x141024)) count=12 2>/dev/null)
+	case "$hex" in
+		*[!0-9A-Fa-f]*|"") return 1 ;;
+	esac
+	[ ${#hex} -eq 12 ] || return 1
+	mac=$(echo "$hex" | tr 'A-F' 'a-f' | sed 's/../&:/g; s/:$//')
 	airoha_ubi_mac_valid "$mac" || return 1
 
 	echo "$mac"
@@ -54,8 +87,8 @@ airoha_ubi_set_mac() {
 
 	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
 		nokia,xg-040g-md-ubi|nokia,xg-040g-mf-ubi|nokia,xg-040g-tf-ubi) ;;
-		# ri 卷本来就没有，走下面持久化的随机 MAC：不然 airoha_eth 每次
-		# 启动都自己随机一个，网口 MAC 一开机就变。
+		# 出厂 MAC 在 factory 卷；卷缺了或是空的，走下面持久化的随机 MAC：
+		# 不然 airoha_eth 每次启动都自己随机一个，网口 MAC 一开机就变。
 		fiberhome,hg5382a|znxt,zn504xg-d) ;;
 		*) return ;;
 	esac
@@ -64,11 +97,25 @@ airoha_ubi_set_mac() {
 	# 这里绝不能去动它们，否则救援网络就断了。
 	[ "$FAILSAFE" = "true" ] && return
 
-	mac=$(airoha_ubi_mac_from_ri)
-	src="ri volume"
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+	fiberhome,hg5382a)
+		# pbs05/fiberhome-factory 生成的 1 MiB 布局，与 pbs05/ponwrt 的
+		# fiberhome_base_mac（mac-address@2000）是同一处
+		mac=$(airoha_ubi_mac_bin factory $((0x2000)))
+		src="factory volume"
+		;;
+	znxt,zn504xg-d)
+		mac=$(airoha_ubi_mac_from_factory)
+		src="factory volume"
+		;;
+	*)
+		mac=$(airoha_ubi_mac_from_ri)
+		src="ri volume"
+		;;
+	esac
 
 	if [ -z "$mac" ]; then
-		src="no ri volume, random"
+		src="no factory MAC, random"
 		[ -r "$AIROHA_MAC_FILE" ] || [ ! -r "$AIROHA_MAC_FILE_OLD" ] || \
 			mv "$AIROHA_MAC_FILE_OLD" "$AIROHA_MAC_FILE" 2>/dev/null
 		[ -r "$AIROHA_MAC_FILE" ] && read -r mac < "$AIROHA_MAC_FILE"

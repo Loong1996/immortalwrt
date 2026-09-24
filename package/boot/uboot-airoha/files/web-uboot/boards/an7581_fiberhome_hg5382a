@@ -1,13 +1,20 @@
-# Parallel NAND.  No factory ri/bosa known yet, so the stock UBI (no fip
-# volume) is left untouched like the ZN504XG-D.  The NAND driver and its
-# options come from fragments/an7581_pnand.config.  Neither the stock UBI
-# nor one left by pbs05/uboot-an758x reads back here (another ECC codeword,
-# see patches/123), so the first install always rebuilds UBI.
+# Parallel NAND.  No ri/bosa: the factory data (optical calibration, MAC,
+# PON serial) goes in a 1 MiB factory volume laid out the way pbs05/ponwrt
+# has it, built from the stock data by pbs05/fiberhome-factory, so a backup
+# of either one writes back into the other.  No factory_mac: U-Boot never
+# takes its MAC from there on a foreign-policy board, and the health check
+# would then keep calling it a mismatch.  A UBI without a fip volume is
+# treated as stock and left untouched.  The NAND driver and its options
+# come from fragments/an7581_pnand.config.  Neither the stock UBI nor one
+# left by pbs05/uboot-an758x reads back here (another ECC codeword, see
+# patches/123), so the first install always rebuilds UBI.
 soc=an7581
 profile=fiberhome_hg5382a-ubi
 dts=airoha/an7581-fiberhome-hg5382a
 fdt=airoha/an7581-fiberhome-hg5382a.dtb
 led=blue:power
 bundle=an7581_web_defconfig
+fragments=menu.env replace-bootloader.env factory-fiberhome.env
 policy=foreign
 extra_defconfig=fragments/an7581_pnand.config
+factory_vols=factory:0x100000

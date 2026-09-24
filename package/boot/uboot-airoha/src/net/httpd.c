@@ -5730,6 +5730,45 @@ static int httpd_validate(void)
 	}
 
 	/*
+	 * A factory volume that is not there gets created at its exact size,
+	 * and an installed board has no room for one: rootfs_data took all
+	 * that was left the first time it booted.  The create would fail
+	 * after the 200 is out, as a line on the serial console; say it now,
+	 * with the way out -- clearing the settings removes rootfs_data, and
+	 * the next boot makes it again from whatever the volume leaves.
+	 */
+	if (nvols) {
+		struct ubi_device *ubi = ubi_get_device(0);
+		const char *missing = NULL;
+		u64 need = 0, avail = 0;
+
+		if (ubi) {
+			avail = (u64)ubi->avail_pebs * ubi->leb_size;
+			for (i = 0; i < up_nparts; i++) {
+				struct fvol *v = fvol_find(up_parts[i].name);
+
+				if (!v || ubi_vol_find(ubi, v->name))
+					continue;
+				if (!missing)
+					missing = v->name;
+				need += (u64)DIV_ROUND_UP(v->size,
+							  ubi->leb_size) *
+					ubi->leb_size;
+			}
+			ubi_put_device(ubi);
+		}
+		if (need > avail) {
+			httpd_reject("the %s volume is not there, and the UBI "
+				     "has %llu bytes free for the %llu it "
+				     "takes: use \"Clear system settings\" "
+				     "first, then write it again", missing,
+				     (unsigned long long)avail,
+				     (unsigned long long)need);
+			return -1;
+		}
+	}
+
+	/*
 	 * What used to be refused here -- writing something onto a board
 	 * that would not boot afterwards -- was refused because the write
 	 * ended in a reset, so an upload the page called a success turned

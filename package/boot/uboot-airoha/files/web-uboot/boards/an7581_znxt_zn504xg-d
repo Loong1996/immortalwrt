@@ -1,10 +1,14 @@
-# No factory ri/bosa. A UBI without a fip volume is treated as stock
-# and left untouched. The U-Boot config name stays without -ubi; the
-# image profile carries it.
+# No factory ri/bosa: the stock reservearea partition (MAC, PON serial,
+# optical calibration) is kept as a factory volume instead, the way
+# pbs05/ponwrt does, so a backup of either one writes back into the other.
+# A UBI without a fip volume is treated as stock and left untouched. The
+# U-Boot config name stays without -ubi; the image profile carries it.
 soc=an7581
 profile=znxt_zn504xg-d-ubi
 dts=airoha/an7581-znxt-zn504xg-d
 fdt=airoha/an7581-znxt-zn504xg-d.dtb
 led=blue:power
 bundle=an7581_web_defconfig
+fragments=menu.env replace-bootloader.env factory-znxt.env
 policy=foreign
+factory_vols=factory:0x240000

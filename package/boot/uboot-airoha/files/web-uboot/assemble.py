@@ -87,9 +87,10 @@ def read_board(path):
     for key in ("soc", "profile", "dts", "fdt", "led", "bundle"):
         if not board.get(key):
             die(f"{path.name}: 缺少 {key}")
-    vols, mac = board.get("factory_vols"), board.get("factory_mac")
-    if bool(vols) != bool(mac):
-        die(f"{path.name}: factory_vols 和 factory_mac 要一起写")
+    # factory_mac 只给诊断页读 MAC 用，而且只认 6 字节二进制；MAC 不在卷里、
+    # 或者不是这种写法的板子（ZN504 是 ASCII）只写 factory_vols
+    if board.get("factory_mac") and not board.get("factory_vols"):
+        die(f"{path.name}: factory_mac 要和 factory_vols 一起写")
     return board
 
 
@@ -168,6 +169,7 @@ def assemble_defconfig(name, board):
     ]
     if board.get("factory_vols"):
         lines.append(f'CONFIG_HTTPD_FACTORY_VOLS="{board["factory_vols"]}"')
+    if board.get("factory_mac"):
         lines.append(f'CONFIG_HTTPD_FACTORY_MAC="{board["factory_mac"]}"')
     extra = board.get("extra_defconfig")
     if extra:

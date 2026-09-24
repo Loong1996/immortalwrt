@@ -18,9 +18,10 @@
  * 引导、U-Boot、BL2 一致。BootROM 从第一个块的 0x800 处取 BL2，其余整片
  * UBI，与 U-Boot 的 bl2 128K + ubi 分区一致。
  *
- * MAC 不在这里用 nvmem 指定：没有已知的出厂 MAC 位置。由
- * base-files/lib/preinit/90_airoha_ubi_mac 首次开机生成一个随机 MAC
- * 并固化到 /etc（同 ZN504XG-D）。
+ * MAC 不在这里用 nvmem 指定：出厂 MAC 在 factory 卷 0x2000（与 pbs05/ponwrt
+ * 相同），但这个卷要用户自己写进来，声明了而卷缺失，airoha_eth 会永久停在
+ * deferred probe。由 base-files/lib/preinit/90_airoha_ubi_mac 读卷应用，
+ * 没有就用首次开机生成并固化到 /etc 的随机 MAC（同 ZN504XG-D）。
  */
 
 / {
