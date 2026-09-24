@@ -36,9 +36,14 @@ lines that start with #:
       the factory volume rebuilt from a Gemtek vendor DSD.
 
 A board file picks a bundle, an env fragment list and a policy. The
-default fragment list is menu.env plus replace-bootloader.env. Boot
-file names come from the image profile: immortalwrt-airoha-<soc>-<profile>-*,
-and only the ones the environment actually uses are set.
+default fragment list is menu.env plus replace-bootloader.env. A key may be
+set by one fragment only, unless a later one says otherwise on purpose:
+"!key=" replaces what an earlier fragment set, "?key=" only fills a key no
+earlier fragment set. The policy comes last, so a policy shared by a
+chainloaded board and a replace-bootloader one uses these for the keys both
+kinds define. Boot file names come from the image profile:
+immortalwrt-airoha-<soc>-<profile>-*, and only the ones the environment
+actually uses are set.
 """
 
 import argparse
@@ -153,7 +158,10 @@ def assemble_env(board, version):
         if not path.is_file():
             die(f"没有环境片段 {name}")
         for key, value in parse_env(path.read_text(encoding="utf-8"), version):
-            if key in merged:
+            mode, key = (key[0], key[1:]) if key[:1] in "!?" else ("", key)
+            if mode == "?" and key in merged:
+                continue
+            if key in merged and mode != "!":
                 die(f"环境变量 {key} 在多个片段里出现")
             merged[key] = value
     prefix = f"immortalwrt-airoha-{board['soc']}-{board['profile']}"

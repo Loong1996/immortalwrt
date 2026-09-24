@@ -267,6 +267,8 @@ jobs:
           - label: XR1710G (AN7581, chainloaded)
             config: an7581_gemtek_xr1710g
             chain: true
+          - label: XR1710G (AN7581, own BL2)
+            config: an7581_gemtek_xr1710g_bl2
     steps:
       - name: Checkout(检出)
         uses: actions/checkout@v7

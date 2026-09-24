@@ -142,10 +142,35 @@ static char * const refresh_vars[] = {
  * without CONFIG_USE_PREBOOT, so an old environment's preboot never runs
  * and has nothing to do before this.
  */
+/*
+ * The same fresh start when the board has changed how it boots: the
+ * XR1710G can run this U-Boot chainloaded by the vendor bootloader or
+ * started by its own BL2, both off the same ubootenv volumes and the same
+ * web_uboot_envver.  The two environments differ in the scripts that write
+ * the bootloader (chainloader slot, or BL2 and FIP) and in the menu entries
+ * that run them, so the one left behind by the other kind would offer
+ * entries that call scripts this one lacks.  web_uboot_write_chain is in
+ * one and not the other, so it tells them apart; on every other board it is
+ * absent from both and this never fires.  The user's network choice is
+ * carried across as well.
+ */
 static char * const foreign_keep[] = {
 	"ethaddr", "eth1addr", "recovery_trigger",
 	"ver", "fdtcontroladdr", "stdin", "stdout", "stderr",
+	"web_uboot_netmode", "web_uboot_ipaddr", "web_uboot_netmask",
+	"web_uboot_netprev",
 };
+
+static int boot_kind_changed(void)
+{
+	/* Big enough for the script: a short buffer gets a warning printed. */
+	char buf[256];
+	int want = env_get_default_into("web_uboot_write_chain", buf,
+					sizeof(buf)) >= 0;
+	int have = env_get("web_uboot_write_chain") != NULL;
+
+	return env_get(ENVVER) && want != have;
+}
 
 static int adopt_foreign_env(void)
 {
@@ -154,18 +179,23 @@ static int adopt_foreign_env(void)
 	const char *v;
 	int i;
 
-	if (env_get_default_into("web_uboot_foreign_env", want, sizeof(want)) < 0 ||
-	    strcmp(want, "reset"))
-		return 0;
-	if (env_get(ENVVER) || env_get("envver"))
-		return 0;
+	if (boot_kind_changed()) {
+		printf("Saved environment is from this U-Boot started another way; starting over from its defaults\n");
+	} else {
+		if (env_get_default_into("web_uboot_foreign_env", want,
+					 sizeof(want)) < 0 ||
+		    strcmp(want, "reset"))
+			return 0;
+		if (env_get(ENVVER) || env_get("envver"))
+			return 0;
+		printf("Saved environment was not written by this U-Boot; starting over from its defaults\n");
+	}
 
 	for (i = 0; i < ARRAY_SIZE(foreign_keep); i++) {
 		v = env_get(foreign_keep[i]);
 		strlcpy(val[i], v ? v : "", sizeof(val[i]));
 	}
 
-	printf("Saved environment was not written by this U-Boot; starting over from its defaults\n");
 	env_set_default(NULL, 0);
 
 	for (i = 0; i < ARRAY_SIZE(foreign_keep); i++)

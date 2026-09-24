@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/*
+ * Brightspeed / Gemtek XR1710G started by our own BL2 (an7581-gemtek-bl2),
+ * for boards whose BootROM runs it -- try over XMODEM first, it writes
+ * nothing.  Only the first erase block changes hands: BL2 sits at 0x800
+ * like on every other AN7581, and reads BL31 + U-Boot from the 'fip'
+ * volume of the same UBI at 0x700000 the vendor layout has, so the DSD,
+ * the firmware's partitions and the UBI contents all stay where they are.
+ * Writing the saved vendor block 0 back returns the board to its vendor
+ * bootloader.
+ */
+
+#include "an7581-gemtek-xr1710g.dtsi"
+
+/ {
+	model = "Gemtek XR1710G";
+};
+
+&spi_nand {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bl2";
+			reg = <0x0 0x20000>;
+		};
+
+		/*
+		 * The rest of the vendor bootloader area, the DSD at flash
+		 * offset 0x400000 included; no longer run, still read.
+		 */
+		partition@20000 {
+			label = "vendor";
+			reg = <0x20000 0x5e0000>;
+			read-only;
+		};
+
+		/* What the vendor U-Boot would start; unused from here. */
+		partition@600000 {
+			label = "chainloader";
+			reg = <0x600000 0x100000>;
+			read-only;
+		};
+
+		/* Where the BL2 above looks for the 'fip' volume. */
+		partition@700000 {
+			label = "ubi";
+			reg = <0x700000 0x1b700000>;
+		};
+
+		/* The vendor bootloader's BMT/BBT pool; keep out. */
+		partition@1be00000 {
+			label = "reserved_bmt";
+			reg = <0x1be00000 0x4200000>;
+			read-only;
+		};
+	};
+};

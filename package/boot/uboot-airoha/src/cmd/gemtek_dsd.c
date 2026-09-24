@@ -5,10 +5,13 @@
  *
  * The XR1710G (and the W1700K it is built on) ships with a locked vendor
  * bootloader, so its flash keeps the vendor layout up front: a "vendor"
- * partition whose DSD area at 0x400000 holds a text block of name=value
- * lines (lan_mac=, wan_mac=, ...) and, at +0x5000, the Wi-Fi calibration
- * EEPROM.  OpenWrt on these boards does not read the DSD.  It reads a UBI
- * volume named "factory" laid out as
+ * partition over the DSD area at flash offset 0x400000, which holds a text
+ * block of name=value lines (lan_mac=, wan_mac=, ...) and, at +0x5000, the
+ * Wi-Fi calibration EEPROM.  The partition starts at 0 when the vendor
+ * bootloader chainloads this one and at 0x20000 when this one's BL2 has
+ * taken the first erase block, so the DSD is addressed on the flash.
+ * OpenWrt on these boards does not read the DSD.  It reads a UBI volume
+ * named "factory" laid out as
  *
  *	0x0000	EEPROM, 0x1e00 bytes
  *	0x5000	WAN MAC
@@ -42,7 +45,7 @@
 #include <vsprintf.h>
 
 #define DSD_PART	"vendor"
-#define DSD_OFF		0x400000
+#define DSD_OFF		0x400000	/* on the flash, not in DSD_PART */
 #define DSD_TEXT_LEN	0x1000
 #define DSD_EEPROM_OFF	(DSD_OFF + 0x5000)
 
@@ -65,7 +68,13 @@ static int dsd_read(loff_t off, size_t len, void *buf)
 		return -ENODEV;
 	}
 
-	ret = mtd_read(mtd, off, len, &rl, buf);
+	if (off < mtd->offset || off - mtd->offset + len > mtd->size) {
+		printf("gemtek_dsd: 0x%llx is outside \"%s\"\n",
+		       (unsigned long long)off, DSD_PART);
+		put_mtd_device(mtd);
+		return -EINVAL;
+	}
+	ret = mtd_read(mtd, off - mtd->offset, len, &rl, buf);
 	put_mtd_device(mtd);
 
 	/* A corrected bit-flip is a read that worked. */
