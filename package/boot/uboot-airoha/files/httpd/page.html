@@ -230,18 +230,20 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 </div>
 
 <div class=pane id=p2>
-<h1>引导升级</h1><p class=sub>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p>
+<h1>引导升级</h1><p class=sub data-boot=fip>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p><p class=sub data-boot=chain hidden>写入 chainloader 分区里的 U-Boot。原厂引导锁着不动，由它从这个分区启动本 U-Boot。</p>
 <div class=box>
-<div class=fr><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
-<div class=fr><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr data-boot=fip><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr data-boot=fip><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr data-boot=chain hidden><span class=fl>U-Boot<small class=mono>…-chainloader-slot.bin</small></span><label class=fc><input type=file name=chain data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 <div class=fr><span class=fl>固件<small>可选，同时写入</small></span><label class=fc><input type=file name=firmware data-l=固件><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 </div>
-<p class=bh>首次迁移</p>
+<p class=bh><span data-boot=fip>首次迁移</span><span data-boot=chain hidden>首次安装</span></p>
 <div class=box>
-<div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
+<div class="fr wide"><span class=fl>重建 UBI<small data-boot=fip>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small><small data-boot=chain hidden>擦除 ubi 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。<b>必须同时上传固件</b></small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
 </div>
 <p class=note><b>重建 UBI 前先备份。</b>请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
-<p class=note><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>
+<p class=note data-boot=chain hidden><b>U-Boot 写在 chainloader 分区（flash 0x600000，1 MiB）</b>，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过 bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份 U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。</p>
+<p class=note data-boot=fip><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>
 <p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
@@ -288,6 +290,7 @@ h1{font-size:1.45rem;font-weight:700;margin:0 0 .15rem;letter-spacing:-.01em}
 <div class=fr><span class=fl>卷名</span><span class=fc><input type=text name=ubivol placeholder="如 fip、fit" pattern="[A-Za-z0-9_.-]{1,63}"><span class=fn>仅限字母、数字与 _ - .</span></span></div>
 <div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
 </div>
+<p class=note data-boot=chain hidden>factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory 的内容下次开机就被它换掉。</p>
 <p class=note>写完由你决定是否重启，所以可以连着写好几个卷。</p>
 <div class=act><span class=st>未选择文件</span><button type=submit class="pb pri">上传并刷写</button></div>
 <div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
@@ -590,7 +593,15 @@ if(INFO){INFO.net=r.net;INFO.ports=r.ports}
 netfill()})}
 function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}
 if(!on)return;netget();NETT=setInterval(netget,3000)}
-function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t='<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
+/*
+ * 原厂引导锁着的板子（XR1710G）：U-Boot 在 chainloader 分区里，由原厂 U-Boot
+ * 启动，没有 BL2，也没有 fip 卷。/info 带 chain 字段时，引导升级那一页换成
+ * 那一个文件，横幅、确认框里讲 fip 的话也都不说了。
+ */
+function chain(){return !!(INFO&&INFO.chain)}
+function bootmode(){var c=chain()?'chain':'fip';
+$$('[data-boot]').forEach(function(e){e.hidden=e.getAttribute('data-boot')!=c})}
+function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi)t=chain()?'<b>闪存中没有可挂载的 UBI。</b>首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。':'<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!chain()&&!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
 var ICON_OFF='<path d="M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20"/>';
 var ICON_RB='<path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/>';
 function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;
@@ -642,8 +653,8 @@ function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重�
  * 顶部红条已经在报同一件事，这里把它的后果直接写进确认框。
  */
 function askreboot(){var w='<div class=w>闪存内容不受影响</div>';
-if(INFO&&!INFO.ubi)w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';
-else if(INFO&&INFO.ubi&&!INFO.ubi.fip)w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>';
+if(INFO&&!INFO.ubi&&!chain())w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';
+else if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain())w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>';
 $('#atitle').textContent='重启';
 $('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;
 var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
@@ -1006,7 +1017,7 @@ $('#ubih').textContent='逻辑擦除块 '+sz(ub.leb)+' × '+ub.pebs
 /* 体检「可写空间」那行取整到 MiB，这里照做，免得两处差 0.7 */
 +(av==null?'':'。刷机可用 '+Math.floor(room/1048576)+' MiB：当前空闲 '
 +sz(av)+'，加上写入时会腾出的 fit 与 rootfs_data')}
-function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
+function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;bootmode();banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
 var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page)+(INFO.flash.oob?' · OOB '+sz(INFO.flash.oob):''):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
 rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
 if(INFO.uboot)$('#based').textContent=INFO.uboot;
@@ -1170,13 +1181,25 @@ else if(!sfsame())W.push('这组参数与「原厂格式」里的不同，只用
 else if(sv.src!='dd')W.push('没有用 dd 备份核对过，坏块标记的位置未确认')}}
 if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+L>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(L)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-L:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
 if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
-if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');
+if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'}),hc=rows.some(function(r){return r.k=='chain'}),hw=rows.some(function(r){return r.k=='firmware'}),bc=chain()&&INFO.chain.bootcmd;
+if(chain()){if(fmt&&!hw)E.push('打开了「重建 UBI」却没有选择固件：重建之后闪存里没有系统可以启动');if(INFO&&!INFO.ubi&&hw&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传固件');if(fmt)W.push('重建 UBI 将清除 U-Boot 环境与用户配置；factory 卷随即从原厂 DSD 区重新生成');
+/* 原厂 bootcmd 决定它从哪一半启动：0x602100 是 FIT，0x600000 是前面的 shim */
+if(hc){W.push('U-Boot 写入 chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救');
+if(bc&&!/0x60(0000|2100)(?![0-9a-fA-F])/.test(bc))W.push('原厂 bootcmd 不读 0x600000 或 0x602100，原厂引导不会启动写进去的 U-Boot：'+esc(bc));
+else if(bc&&!/0x602100(?![0-9a-fA-F])/.test(bc))W.push('原厂 bootcmd 从 0x600000 读，要经前缀 shim 启动，这条路没有实机验证过：'+esc(bc));
+/* 还得读得全：从 0x602100 读要盖住 FIT，从 0x600000 读要盖住整个文件，而且得读到 shim 认的 0x81800000 */
+var rd=INFO.chain.rd,sf=rows.filter(function(r){return r.k=='chain'})[0].f,nd=0;
+if(rd){nd=rd[0]==0x600000?sf.size:rd[0]==0x602100?sf.size-0x2100:0;
+if(nd&&rd[1]<nd)E.push('原厂 bootcmd 只读 '+sz(rd[1])+'，这份 U-Boot 要 '+sz(nd)+'：读不全，原厂引导起不来它');
+if(rd[0]==0x600000&&rd[2]!=0x81800000)E.push('原厂 bootcmd 读到 0x'+rd[2].toString(16)+'，前缀 shim 只认 0x81800000')}}}
+else{if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置')}
 /* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */
 if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '
 +'<a href="#" onclick="gobk();return false">整片下载</a>');
 if(cecc())W.push(sfok()?'原厂闪存格式已识别，重建 UBI 后自动保存':'原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响')}
 else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '
-+'<a href="#" onclick="gobk();return false">去备份</a>')}}if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
++'<a href="#" onclick="gobk();return false">去备份</a>')}}
+if(chain()?!hc:!hb&&!hf)W.push(chain()?'未选择 U-Boot，本次只写入固件':'未选择 BL2 或 U-Boot，本次只写入固件')}
 /*
  * BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件
  * 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在
@@ -1194,10 +1217,12 @@ if(r.k=='bl2'&&bl2p&&r.f.size>bl2p.s-2048)
 E.push('BL2 文件 '+sz(r.f.size)+'，超过 bl2 分区自 0x800 起可写的 '
 +sz(bl2p.s-2048));
 if(r.k=='fip'&&fipcap&&r.f.size>fipcap)
-E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 fip 卷的 '+sz(fipcap))});
+E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 fip 卷的 '+sz(fipcap));
+if(r.k=='chain'&&chain()&&r.f.size>INFO.chain.s)
+E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 chainloader 分区的 '+sz(INFO.chain.s))});
 if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');
 /* 写完不再自动重启，所以这不再是拦下的理由，只是别急着重启 */
-if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip)W.push('闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');
+if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain())W.push('闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');
 if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data 将被清空');
 var utot=0;rows.forEach(function(r){utot+=r.f.size});
 /* p4 是流式的，没有上限；别的页要先整个进内存才写 */
@@ -1214,8 +1239,8 @@ $('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribut
  * 取出 XG-040G-MD。比较时两边只留字母数字，看本机 model 里有没有它。
  * 只上色不拦：有人就是要给别的机型刷。
  */
-var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1};
-function fmodel(n){var m=/an75\d\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|bl31)/i.exec(n);return m?m[1].toUpperCase():''}
+var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',chain:'.bin',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1,chain:1};
+function fmodel(n){var m=/an75\d\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|bl31|chainloader)/i.exec(n);return m?m[1].toUpperCase():''}
 function mnorm(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}
 function fcheck(k,n,dev){var x=EXT[k],m;if(!x)return null;
 if(n.toLowerCase().slice(-x.length)!=x)return{c:'bad',t:'应为 '+x+' 文件'};
@@ -1363,7 +1388,7 @@ if(WR.ver)h+='<div class=r><span>回读校验</span><span class=v>'+esc(WR.ver)+
 if(WR.secs)h+='<div class=r><span>用时</span><span class=v>'+dur(WR.secs)+'</span></div>';
 if(!h)h='<div class=r><span>设备已写入完成</span></div>';
 h+='<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>';
-if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!WR.rows.some(function(r){return r.n=='U-Boot'}))
+if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain()&&!WR.rows.some(function(r){return r.n=='U-Boot'}))
 h+='<div class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>';
 $('#rbody').innerHTML=h;$('#rmask').setAttribute('data-on','')}
 function rhide(){$('#rmask').removeAttribute('data-on');info()}
@@ -1444,6 +1469,26 @@ var I18N={
 "重建 UBI":"Rebuild UBI",
 "擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。":"Erases the ubi partition and recreates every volume. The factory MAC, the U-Boot environment and user settings are lost. ",
 "必须同时上传 BL2 与 U-Boot":"BL2 and U-Boot must both be uploaded",
+"写入 chainloader 分区里的 U-Boot。原厂引导锁着不动，由它从这个分区启动本 U-Boot。":"Writes the U-Boot in the chainloader partition. The stock bootloader is locked and stays; it starts this U-Boot out of that partition.",
+"首次安装":"First install",
+"擦除 ubi 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。":"Erases the ubi partition and recreates every volume. The U-Boot environment and user settings are lost; the factory volume is rebuilt from the stock DSD area right away. ",
+"必须同时上传固件":"The firmware must be uploaded with it",
+"factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory 的内容下次开机就被它换掉。":"The factory volume is checked against the stock DSD area and rebuilt on every boot: while the DSD reads back valid data, whatever is written to factory here is replaced by it at the next boot.",
+"U-Boot 写在 chainloader 分区（flash 0x600000，1 MiB）":"U-Boot lives in the chainloader partition (flash 0x600000, 1 MiB)",
+"，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过 bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份 U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。":", and the stock bootloader starts it from there: the stock bootcmd reads the FIT at 0x602100, a changed one the prefix at 0x600000. A bad write leaves the stock bootloader unable to start this U-Boot and only a serial console gets you out, so the file's headers are checked before the upload and the write is read back afterwards.",
+"首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。":"First install: on Bootloader, upload the firmware and turn on Rebuild UBI.",
+"打开了「重建 UBI」却没有选择固件：重建之后闪存里没有系统可以启动":"Rebuild UBI is on but no firmware was picked: after the rebuild there would be no system in flash to start",
+"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传固件":"There is no mountable UBI in flash: turn on Rebuild UBI and upload the firmware with it",
+"重建 UBI 将清除 U-Boot 环境与用户配置；factory 卷随即从原厂 DSD 区重新生成":"Rebuilding UBI clears the U-Boot environment and user settings; the factory volume is rebuilt from the stock DSD area right away",
+"U-Boot 写入 chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救":"U-Boot goes into the chainloader partition and is read back afterwards; a bad write leaves the stock bootloader unable to start it, and only a serial console gets you out",
+"未选择 U-Boot，本次只写入固件":"No U-Boot was picked; only the firmware goes in this time",
+"chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT":"chainloader partition: a uImage prefix at 0x0 and a FIT at 0x2100",
+"chainloader 分区只有 0x2100 处的 FIT，从 0x600000 启动的 bootcmd 起不来":"The chainloader partition only has the FIT at 0x2100; a bootcmd that starts from 0x600000 will not come up",
+"chainloader 分区为空。断电后原厂引导找不到 U-Boot，请在「引导升级」页上传":"The chainloader partition is empty. After a power-off the stock bootloader finds no U-Boot — upload one on Bootloader",
+"chainloader 分区 0x2100 处没有 FIT，原厂引导起不来这份 U-Boot，请在「引导升级」页重新上传":"There is no FIT at 0x2100 in the chainloader partition, so the stock bootloader cannot start this U-Boot — upload it again on Bootloader",
+"原厂 bootcmd":"Stock bootcmd",
+"没有保存过，原厂引导用默认的 flash read 0x602100 启动 FIT":"Never saved; the stock bootloader uses its default, flash read 0x602100, and starts the FIT",
+"无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件":"Cannot be mounted; there is no usable UBI in flash. For the first install, turn on Rebuild UBI on Bootloader and upload the firmware",
 "重建 UBI 前先备份。":"Back up before rebuilding UBI. ",
 "请先在「":"Export everything from ",
 "」中导出。":" first.",
@@ -1829,6 +1874,23 @@ var I18N={
 "内存不足，无法分配读取窗口":"Not enough memory for a read window",
 };
 var I18P={
+"原厂 bootcmd 只读 ":"The stock bootcmd reads only ",
+"，这份 U-Boot 要 ":", and this U-Boot needs ",
+"：读不全，原厂引导起不来它":": read short, the stock bootloader cannot start it",
+"原厂 bootcmd 读到 0x":"The stock bootcmd loads to 0x",
+"，前缀 shim 只认 0x81800000":", but the prefix shim only looks at 0x81800000",
+"（只读 0x":" (reads only 0x",
+" 字节，U-Boot 要 0x":" bytes, U-Boot needs 0x",
+"，读不全就起不来）":" — read short, it cannot start)",
+"（读到 0x":" (loads to 0x",
+"，前缀 shim 只认 0x81800000）":", but the prefix shim only looks at 0x81800000)",
+"，超过 chainloader 分区的 ":", more than the chainloader partition's ",
+"原厂 bootcmd 不读 0x600000 或 0x602100，原厂引导不会启动写进去的 U-Boot：":"The stock bootcmd reads neither 0x600000 nor 0x602100, so the stock bootloader will not start the U-Boot written here: ",
+"原厂 bootcmd 从 0x600000 读，要经前缀 shim 启动，这条路没有实机验证过：":"The stock bootcmd reads from 0x600000, which starts through the prefix shim — a path not yet tried on real hardware: ",
+"（经 0x0 处的前缀 shim 启动，这条路没有实机验证过；原厂的 0x602100 直接启动 FIT）":" (starts through the prefix shim at 0x0, a path not yet tried on real hardware; the stock 0x602100 starts the FIT directly)",
+"（不读 0x600000 或 0x602100，原厂引导不会启动 chainloader 分区）":" (reads neither 0x600000 nor 0x602100, so the stock bootloader will not start the chainloader partition)",
+" 个，其中 chainloader 分区有坏块：原厂引导按它自己的 BMT 读这个分区，U-Boot 写不进去：":" bad, including one in the chainloader partition: the stock bootloader reads that partition through its own BMT, so U-Boot cannot be written there: ",
+"chainloader 分区读取失败（":"Reading the chainloader partition failed (",
 " 未备份 · ":" not backed up · ",
 "与本机一致":"matches this device",
 "本机是 ":"this device is ",

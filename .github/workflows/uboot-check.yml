@@ -264,6 +264,11 @@ jobs:
             config: an7581_znxt_zn504xg-d
           - label: HG5382A (AN7581, parallel NAND)
             config: an7581_fiberhome_hg5382a
+          - label: XR1710G (AN7581, chainloaded)
+            config: an7581_gemtek_xr1710g
+            chain: true
+          - label: XR1710G (AN7581, own BL2)
+            config: an7581_gemtek_xr1710g_bl2
     steps:
       - name: Checkout(检出)
         uses: actions/checkout@v7
@@ -407,6 +412,7 @@ jobs:
       # OpenWrt 的不一样，压出来要大 1% 左右，SPI 板子眼下只剩一两 KiB 余量，
       # 所以这里超了只报警告；真正拦的是整套编译里那一道。
       - name: BL33 Size(U-Boot 塞得进 BL2)
+        if: ${{ !matrix.chain }}
         env:
           UBOOT_CFG: ${{ matrix.config }}
         run: |
@@ -428,6 +434,27 @@ jobs:
           sh "$GITHUB_WORKSPACE/$PKG/files/fip/check-bl33.sh" "$UBOOT_CFG" \
             u-boot.bin u-boot.lzma "$(lim BL33_MAX)" "$(lim BL33_LZMA_MAX)" \
             || echo "::warning::$UBOOT_CFG 的 U-Boot 按这里的编译结果超出 BL2 能加载的大小"
+
+      # 原厂引导锁着的板子不刷 BL2/FIP，刷的是 chainloader 分区的槽位镜像：
+      # FIT 在 0x2100（原厂 bootcmd 读的地方），前面是 legacy uImage 包着的
+      # shim（给改过 bootcmd、从 0x600000 读的机器）。shim 是裸机代码，没有
+      # 实机也要跑一遍：在 QEMU 里按原厂 bootm 的样子把它放好、起跳，看它是
+      # 不是把东西解到了 0x80200000 并跳了过去，EL1/2/3 各一遍。
+      # 这里的 u-boot.lzma 用 xz 压（大小不记在头里）；OpenWrt 用它自己的
+      # lzma（大小记在头里）—— 两种头 qtest.sh 都测。
+      - name: Chainloader Slot(槽位镜像 + QEMU 跑 shim)
+        if: matrix.chain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          set -eu
+          sudo apt-get -yqq install --no-install-recommends qemu-system-arm socat xz-utils
+          cd "$UB"
+          xz --format=lzma -9 -k -c u-boot.bin > u-boot.lzma
+          sh "$GITHUB_WORKSPACE/$PKG/files/chainload/build.sh" aarch64-linux-gnu- \
+            "$UB" "$UB/u-boot.lzma" "CI Web U-Boot" "$UB/chainloader-slot.bin"
+          ./tools/dumpimage -l chainloader-slot.bin
+          sh "$GITHUB_WORKSPACE/$PKG/files/chainload/qtest.sh" "$UB"
 
       # httpd.c 是这个项目自己写的，不该有告警。这一步在两块板上都真过了几轮
       # 之后才拦：从这里起 httpd.o 出一条告警就红。

@@ -1,0 +1,14 @@
+#include <configs/an7581_web_defconfig>
+# A board whose vendor BL2 and U-Boot stay in place: the vendor U-Boot
+# starts this one out of a flash partition, like a kernel.  Everything in
+# an7581_web applies except what assumes this U-Boot owns the whole chip.
+# The lines below override it; the last assignment of a symbol wins.
+#
+# Restoring a whole-chip image would write under the vendor bootloader,
+# which reads the flash through its own BMT, not the way this one does.
+# CONFIG_CMD_HTTPD_STOCK_RESTORE is not set
+# None of the locked Gemtek boards has an EN8811.
+# CONFIG_PHY_AIROHA_EN8811 is not set
+# The firmware these boards run keeps fw_env at 16 KiB; so did the
+# chainloader before this one, whose ubootenv this one inherits.
+CONFIG_ENV_SIZE=0x4000

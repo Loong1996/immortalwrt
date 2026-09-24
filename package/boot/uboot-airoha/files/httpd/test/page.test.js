@@ -2608,6 +2608,125 @@ function setoff(w, v) { const e = $(w, '#p4 input[name=stockoff]'); e.value = v;
        /上传完成，设备开始写入闪存/.test(txt(w, '#p1 .pwhat')), txt(w, '#p1 .pwhat'));
   }
 
+  console.log('\n--- 原厂引导锁着的板子（XR1710G）---');
+  {
+    /*
+     * U-Boot 在 chainloader 分区里，由原厂 U-Boot 启动：没有 BL2，没有 fip
+     * 卷。/info 带 chain，引导升级就只剩一个文件；fip 那一套警告一句都不该说。
+     */
+    const w = await boot();
+    setsel(w, 'dev', 'chain');
+    await sleep(700);
+    ok('/info 带上了 chain', !!(w.INFO && w.INFO.chain), JSON.stringify(w.INFO && w.INFO.chain));
+    ok('没有 fip 卷也不挂横幅', $(w, '#ban').hasAttribute('hidden'), txt(w, '#bant'));
+    $(w, '.nav[data-p=p2]').click();
+    await sleep(300);
+    const shown = sel => !$(w, sel).closest('[hidden]');
+    ok('BL2 那一格藏起来', !shown('#p2 input[name=bl2]'));
+    ok('FIP 那一格藏起来', !shown('#p2 input[name=fip]'));
+    ok('换成 chainloader 那一格', shown('#p2 input[name=chain]'));
+    ok('说明换成 chainloader 的', /chainloader 分区/.test(txt(w, '#p2 .sub:not([hidden])')),
+       txt(w, '#p2 .sub:not([hidden])'));
+    ok('不再说 0x20000 起擦', !shown('#p2 [data-boot=fip].note'));
+
+    const pick = (name, fn, n) => {
+      const i = $(w, '#p2 input[name=' + name + ']');
+      Object.defineProperty(i, 'files',
+        { value: fn ? [new w.File([new Uint8Array(n)], fn)] : [], configurable: true });
+      if (fn) i.onchange();
+    };
+    const errs = () => [...w.document.querySelectorAll('#abody .e')]
+      .map(e => e.textContent).join(' | ');
+    const warns = () => [...w.document.querySelectorAll('#abody .w')]
+      .map(e => e.textContent).join(' | ');
+    const SLOT = 'immortalwrt-airoha-an7581-gemtek_xr1710g-ubi-chainloader-slot.bin';
+
+    pick('chain', SLOT, 363496);
+    w.ask();
+    ok('单独换 U-Boot 放行', !errs() && !$(w, '#yes').hidden, errs());
+    ok('文件名里认得出机型', /XR1710G · 与本机一致/.test(txt(w, '#abody')), txt(w, '#abody'));
+    ok('说清写到哪、坏了怎么办', /chainloader 分区/.test(warns()) && /串口/.test(warns()), warns());
+    ok('原厂 bootcmd 读 0x602100 就不多话', !/bootcmd/.test(warns()), warns());
+    ok('不提 BL2', !/BL2/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+
+    w.INFO.chain.bootcmd = 'flash read 0x600000 0x100000 $loadaddr; bootm';
+    w.ask();
+    ok('0x600000 的 bootcmd 要提一句 shim 没实机验证过', /前缀 shim/.test(warns()), warns());
+    w.hide();
+    w.INFO.chain.bootcmd = 'flash read 0x6000000 0x100000 $loadaddr; bootm';
+    w.ask();
+    ok('0x6000000 不算 0x600000', /不读 0x600000 或 0x602100/.test(warns()), warns());
+    w.hide();
+    /* 读得全不全、读到哪，是原厂引导能不能起来的另一半 */
+    w.INFO.chain.bootcmd = 'flash read 0x602100 0x40000 $loadaddr; bootm';
+    w.INFO.chain.rd = [0x602100, 0x40000, 0x81800000];
+    w.ask();
+    ok('bootcmd 读不全就拦', /只读 256 KiB/.test(errs()), errs());
+    w.hide();
+    w.INFO.chain.bootcmd = 'flash read 0x600000 0x100000 0x82000000; bootm';
+    w.INFO.chain.rd = [0x600000, 0x100000, 0x82000000];
+    w.ask();
+    ok('0x600000 读到别处也拦', /只认 0x81800000/.test(errs()) && !/只读/.test(errs()), errs());
+    w.hide();
+    w.INFO.chain.bootcmd = null;
+    delete w.INFO.chain.rd;
+
+    pick('chain', SLOT, 0x100000 + 1);
+    w.ask();
+    ok('超过分区就拦', /超过 chainloader 分区/.test(errs()), errs());
+    w.hide();
+    pick('chain', SLOT, 363496);
+
+    $(w, '#p2 [name=format]').checked = true;
+    w.ask();
+    ok('重建不带固件就拦', /没有选择固件/.test(errs()), errs());
+    ok('不要求 BL2、U-Boot', !/BL2|U-Boot 文件/.test(errs()), errs());
+    w.hide();
+    pick('firmware', 'immortalwrt-airoha-an7581-gemtek_xr1710g-ubi-squashfs-sysupgrade.itb', 4096);
+    w.ask();
+    ok('带上固件就放行', !errs() && !$(w, '#yes').hidden, errs());
+    ok('说 factory 会从 DSD 重新生成', /DSD/.test(warns()), warns());
+    ok('不说出厂 MAC 会丢', !/出厂 MAC/.test(warns()), warns());
+    w.hide();
+    $(w, '#p2 [name=format]').checked = false;
+    pick('chain', null);
+    w.ask();
+    ok('只写固件时这么说', /未选择 U-Boot，本次只写入固件/.test(warns()), warns());
+    w.hide();
+
+    w.askreboot();
+    ok('重启不说 U-Boot 只在内存里', !/仅存于内存/.test(txt(w, '#abody')), txt(w, '#abody'));
+    w.hide();
+
+    w.setlang('en');
+    $(w, '.nav[data-p=p2]').click();
+    ok('chainloader 那一页也有英文', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+    w.check();
+    await sleep(2500);
+    ok('体检里的新条目也有英文', zhLeft(w).length === 0, zhLeft(w).join(' | '));
+    w.setlang('zh');
+  }
+  {
+    const w = await boot();
+    setsel(w, 'dev', 'chainnoubi');
+    await sleep(700);
+    ok('没有 UBI 时横幅说首次安装', /首次安装/.test(txt(w, '#bant')) &&
+       !/BL2/.test(txt(w, '#bant')), txt(w, '#bant'));
+    w.askreboot();
+    ok('没有 UBI 也不说 U-Boot 只在内存里', !/仅存于内存/.test(txt(w, '#abody')),
+       txt(w, '#abody'));
+    w.hide();
+    $(w, '.nav[data-p=p2]').click();
+    await sleep(300);
+    const i = $(w, '#p2 input[name=firmware]');
+    Object.defineProperty(i, 'files', { value: [new w.File([new Uint8Array(4096)],
+      'immortalwrt-airoha-an7581-gemtek_xr1710g-ubi-squashfs-sysupgrade.itb')], configurable: true });
+    w.ask();
+    ok('没有 UBI 又不重建就拦', /并同时上传固件/.test(txt(w, '#abody .e')), txt(w, '#abody'));
+    w.hide();
+  }
+
   console.log('\n--- 中英切换 ---');
   {
     const w = await boot();

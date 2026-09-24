@@ -7,7 +7,8 @@ Opens in any browser straight from disk: every request the page makes
 (/info, /check, /log, /env, /ping, /reboot, the POST) is answered by a stub,
 and a small bar at the bottom right switches the device between the
 states the page has to handle -- healthy, no UBI, no fip volume, a build
-without console recording, /info failing -- picks how a submit ends, and
+without console recording, /info failing, a board started by a locked
+vendor bootloader (with and without UBI) -- picks how a submit ends, and
 can cut the connection so the heartbeat's disconnected overlay can be
 seen.  The stub also goes quiet for as long as a real device would: a
 write, a reboot, a whole-chip read.  Downloads have no device behind
@@ -86,7 +87,7 @@ CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
     ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["web_uboot_envver", 0, "10，与当前 U-Boot 一致", "引导"],
+    ["web_uboot_envver", 0, "11，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
@@ -103,6 +104,52 @@ CHECK = [
     ["U-Boot MAC", 0, "90:03:2e:12:34:56，与出厂数据一致", "出厂数据"],
     ["流水灯", 0, "5 个：green:power、green:wan、green:wan-online、green:usb-1、green:usb-2", "指示灯"],
 ]
+# A board whose vendor bootloader stays (the XR1710G): U-Boot sits in the
+# chainloader partition, UBI has no fip and one factory volume that U-Boot
+# rebuilds from the vendor DSD.  Laid over INFO / CHECK by the stub's
+# "chain" states; whatever is not named here stays as above.
+CHAIN_INFO = {
+    "model": "Gemtek XR1710G",
+    "ram": 2147483648,
+    "flash": {"name": "spi-nand0", "size": 536870912, "erase": 131072,
+              "page": 2048},
+    "parts": [{"n": "vendor", "o": 0, "s": 0x600000},
+              {"n": "chainloader", "o": 0x600000, "s": 0x100000},
+              {"n": "ubi", "o": 0x700000, "s": 0x1b700000},
+              {"n": "reserved_bmt", "o": 0x1be00000, "s": 0x4200000}],
+    "stock": 0,
+    "fv": [{"n": "factory", "s": 0x6006}],
+    "chain": {"o": 0x600000, "s": 0x100000,
+              "bootcmd": "flash read 0x602100 0x4000000 $loadaddr; bootm",
+              "rd": [0x602100, 0x4000000, 0x81800000]},
+    "ubi": {"leb": 126976, "pebs": 3512, "avail": 0, "fip": 0,
+            "vols": [
+                {"i": 0, "n": "ubootenv", "t": "dynamic", "s": 126976,
+                 "u": 126976},
+                {"i": 1, "n": "ubootenv2", "t": "dynamic", "s": 126976,
+                 "u": 126976},
+                {"i": 2, "n": "factory", "t": "static", "s": 126976,
+                 "u": 0x6006},
+                {"i": 3, "n": "fit", "t": "dynamic", "s": 26157056,
+                 "u": 26157056},
+                {"i": 4, "n": "rootfs_data", "t": "dynamic",
+                 "s": 419045376, "u": 419045376}]},
+}
+CHAIN_CHECK = [
+    ["闪存", 0, "spi-nand0，512 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
+    ["坏块", 0, "无", "闪存"],
+    ["U-Boot", 0, "chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT", "引导"],
+    ["原厂 bootcmd", 0, "flash read 0x602100 0x4000000 $loadaddr; bootm", "引导"],
+    ["web_uboot_envver", 0, "11，与当前 U-Boot 一致", "引导"],
+    ["UBI", 0, "5 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
+    ["fit 卷", 0, "FIT 镜像，25961472 字节", "UBI"],
+    ["ubootenv 卷", 0, "存在，CRC 0x3f2a91c4", "环境"],
+    ["ubootenv2 卷", 0, "存在，与 ubootenv 一致", "环境"],
+    ["factory 卷", 0, "已读取，MAC 3c:7c:3f:44:55:66", "出厂数据"],
+    ["U-Boot MAC", 0, "3c:7c:3f:44:55:66，与出厂数据一致", "出厂数据"],
+    ["流水灯", 0, "4 个：red:status、green:status、blue:status、white:status", "指示灯"],
+]
+
 # FiberHome HG5382A: parallel NAND, so the SoC does the ECC and the whole-chip
 # backup reads raw with OOB.  "pnand" is the first boot from stock (the stock
 # UBI does not read back here, the stock format was just probed); "pnandmig" is
@@ -164,7 +211,7 @@ ENV = [
                              "ubi write $loadaddr fit $filesize"),
     ("vendor", "nokia"),
     ("web_uboot_boot_forever", "while true ; do httpd ; sleep 1 ; done"),
-    ("web_uboot_envver", "10"),
+    ("web_uboot_envver", "11"),
     ("web_uboot_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
     ("web_uboot_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize"),
     ("web_uboot_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
@@ -231,6 +278,7 @@ LOGX+='httpd: DHCP ACK 192.168.1.100 -> 3c:7c:3f:1a:2b:3'+(LOGSEQ%9)+'\n'},3000)
 function down(){return S.conn=='down'||Date.now()<DOWN}
 function fall(ms){DOWN=Date.now()+ms}
 function info(){var i=JSON.parse(JSON.stringify(D.info)),k;
+if(S.dev.indexOf('chain')==0)for(k in D.chain)i[k]=JSON.parse(JSON.stringify(D.chain[k]));
 if(S.dev.indexOf('pnand')==0){for(k in D.pnand)i[k]=JSON.parse(JSON.stringify(D.pnand[k]));
  /* 原厂那次：原厂 UBI 读不出；已迁移那次：格式早已存进环境变量，dd 也核对过 */
  if(S.dev=='pnand')i.ubi=null;else{i.sfmt.src='dd';i.sfmt.saved=1;i.sfmt.swap=0}
@@ -238,11 +286,13 @@ if(S.dev.indexOf('pnand')==0){for(k in D.pnand)i[k]=JSON.parse(JSON.stringify(D.
  /* 已迁移的板子闪存早不是原厂内容了，但存下来的那份还在 */
  if(S.dev=='pnandmig'&&S.sf=='na'){i.sfmt=JSON.parse(JSON.stringify(D.pnand.sfmt));i.sfmt.st='ok';i.sfmt.src='dd';i.sfmt.saved=1;i.sfmt.swap=0}
  if(SFCUR)i.sfmt=JSON.parse(JSON.stringify(SFCUR))}
-if(S.dev=='noubi')i.ubi=null;
+if(S.dev=='noubi'||S.dev=='chainnoubi')i.ubi=null;
 if(S.dev=='nofip'){i.ubi.fip=0;i.ubi.vols=i.ubi.vols.filter(function(v){return v.n!='fip'})}
 if(S.dev=='nolog')i.log=0;
 return i}
-function check(){var c=D.check.map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3]}});
+function check(){var c=(S.dev.indexOf('chain')==0?D.chaincheck:D.check).map(function(r){return{n:r[0],s:r[1],v:r[2],g:r[3]}});
+if(S.dev=='chainnoubi')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
+{n:'UBI',s:2,v:'无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件',g:'UBI'}]);
 if(S.dev=='noubi'||S.dev=='pnand')return c.filter(function(i){return i.g=='闪存'||i.g=='引导'}).concat([
 {n:'UBI',s:2,v:'无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件',g:'UBI'},
 {n:'ubootenv 卷',s:2,v:'无法读取，UBI 未挂载，环境仅存于内存，断电丢失',g:'环境'},
@@ -378,7 +428,7 @@ x.send=function(fd){
  * A1 的行协议。写那一步报不出中间态（配方在 run_command 里），所以只有一句
  * 「正在写…」；回读校验是设备自己的循环，一段一段报得出来。
  */
-var VNAME={bl2:'BL2',fip:'U-Boot',firmware:'固件',ubifile:'卷'};
+var VNAME={bl2:'BL2',fip:'U-Boot',chain:'U-Boot',firmware:'固件',ubifile:'卷'};
 function vname(p){return VNAME[p.k]||(p.k.indexOf('fvol_')==0?p.k.slice(5):p.k)}
 function wrlines(parts,fmt){var L=[],tot=0,vd=Math.round(520/Math.max(1,parts.length));
  if(fmt)L.push(['s 重建 UBI',2600]);
@@ -416,7 +466,7 @@ document.addEventListener('DOMContentLoaded',function(){
  /* 这条是预览自己的，不属于设备那张页面：别让语言切换去动它 */
  b.id='pvbar';b.setAttribute('data-raw','');
  b.setAttribute('style','position:fixed;right:12px;bottom:12px;z-index:99;background:#1d1d1f;color:#f5f5f7;font:12px/1.4 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;padding:8px 10px;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35);display:flex;gap:8px;align-items:center;flex-wrap:wrap;max-width:calc(100vw - 24px)');
- b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option><option value=pnand>并口 NAND 首次迁移前（HG5382A）</option><option value=pnandmig>并口 NAND 已迁移（HG5382A）</option></select> 原厂格式 <select id=pvsf><option value=ok>已识别</option><option value=amb>两种都读得通</option><option value=none>原厂不用 SoC ECC</option><option value=na>闪存已不是原厂内容</option></select> dd 核对 <select id=pvdd><option value=ok>一致</option><option value=part>两块被挪过</option><option value=bad>全对不上</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option><option value=vbad>回读校验没通过</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
+ b.innerHTML='<b>预览</b> 设备 <select id=pvdev><option value=ok>正常</option><option value=noubi>没有 UBI</option><option value=nofip>没有 fip 卷</option><option value=nolog>不带串口日志</option><option value=noinfo>/info 失败</option><option value=info500>/info 回 500</option><option value=chain>原厂引导锁着（XR1710G）</option><option value=chainnoubi>原厂引导锁着，没有 UBI</option><option value=pnand>并口 NAND 首次迁移前（HG5382A）</option><option value=pnandmig>并口 NAND 已迁移（HG5382A）</option></select> 原厂格式 <select id=pvsf><option value=ok>已识别</option><option value=amb>两种都读得通</option><option value=none>原厂不用 SoC ECC</option><option value=na>闪存已不是原厂内容</option></select> dd 核对 <select id=pvdd><option value=ok>一致</option><option value=part>两块被挪过</option><option value=bad>全对不上</option></select> 提交 <select id=pvpost><option value=ok>成功</option><option value=reject>设备拒绝 400</option><option value=fail500>写到一半失败 500</option><option value=drop>断线</option><option value=busy>另一个上传占着</option><option value=vbad>回读校验没通过</option></select> 连接 <select id=pvconn><option value=up>正常</option><option value=down>断开</option></select>';
  document.body.appendChild(b);
  var sel=b.querySelector('#pvdev'),ps=b.querySelector('#pvpost'),cn=b.querySelector('#pvconn'),sf=b.querySelector('#pvsf'),dd=b.querySelector('#pvdd');
  sf.onchange=function(){S.sf=sf.value;SFCUR=null;window.info&&window.info()};
@@ -481,6 +531,7 @@ def render(html, stock=True, pnand=True):
     for k, v in MACROS.items():
         html = html.replace("@@%s@@" % k, v)
     data = json.dumps({"info": INFO, "check": CHECK, "log": LOG,
+                       "chain": CHAIN_INFO, "chaincheck": CHAIN_CHECK,
                        "pnand": PNAND_INFO,
                        "env": [{"k": k, "v": v} for k, v in ENV]},
                       ensure_ascii=False)

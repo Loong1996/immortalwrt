@@ -78,6 +78,11 @@ define Build/an7581-chainloader
   cat $(STAGING_DIR_IMAGE)/an7581_$1-chainload-u-boot.itb >> $@
 endef
 
+# The chainloader partition's image, built with U-Boot (files/chainload/).
+define Build/an7581-chainloader-slot
+  cat $(STAGING_DIR_IMAGE)/an7581_$1-chainloader-slot.bin >> $@
+endef
+
 define Device/FitImageLzma
 	KERNEL_SUFFIX := -uImage.itb
 	KERNEL = kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb
@@ -177,6 +182,45 @@ define Device/gemtek_w1700k-ubi
   SOC := an7581
 endef
 TARGET_DEVICES += gemtek_w1700k-ubi
+
+# The firmware to run is naoki66/ImmortalWrt-for-Gemtek-brightspeed, whose
+# XR1710G support carries the board's own kernel fixes.  This definition is
+# here for the recovery U-Boot: chainloader-slot.bin goes into the
+# chainloader partition, and a sysupgrade image of either tree boots from it.
+# preloader.bin and bl31-uboot.fip are the other way to start it, for units
+# whose BootROM runs our BL2: the vendor bootloader's first erase block is
+# replaced, and U-Boot moves into a fip volume of the same UBI (both signed
+# with the SDK key, like the XG-040G-TF's, in case the chip checks it).
+define Device/gemtek_xr1710g-ubi
+  DEVICE_VENDOR := Gemtek
+  DEVICE_MODEL := XR1710G
+  DEVICE_VARIANT := UBI
+  DEVICE_ALT0_VENDOR := Brightspeed
+  DEVICE_ALT0_MODEL := XR1710G
+  DEVICE_ALT0_VARIANT := UBI
+  DEVICE_DTS := an7581-gemtek-xr1710g-ubi
+  SUPPORTED_DEVICES := gemtek,xr1710g-ubi
+  DEVICE_PACKAGES := airoha-en7581-mt7996-npu-firmware fitblk \
+		    kmod-hwmon-nct7802 kmod-mt7996-firmware wpad-openssl \
+		    rtl826x-firmware
+  UBINIZE_OPTS := -E 5
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  IMAGE/sysupgrade.itb := append-kernel | fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | append-metadata
+  ARTIFACTS := chainloader-slot.bin preloader.bin bl31-uboot.fip
+  ARTIFACT/chainloader-slot.bin := an7581-chainloader-slot gemtek_xr1710g
+  ARTIFACT/preloader.bin := an7581-preloader-signed gemtek_xr1710g_bl2 gemtek
+  ARTIFACT/bl31-uboot.fip := an7581-bl31-uboot-signed gemtek_xr1710g_bl2
+  SOC := an7581
+endef
+TARGET_DEVICES += gemtek_xr1710g-ubi
 
 define Device/nokia_valyrian
   DEVICE_VENDOR := Nokia

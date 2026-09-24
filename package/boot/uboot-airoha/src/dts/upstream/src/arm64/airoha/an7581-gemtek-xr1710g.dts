@@ -1,0 +1,53 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+/*
+ * Brightspeed / Gemtek XR1710G, vendor bootloader kept.  The vendor BL2 and
+ * U-Boot are locked, so this U-Boot is not the first stage: the vendor
+ * U-Boot reads it out of the chainloader partition with
+ * "flash read 0x602100 ...; bootm" and starts it like a kernel.  Nothing
+ * before 0x700000 is ours to write except that partition; the flash from
+ * 0x700000 up to the vendor's BMT pool is one UBI.
+ */
+
+#include "an7581-gemtek-xr1710g.dtsi"
+
+/ {
+	model = "Gemtek XR1710G";
+};
+
+&spi_nand {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* Vendor BL2, U-Boot, its environment and the DSD at 0x400000. */
+		partition@0 {
+			label = "vendor";
+			reg = <0x0 0x600000>;
+			read-only;
+		};
+
+		/*
+		 * This U-Boot.  The vendor U-Boot reads it through its own
+		 * BMT, so a bad block in here is refused rather than skipped.
+		 */
+		partition@600000 {
+			label = "chainloader";
+			reg = <0x600000 0x100000>;
+		};
+
+		partition@700000 {
+			label = "ubi";
+			reg = <0x700000 0x1b700000>;
+		};
+
+		/* The vendor bootloader's BMT/BBT pool; keep out. */
+		partition@1be00000 {
+			label = "reserved_bmt";
+			reg = <0x1be00000 0x4200000>;
+			read-only;
+		};
+	};
+};

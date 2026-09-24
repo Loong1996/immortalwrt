@@ -1,0 +1,42 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] cmd: add gemtek_dsd for the Gemtek factory volume
+
+A Gemtek AN7581 board with a locked vendor bootloader (XR1710G, and the
+W1700K it is built on) keeps its MAC addresses and Wi-Fi calibration in the
+DSD area of the vendor partition.  OpenWrt on it reads them from a UBI
+volume named "factory" instead, and that volume goes with everything else
+when UBI is rebuilt.  gemtek_dsd builds it back from the DSD, and sets
+ethaddr / eth1addr from the same place.
+
+The command itself is cmd/gemtek_dsd.c, which comes in through src/; this
+only hooks it into Kconfig and the Makefile.
+
+--- a/cmd/Kconfig
++++ b/cmd/Kconfig
+@@ -3211,6 +3211,16 @@
+ 	help
+ 	  UBIFS is a file system for flash devices which works on top of UBI.
+ 
++config CMD_GEMTEK_DSD
++	bool "gemtek_dsd - factory data from the vendor DSD area"
++	depends on CMD_UBI && MTD
++	help
++	  Gemtek AN7581 boards with a locked vendor bootloader (XR1710G,
++	  W1700K) keep their MAC addresses and Wi-Fi calibration in the DSD
++	  area of the vendor partition, while OpenWrt reads them from a UBI
++	  volume named "factory".  "gemtek_dsd sync" builds that volume from
++	  the DSD, "gemtek_dsd ethaddr" sets ethaddr and eth1addr from it.
++
+ config CMD_MESON
+ 	bool "Amlogic Meson commands"
+ 	depends on ARCH_MESON
+--- a/cmd/Makefile
++++ b/cmd/Makefile
+@@ -195,6 +195,7 @@
+ obj-$(CONFIG_CMD_TPM_V2) += tpm-v2.o
+ obj-$(CONFIG_CMD_CROS_EC) += cros_ec.o
+ obj-$(CONFIG_CMD_UBI) += ubi.o
++obj-$(CONFIG_CMD_GEMTEK_DSD) += gemtek_dsd.o
+ obj-$(CONFIG_CMD_UBIFS) += ubifs.o
+ obj-$(CONFIG_CMD_UNLZ4) += unlz4.o
+ obj-$(CONFIG_CMD_UNZIP) += unzip.o

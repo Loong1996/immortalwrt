@@ -37,6 +37,30 @@ define U-Boot/an7581_fiberhome_hg5382a
   BL33_LZMA_MAX:=0x70000
 endef
 
+# Locked vendor bootloader: no BL2 or FIP, the vendor U-Boot boots this one
+# out of the chainloader partition.  CHAINLOAD_SLOT builds that partition's
+# image here, with the U-Boot tree's own mkimage; see files/chainload/.
+define U-Boot/an7581_gemtek_xr1710g
+  NAME:=Gemtek XR1710G
+  UBOOT_CONFIG:=an7581_gemtek_xr1710g
+  BUILD_DEVICES:=gemtek_xr1710g-ubi
+  BUILD_SUBTARGET:=an7581
+  CHAINLOAD_SLOT:=1
+endef
+
+# The same board started by our own BL2 instead, for units whose BootROM
+# runs it (try it over XMODEM first).  Same UBI, same firmware; see
+# an7581-gemtek-xr1710g-bl2.dts and arm-trusted-firmware-airoha
+# an7581-gemtek-bl2.
+define U-Boot/an7581_gemtek_xr1710g_bl2
+  NAME:=Gemtek XR1710G (own BL2)
+  UBOOT_CONFIG:=an7581_gemtek_xr1710g_bl2
+  BUILD_DEVICES:=gemtek_xr1710g-ubi
+  BUILD_SUBTARGET:=an7581
+  BL2_IMAGE:=an7581-gemtek-bl2.bin
+  BL31_IMAGE:=an7581-bl31.bin
+endef
+
 define U-Boot/an7581_gemtek_w1700k
   NAME:=Gemtek W1700K (UBI)
   UBOOT_CONFIG:=an7581_w1700k
@@ -122,6 +146,8 @@ endef
 UBOOT_TARGETS := \
 	an7581_fiberhome_hg5382a \
 	an7581_gemtek_w1700k \
+	an7581_gemtek_xr1710g \
+	an7581_gemtek_xr1710g_bl2 \
 	an7581_nokia_valyrian \
 	an7581_nokia_xg-040g-md \
 	an7581_nokia_xg-040g-tf \
@@ -172,6 +198,10 @@ define Build/Compile
 		$(SHELL) ./files/fip/check-bl33.sh $(BUILD_VARIANT) \
 			$(PKG_BUILD_DIR)/u-boot.bin $(PKG_BUILD_DIR)/u-boot.lzma \
 			$(BL33_MAX) $(BL33_LZMA_MAX))
+	$(if $(CHAINLOAD_SLOT), \
+		XZ=$(STAGING_DIR_HOST)/bin/xz $(SHELL) ./files/chainload/build.sh \
+			$(TARGET_CROSS) $(PKG_BUILD_DIR) $(PKG_BUILD_DIR)/u-boot.lzma \
+			"$(NAME) Web U-Boot" $(PKG_BUILD_DIR)/chainloader-slot.bin)
 endef
 
 # don't stage files to bindir, let target/linux/airoha/image/*.mk do that
@@ -184,6 +214,8 @@ define Build/InstallDev
 		$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-u-boot.$(if $(LZMA_COMPRESS),lzma,bin)
 	$(INSTALL_DATA) $(PKG_BUILD_DIR)/u-boot.dtb \
 		$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-u-boot.dtb
+	$(if $(CHAINLOAD_SLOT), $(INSTALL_DATA) $(PKG_BUILD_DIR)/chainloader-slot.bin \
+		$(STAGING_DIR_IMAGE)/$(BUILD_VARIANT)-chainloader-slot.bin)
 endef
 
 $(eval $(call BuildPackage/U-Boot))

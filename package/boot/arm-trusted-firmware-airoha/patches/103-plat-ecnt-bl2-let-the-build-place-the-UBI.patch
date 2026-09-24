@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Loong <1031313955@qq.com>
+Date: Thu, 24 Sep 2026 10:00:00 +0800
+Subject: [PATCH] plat: ecnt: bl2: let the build place the UBI
+
+bl2_boot_nand_ubi.c already honours OVERRIDE_UBI_START_ADDR and
+OVERRIDE_UBI_END_ADDR, but nothing passes them down, so BL23 always
+attaches the UBI from 0x20000 to the end of the chip.  Turn the make
+variables of the same names into defines.
+
+The Gemtek XR1710G keeps the vendor's UBI at 0x700000, ending where the
+vendor BMT pool starts (0x1be00000); a BL2 built with those two leaves
+everything past its own erase block where it is.
+---
+ plat/ecnt/en7523/platform.mk | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/plat/ecnt/en7523/platform.mk b/plat/ecnt/en7523/platform.mk
+--- a/plat/ecnt/en7523/platform.mk
++++ b/plat/ecnt/en7523/platform.mk
+@@ -58,6 +58,15 @@
+ IMAGE_BL23				:= 1
+ endif
+ 
++# Where BL23 looks for the UBI that holds the 'fip' volume, for boards
++# whose flash does not start the UBI at 0x20000 (bl2_boot_nand_ubi.c).
++ifneq ($(OVERRIDE_UBI_START_ADDR),)
++$(eval $(call add_define,OVERRIDE_UBI_START_ADDR))
++endif
++ifneq ($(OVERRIDE_UBI_END_ADDR),)
++$(eval $(call add_define,OVERRIDE_UBI_END_ADDR))
++endif
++
+ ifneq ($(strip $(TCSUPPORT_CPU_AN7583)$(TCSUPPORT_CPU_EN7581)$(TCSUPPORT_CPU_AN7552)),)
+ ifeq ($(TCSUPPORT_CPU_AN7583),1)
+ SOC_SUB_DIR				:= an7583
+-- 
+2.43.0
+

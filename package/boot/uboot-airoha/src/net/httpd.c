@@ -12,7 +12,9 @@
  *
  *   routine flash    "firmware" into the fit volume
  *   bootloader       "bl2" and/or "fip", optionally with the firmware and
- *                    a rebuild of the whole ubi partition ("format")
+ *                    a rebuild of the whole ubi partition ("format"); on a
+ *                    board whose vendor bootloader stays, "chain" into the
+ *                    chainloader partition instead
  *   back to stock    "stock" written to raw flash at "stockoff"
  *                    (CONFIG_CMD_HTTPD_STOCK_RESTORE)
  *   UBI volumes      per-unit factory data volumes named in
@@ -60,7 +62,9 @@
 #include <dm.h>
 #include <env.h>
 #include <env_internal.h>
+#include <image.h>
 #include <led.h>
+#include <malloc.h>
 #include <miiphy.h>
 #include <mtd.h>
 #include <net.h>
@@ -70,6 +74,7 @@
 #include <time.h>
 #include <ubi_uboot.h>
 #include <linux/kernel.h>
+#include <linux/ctype.h>
 #include <linux/delay.h>
 #include <linux/err.h>
 #include <linux/libfdt.h>
@@ -168,13 +173,42 @@ DECLARE_GLOBAL_DATA_PTR;
 #define ENV_FORMAT_UBI		"web_uboot_format_ubi"
 #define ENV_WRITE_FIP		"web_uboot_write_fip"
 #define ENV_WRITE_FIT		"ubi_write_production"
+#define ENV_WRITE_CHAIN		"web_uboot_write_chain"
 #define ENV_VER			"web_uboot_envver"
 
 #define UBI_PART		"ubi"
 #define CMD_ATTACH_UBI		"ubi part " UBI_PART
 
-#define DEF_WRITE_BL2		"mtd erase bl2 && " \
-				"mtd write bl2 $loadaddr 0x800 $filesize"
+#define BL2_PART		"bl2"
+#define DEF_WRITE_BL2		"mtd erase " BL2_PART " && " \
+				"mtd write " BL2_PART " $loadaddr 0x800 $filesize"
+
+/*
+ * A board whose vendor BL2 and U-Boot are locked keeps them.  The vendor
+ * U-Boot then starts this one out of a partition of its own, the way it
+ * would start a kernel, and that partition is the whole of what there is
+ * to upgrade: no BL2, no FIP.  Its image (files/chainload/mkslot.py) opens
+ * with a legacy uImage and has the FIT at CHAIN_FIT_OFF -- the stock
+ * command reads "flash read 0x602100", 0x2100 into the partition.
+ *
+ * A bad block is refused rather than skipped: the vendor U-Boot reads this
+ * partition through its own BMT, which maps a bad block somewhere else
+ * entirely, so a skipped block would put the rest of the image where the
+ * vendor U-Boot is not looking.
+ */
+#define CHAIN_PART		"chainloader"
+#define CHAIN_FIT_OFF		0x2100	/* also spelled out in chk_chain()'s text */
+#define IH_MAGIC		0x27051956
+#define DEF_WRITE_CHAIN		"mtd erase " CHAIN_PART " && " \
+				"mtd write " CHAIN_PART " $loadaddr 0 $filesize"
+/*
+ * Where the vendor U-Boot keeps its environment on these boards, inside the
+ * read-only "vendor" partition.  Only ever read: its bootcmd says which half
+ * of the slot the board starts.
+ */
+#define VENDOR_PART		"vendor"
+#define VENDOR_ENV_OFF		0x200000
+#define VENDOR_ENV_LEN		0x20000
 #define DEF_FORMAT_UBI		"ubi detach ; mtd erase " UBI_PART " && " \
 				CMD_ATTACH_UBI
 /*
@@ -214,6 +248,7 @@ DECLARE_GLOBAL_DATA_PTR;
 /* Form field names. */
 #define FIELD_BL2		"bl2"
 #define FIELD_FIP		"fip"
+#define FIELD_CHAIN		"chain"
 #define FIELD_FIT		"firmware"
 #define FIELD_FORMAT		"format"
 #define FIELD_STOCK		"stock"
@@ -586,27 +621,36 @@ static const char resp_form[] =
 		" class=pwhat></span><span class=pct></span></div></div>\n"
 	"</div>\n"
 	"<div class=pane id=p2>\n"
-	"<h1>引导升级</h1><p class=sub>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p>\n"
+	"<h1>引导升级</h1><p class=sub data-boot=fip>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级"
+		" U-Boot。</p><p class=sub data-boot=chain hidden>写入 chainloader 分区里的 U-Boot。原厂引导锁着不动，由它从这个分区启动本"
+		" U-Boot。</p>\n"
 	"<div class=box>\n"
-	"<div class=fr><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label"
-		" class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span"
-		" class=fn>未选择</span></label></div>\n"
-	"<div class=fr><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label"
-		" class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span"
-		" class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=fip><span class=fl>BL2<small"
+		" class=mono>…-preloader.bin</small></span><label class=fc><input type=file name=bl2"
+		" data-l=BL2><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=fip><span class=fl>U-Boot<small"
+		" class=mono>…-bl31-uboot.fip</small></span><label class=fc><input type=file name=fip"
+		" data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
+	"<div class=fr data-boot=chain hidden><span class=fl>U-Boot<small"
+		" class=mono>…-chainloader-slot.bin</small></span><label class=fc><input type=file name=chain"
+		" data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"<div class=fr><span class=fl>固件<small>可选，同时写入</small></span><label class=fc><input type=file"
 		" name=firmware data-l=固件><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"</div>\n"
-	"<p class=bh>首次迁移</p>\n"
+	"<p class=bh><span data-boot=fip>首次迁移</span><span data-boot=chain hidden>首次安装</span></p>\n"
 	"<div class=box>\n"
-	"<div class=\"fr wide\"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot"
-		" 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class=\"fc end\"><input type=checkbox"
-		" class=sw name=format value=1></span></div>\n"
+	"<div class=\"fr wide\"><span class=fl>重建 UBI<small data-boot=fip>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot"
+		" 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small><small data-boot=chain hidden>擦除 ubi"
+		" 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。<b>必须同时上传固件</b></small></span><span"
+		" class=\"fc end\"><input type=checkbox class=sw name=format value=1></span></div>\n"
 	"</div>\n"
 	"<p class=note><b>重建 UBI 前先备份。</b>请先在「<a href=\"#\" onclick=\"return jump('p10')\">备份下载</a>」中导出。</p>\n"
-	"<p class=note><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是 0x0–0x80000，而本布局的 bl2 只占"
-		" 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot"
-		" 一起传。</p>\n"
+	"<p class=note data-boot=chain hidden><b>U-Boot 写在 chainloader 分区（flash 0x600000，1"
+		" MiB）</b>，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过 bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份"
+		" U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。</p>\n"
+	"<p class=note data-boot=fip><b>重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截</b>（原厂 bootloader 分区是"
+		" 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2"
+		" 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。</p>\n"
 	"<p class=note>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</p>\n"
 	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 		" pri\">上传并刷写</button></div>\n"
@@ -676,6 +720,8 @@ static const char resp_form[] =
 	"<div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile"
 		" data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>\n"
 	"</div>\n"
+	"<p class=note data-boot=chain hidden>factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory"
+		" 的内容下次开机就被它换掉。</p>\n"
 	"<p class=note>写完由你决定是否重启，所以可以连着写好几个卷。</p>\n"
 	"<div class=act><span class=st>未选择文件</span><button type=submit class=\"pb"
 		" pri\">上传并刷写</button></div>\n"
@@ -1007,12 +1053,14 @@ static const char resp_form[] =
 		"nction netget(){GONE||get(\"/net\",function(e,t){var"
 		" o=null;try{o=JSON.parse(t)}catch(e){}o&&o.net&&(NET=o,INFO&&(INFO.net=o.net,INFO.ports=o.ports)"
 		",netfill())})}function netpoll(e){NETT&&(clearInterval(NETT),NETT=null),e&&(netget(),NETT=setInt"
-		"erval(netget,3e3))}function banner(){var e=\"\";STUCK?e=STUCK:INFO&&(INFO.ubi?INFO.ubi.fip||(e=\"<b"
-		">闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。\"):e=\"<b>闪存中没有可挂载的"
-		" UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建"
-		" UBI」。\"),$(\"#bant\").innerHTML=e,e?$(\"#ban\").removeAttribute(\"hidden\"):$(\"#ban\").setAttribute(\"hi"
-		"dden\",\"\")}var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11"
-		" 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20"
+		"erval(netget,3e3))}function chain(){return!(!INFO||!INFO.chain)}function bootmode(){var"
+		" e=chain()?\"chain\":\"fip\";$$(\"[data-boot]\").forEach(function(t){t.hidden=t.getAttribute(\"data-boo"
+		"t\")!=e})}function banner(){var e=\"\";STUCK?e=STUCK:INFO&&(INFO.ubi?chain()||INFO.ubi.fip||(e=\"<b>"
+		"闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。\"):e=chain()?\"<b>闪存中没有可挂载的"
+		" UBI。</b>首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。\":\"<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot"
+		" 与固件，并启用「重建 UBI」。\"),$(\"#bant\").innerHTML=e,e?$(\"#ban\").removeAttribute(\"hidden\"):$(\"#ban\").setAt"
+		"tribute(\"hidden\",\"\")}var ICON_OFF='<path d=\"M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5"
+		" 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20"
 		" 20\"/>',ICON_RB='<path d=\"M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0\"/>';function live(e){var"
 		" t=$(\"#lived\"),o=$(\"#lives\");t&&(t.className=\"dot"
 		" s\"+e,o.textContent=0==e?\"已连接\":SILENT?\"设备忙…\":1==e?\"无响应…\":\"已断开\")}function"
@@ -1037,10 +1085,10 @@ static const char resp_form[] =
 		"#off\").setAttribute(\"data-on\",\"\")}}function online(){OFFWHY=\"\",$(\"#off\").removeAttribute(\"data-o"
 		"n\")}function reconnect(){var e=$(\"#offr\");e.disabled=!0,e.textContent=\"正在重试…\",clearTimeout(HBT),"
 		"HB||(HB=1),ping()}function askreboot(){var e=\"<div"
-		" class=w>闪存内容不受影响</div>\";INFO&&!INFO.ubi?e+=\"<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot"
-		" 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>\":INFO&&INFO.ubi&&!INFO.ubi.f"
-		"ip&&(e+=\"<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot"
-		" 仅存于内存。</b>重启后本页面将无法再打开</div>\"),$(\"#atitle\").textContent=\"重启\",$(\"#abody\").innerHTML=\"<div"
+		" class=w>闪存内容不受影响</div>\";!INFO||INFO.ubi||chain()?INFO&&INFO.ubi&&!INFO.ubi.fip&&!chain()&&(e+=\""
+		"<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>\"):e+=\"<div"
+		" class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot"
+		" 才能再打开本页面。建议先在「引导升级」中完成写入</div>\",$(\"#atitle\").textContent=\"重启\",$(\"#abody\").innerHTML=\"<div"
 		" class=r><span>动作</span><span class=v>reset</span></div>\"+e;var"
 		" t=$(\"#yes\");t.hidden=!1,t.textContent=\"立即重启\",YES=doreboot,$(\"#mask\").setAttribute(\"data-on\",\"\")"
 		"}function doreboot(){get(\"/reboot\",function(){}),expect(\"reboot\")}var MODES={server:\"DHCP"
@@ -1076,7 +1124,7 @@ static const char resp_form[] =
 		"<div class=w>不保存：只管本次开机，下次开机回到 <b>\"+esc(bootdesc())+\"</b></div>\",INFO&&INFO.net&&INFO.net.ack&&\""
 		"server\"!=t&&(e+=\"<div class=w><b>本机用的是设备发的地址</b>：本机这个地址马上就没人续租了，\"+(\"static\"==t?\"需手动把本机配成"
 		" \"+esc(o.replace(/\\.\\d+$/,\".x\"))+\" 的一个地址\":\"请改用上级路由那个网络里的机器\")+\"</div>\"),$(\"#abody\").innerHTML=e;v"
-		"ar s=$(\"#yes\");s.hidden=!1,s.textContent=\"应用\",YES=function(){donetmode(t,o,n,a)},$(\"#mask\").setA"
+		"ar i=$(\"#yes\");i.hidden=!1,i.textContent=\"应用\",YES=function(){donetmode(t,o,n,a)},$(\"#mask\").setA"
 		"ttribute(\"data-on\",\"\")}function donetmode(e,t,o,n){get(\"/netmode?mode=\"+e+(\"client\"==e?\"\":\"&ip=\""
 		"+encodeURIComponent(t)+\"&mask=\"+encodeURIComponent(o))+\"&save=\"+(n?1:0),function(o,a){200==o&&/^"
 		"ok /.test((a||\"\").trim())?(hbstop(),\"client\"==e?gone(\"正在获取地址\",\"获取成功后设备位于新地址，请在上级路由的客户端列表中按"
@@ -1184,9 +1232,9 @@ static const char resp_form[] =
 		" e,t=$(\"#bmenu\"),o={},n=\"\";ENV?(ENV.env.forEach(function(t){var"
 		" n=/^bootmenu_(\\d+)$/.exec(t.k);n&&(o[+n[1]]=t.v),\"bootmenu_delay\"==t.k&&(e=t.v)}),Object.keys(o"
 		").map(Number).sort(function(e,t){return e-t}).forEach(function(e){var"
-		" t=o[e],a=t.indexOf(\"=\"),s=a<0?t:t.slice(0,a),i=a<0?\"\":t.slice(a+1),r=/\\x1b\\[[0-9;]*3[147]m/.tes"
-		"t(s);s=s.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\"),n+=\"<tr><td class=n>\"+bmkey(e)+\".</td><td\"+(r?\""
-		" class=hot\":\"\")+\">\"+esc(s)+\"</td><td class=cmd>\"+esc(i)+\"</td></tr>\"}),t.innerHTML=n||\"<tr><td"
+		" t=o[e],a=t.indexOf(\"=\"),i=a<0?t:t.slice(0,a),s=a<0?\"\":t.slice(a+1),r=/\\x1b\\[[0-9;]*3[147]m/.tes"
+		"t(i);i=i.replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\"),n+=\"<tr><td class=n>\"+bmkey(e)+\".</td><td\"+(r?\""
+		" class=hot\":\"\")+\">\"+esc(i)+\"</td><td class=cmd>\"+esc(s)+\"</td></tr>\"}),t.innerHTML=n||\"<tr><td"
 		" class=empty>没有 bootmenu_* 条目</td></tr>\",$(\"#bmh\").textContent=n?\"设备启动时的菜单，序号即串口上按的键\"+(e?\"；\"+e+\""
 		" 秒内无按键则执行 bootcmd\":\"\")+\"。红色条目会写入闪存\":\"环境中没有引导菜单：串口不会停顿，直接执行"
 		" bootcmd\"):t.innerHTML=\"<tr><td>正在读取…</td></tr>\"}function"
@@ -1216,27 +1264,27 @@ static const char resp_form[] =
 		" class=empty>读不到网络信息</td></tr>\"}var VCOL={fip:\"#5e5ce6\",fit:\"#0a84ff\",rootfs_data:\"#30d158\",uboo"
 		"tenv:\"#8e8e93\",ubootenv2:\"#8e8e93\",ri:\"#ff9f0a\",bosa:\"#af52de\"},VPOOL=[\"#00b4a0\",\"#a2845e\",\"#ff4"
 		"53a\",\"#64748b\"],VRECL={fit:1,rootfs_data:1};function ubibar(){var"
-		" e,t,o,n=$(\"#vbar\"),a=$(\"#vleg\"),s=INFO&&INFO.ubi,i=0,r=0,l=\"\",d=\"\";if(!s||!s.pebs||!s.leb)retur"
-		"n n.hidden=!0,a.hidden=!0,void($(\"#ubih\").textContent=\"\");e=s.leb*s.pebs,(s.vols||[]).slice().so"
+		" e,t,o,n=$(\"#vbar\"),a=$(\"#vleg\"),i=INFO&&INFO.ubi,s=0,r=0,l=\"\",d=\"\";if(!i||!i.pebs||!i.leb)retur"
+		"n n.hidden=!0,a.hidden=!0,void($(\"#ubih\").textContent=\"\");e=i.leb*i.pebs,(i.vols||[]).slice().so"
 		"rt(function(e,t){return(0|e.i)-(0|t.i)}).forEach(function(e,t){var"
 		" o=VCOL[e.n]||VPOOL[t%VPOOL.length],n=VRECL[e.n]?\""
-		" re\":\"\",a=0|e.s;i+=a,VRECL[e.n]&&(r+=a),l+='<i class=\"'+n+'\" style=\"flex:'+a+\" 0"
+		" re\":\"\",a=0|e.s;s+=a,VRECL[e.n]&&(r+=a),l+='<i class=\"'+n+'\" style=\"flex:'+a+\" 0"
 		" 0;background:\"+o+'\" title=\"'+esc(e.n)+\" \"+sz(a)+'\"></i>',d+='<span><em class=\"'+n+'\""
 		" style=\"background:'+o+'\"></em>'+esc(e.n)+\" \"+sz(a)+(VRECL[e.n]?\" ·"
-		" 写入时腾出\":\"\")+\"</span>\"}),(o=e-i)<0&&(o=0),null==(t=null==s.avail?null:(0|s.avail)*s.leb)||t>o?(l+"
+		" 写入时腾出\":\"\")+\"</span>\"}),(o=e-s)<0&&(o=0),null==(t=null==i.avail?null:(0|i.avail)*i.leb)||t>o?(l+"
 		"='<i class=free style=\"flex:'+o+' 0 0\" title=\"空闲与预留 '+sz(o)+'\"></i>',d+=\"<span><em"
 		" class=free></em>空闲与 UBI 预留 \"+sz(o)+\"</span>\"):(r+=t,l+='<i class=free style=\"flex:'+t+' 0 0\""
 		" title=\"空闲 '+sz(t)+'\"></i><i class=rsv style=\"flex:'+(o-t)+' 0 0\" title=\"UBI 预留"
 		" '+sz(o-t)+'\"></i>',d+=\"<span><em class=free></em>空闲 \"+sz(t)+'</span><span><em"
 		" style=\"background:var(--c3)\"></em>UBI 预留 '+sz(o-t)+\"</span>\"),n.innerHTML=l,a.innerHTML=d,n.hid"
-		"den=!1,a.hidden=!1,$(\"#ubih\").textContent=\"逻辑擦除块 \"+sz(s.leb)+\" × \"+s.pebs+\"。宽度为各卷的预留容量，按卷 ID"
+		"den=!1,a.hidden=!1,$(\"#ubih\").textContent=\"逻辑擦除块 \"+sz(i.leb)+\" × \"+i.pebs+\"。宽度为各卷的预留容量，按卷 ID"
 		" 排列；UBI 卷在闪存中并不连续，此图不表示物理位置\"+(null==t?\"\":\"。刷机可用 \"+Math.floor(r/1048576)+\" MiB：当前空闲"
 		" \"+sz(t)+\"，加上写入时会腾出的 fit 与 rootfs_data\")}function fill(){var"
-		" e=$(\"#dev\"),t=$(\"#ubi\"),o=\"\";return banner(),netfill(),INFO?([[\"机型\",INFO.model],[\"SoC\",INFO.soc"
-		"],[\"内存\",INFO.ram?sz(INFO.ram):\"\"],[\"闪存\",INFO.flash?INFO.flash.name+\" \"+sz(INFO.flash.size)+\" ·"
-		" 擦除块 \"+sz(INFO.flash.erase)+\" · 页 \"+sz(INFO.flash.page)+(INFO.flash.oob?\" · OOB"
-		" \"+sz(INFO.flash.oob):\"\"):\"\"],[\"分区\",(INFO.parts||[]).map(function(e){return e.n+\""
-		" 0x\"+e.o.toString(16)+\"–0x\"+(e.o+e.s).toString(16)}).join(\" ·"
+		" e=$(\"#dev\"),t=$(\"#ubi\"),o=\"\";return bootmode(),banner(),netfill(),INFO?([[\"机型\",INFO.model],[\"So"
+		"C\",INFO.soc],[\"内存\",INFO.ram?sz(INFO.ram):\"\"],[\"闪存\",INFO.flash?INFO.flash.name+\""
+		" \"+sz(INFO.flash.size)+\" · 擦除块 \"+sz(INFO.flash.erase)+\" · 页"
+		" \"+sz(INFO.flash.page)+(INFO.flash.oob?\" · OOB \"+sz(INFO.flash.oob):\"\"):\"\"],[\"分区\",(INFO.parts||["
+		"]).map(function(e){return e.n+\" 0x\"+e.o.toString(16)+\"–0x\"+(e.o+e.s).toString(16)}).join(\" ·"
 		" \")],[\"MAC\",INFO.mac],[\"U-Boot\",INFO.uboot]].forEach(function(e){e[1]&&(o+=\"<tr><td>\"+e[0]+\"</td"
 		"><td class=mono>\"+esc(e[1])+\"</td></tr>\")}),e.innerHTML=o,INFO.uboot&&($(\"#based\").textContent=I"
 		"NFO.uboot),$(\"#logtab\").hidden=!INFO.log,INFO.flash&&$$(\"#upmax\").forEach(function(e){e.textCont"
@@ -1251,20 +1299,20 @@ static const char resp_form[] =
 		" e=$(\"#chkb\"),t=$(\"#chk\");CHKQ=1,silent(),e.disabled=!0,e.textContent=\"检查中…\",t.innerHTML=\"<tr><t"
 		"d colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>\",get(\"/check\",function(o,n){CHKQ=0,e.disable"
 		"d=!1,e.textContent=\"重新检查\";var a=null;try{a=JSON.parse(n)}catch(e){}if(503!=o)if(a&&a.items){CHK="
-		"a.items;var s=\"\",i=[0,0,0],r=\"\";a.items.forEach(function(e){var"
-		" t=Math.max(0,Math.min(2,0|e.s));i[t]++,e.g&&e.g!=r&&(r=e.g,s+=\"<tr><th class=g"
-		" colspan=2>\"+esc(r)+\"</th></tr>\"),s+='<tr><td><span class=\"dot"
-		" s'+t+'\"></span>'+esc(e.n)+'</td><td class=\"s'+t+'\">'+esc(e.v)+\"</td></tr>\"}),t.innerHTML=s,$(\"#"
-		"chkh\").textContent=i[2]?i[2]+\" 项异常 · \"+i[1]+\" 项注意 · \"+i[0]+\" 项正常\":i[1]?i[1]+\" 项注意 · \"+i[0]+\""
-		" 项正常\":\"全部 \"+i[0]+\" 项正常\"}else t.innerHTML=\"<tr><td colspan=2"
+		"a.items;var i=\"\",s=[0,0,0],r=\"\";a.items.forEach(function(e){var"
+		" t=Math.max(0,Math.min(2,0|e.s));s[t]++,e.g&&e.g!=r&&(r=e.g,i+=\"<tr><th class=g"
+		" colspan=2>\"+esc(r)+\"</th></tr>\"),i+='<tr><td><span class=\"dot"
+		" s'+t+'\"></span>'+esc(e.n)+'</td><td class=\"s'+t+'\">'+esc(e.v)+\"</td></tr>\"}),t.innerHTML=i,$(\"#"
+		"chkh\").textContent=s[2]?s[2]+\" 项异常 · \"+s[1]+\" 项注意 · \"+s[0]+\" 项正常\":s[1]?s[1]+\" 项注意 · \"+s[0]+\""
+		" 项正常\":\"全部 \"+s[0]+\" 项正常\"}else t.innerHTML=\"<tr><td colspan=2"
 		" class=empty>读取失败，刷新页面重试</td></tr>\";else t.innerHTML=\"<tr><td colspan=2"
 		" class=empty>设备正在写入，稍后再试</td></tr>\"})}function logfollow(){clearTimeout(LOGT),LOGT=null,LOGGEN++"
 		";var e=$(\"#logf\").checked;$(\"#logb\").disabled=e,e&&(LOGN=0,logset(\"\",1),logtick())}function"
 		" logtick(){if($(\"#logf\").checked){var e=LOGGEN;get(\"/log?from=\"+LOGN,function(t,o){if(e==LOGGEN&"
 		"&$(\"#logf\").checked){var n=200==t&&o?o.indexOf(\"\\n\"):-1;if(n>0){var"
 		" a=parseInt(o.slice(0,n),10);if(a>=LOGN){LOGN=a;var"
-		" s=o.slice(n+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\").replace(/\\r/g,\"\");if(s){var"
-		" i=$(\"#log\");i.textContent+=s,i.scrollTop=i.scrollHeight}}}LOGT=setTimeout(logtick,2e3)}})}}var"
+		" i=o.slice(n+1).replace(/\\x1b\\[[0-9;?]*[A-Za-z]/g,\"\").replace(/\\r/g,\"\");if(i){var"
+		" s=$(\"#log\");s.textContent+=i,s.scrollTop=s.scrollHeight}}}LOGT=setTimeout(logtick,2e3)}})}}var"
 		" SCAN=null;function scanrun(){var e=$(\"#scanb\"),t=$(\"#scanprog\");if(SCAN)return"
 		" SCAN.stop=1,SCAN=null,e.textContent=\"重新扫描\",t.className=\"prog"
 		" bad\",$(\".pwhat\",t).textContent=\"已停止\",void($(\"#scanh\").textContent=\"已停止，结果仅覆盖已扫描的部分\");SCAN={off:"
@@ -1281,19 +1329,19 @@ static const char resp_form[] =
 		"2&&e.faill.push(t)}),scanshow(e,n.done),n.done)return"
 		" SCAN=null,void($(\"#scanb\").textContent=\"重新扫描\");scanstep()}}))}function"
 		" hx(e){return\"0x\"+e.toString(16)}function scanshow(e,t){var"
-		" o=$(\"#scanprog\"),n=e.size?e.off/e.size:0,a=Date.now(),s=(a-e.rt)/1e3,i=\"\";s>=1.5&&(e.rate=(e.of"
-		"f-e.rn)/s,e.rt=a,e.rn=e.off),$(\".pbar\",o).style.width=100*n+\"%\",$(\".pct\",o).textContent=sz(e.off"
+		" o=$(\"#scanprog\"),n=e.size?e.off/e.size:0,a=Date.now(),i=(a-e.rt)/1e3,s=\"\";i>=1.5&&(e.rate=(e.of"
+		"f-e.rn)/i,e.rt=a,e.rn=e.off),$(\".pbar\",o).style.width=100*n+\"%\",$(\".pct\",o).textContent=sz(e.off"
 		")+\" / \"+sz(e.size)+\" · \"+(100*n).toFixed(0)+\"%\"+(!t&&e.rate>0?\" · \"+spd(e.rate)+\" · 剩余"
 		" \"+dur((e.size-e.off)/e.rate):\"\"),t&&(o.className=\"prog\"+(e.fail?\" bad\":\""
-		" ok\"),$(\".pwhat\",o).textContent=e.fail?\"扫描完成，存在无法读出的页\":\"扫描完成\"),i+=\"<tr><td>已扫描</td><td>\"+sz(e.of"
-		"f)+(e.size?\" / \"+sz(e.size):\"\")+\"（擦除块 \"+sz(e.blk||0)+\"）</td></tr>\",i+='<tr><td><span class=\"dot"
+		" ok\"),$(\".pwhat\",o).textContent=e.fail?\"扫描完成，存在无法读出的页\":\"扫描完成\"),s+=\"<tr><td>已扫描</td><td>\"+sz(e.of"
+		"f)+(e.size?\" / \"+sz(e.size):\"\")+\"（擦除块 \"+sz(e.blk||0)+\"）</td></tr>\",s+='<tr><td><span class=\"dot"
 		" s'+(e.bad?1:0)+'\"></span>坏块</td><td class=s'+(e.bad?1:0)+\">\"+(e.bad?e.bad+\""
-		" 个：\"+e.badl.map(hx).join(\"、\")+(e.bad>e.badl.length?\" …\":\"\"):\"无\")+\"</td></tr>\",i+='<tr><td><span"
+		" 个：\"+e.badl.map(hx).join(\"、\")+(e.bad>e.badl.length?\" …\":\"\"):\"无\")+\"</td></tr>\",s+='<tr><td><span"
 		" class=\"dot s'+(e.ecc?1:0)+'\"></span>ECC 纠错</td><td class=s'+(e.ecc?1:0)+\">\"+(e.ecc?e.ecc+\""
-		" 页在读取时被纠正。少量属正常；成片出现表明颗粒退化，应尽快备份\":\"无\")+\"</td></tr>\",i+='<tr><td><span class=\"dot"
+		" 页在读取时被纠正。少量属正常；成片出现表明颗粒退化，应尽快备份\":\"无\")+\"</td></tr>\",s+='<tr><td><span class=\"dot"
 		" s'+(e.fail?2:0)+'\"></span>读失败</td><td class=s'+(e.fail?2:0)+\">\"+(e.fail?e.fail+\""
 		" 页：\"+e.faill.map(hx).join(\"、\")+(e.fail>e.faill.length?\" …\":\"\")+\"。ECC"
-		" 无法纠正，这些位置的数据已丢失\":\"无\")+\"</td></tr>\",$(\"#scan\").innerHTML=i,$(\"#scanh\").textContent=t?e.fail?\"扫描完"
+		" 无法纠正，这些位置的数据已丢失\":\"无\")+\"</td></tr>\",$(\"#scan\").innerHTML=s,$(\"#scanh\").textContent=t?e.fail?\"扫描完"
 		"成，\"+e.fail+\" 页无法读出\":e.bad||e.ecc?\"扫描完成，见上表\":\"扫描完成，全片可读\":\"\"}function logset(e,t){var"
 		" o=$(\"#log\");return t?o.setAttribute(\"data-raw\",\"\"):o.removeAttribute(\"data-raw\"),o.textContent="
 		"e,o}function getlog(){var e=$(\"#logb\"),t=$(\"#log\");e.disabled=!0,t.hasAttribute(\"data-ph\")&&(t.r"
@@ -1333,18 +1381,18 @@ static const char resp_form[] =
 		"a\");a.href=n,a.download=e,document.body.appendChild(a),a.click(),document.body.removeChild(a),se"
 		"tTimeout(function(){URL.revokeObjectURL(n)},1e3)}catch(e){}}function"
 		" plan(){return[\"将固件载入内存并直接引导\",\"<b>不写入闪存</b>；引导失败断电即恢复原系统\"]}function ask(){var"
-		" e=pane(),t=files(e),o=[],n=[],a=\"\",s=$(\"#yes\");if(\"p5\"==e.id)return"
-		" applyaddr(),!1;if(\"p10\"==e.id||\"p11\"==e.id||\"p12\"==e.id)return!1;YES=null,s.textContent=\"仍要写入\";"
-		"var i=$(\"[name=tryboot]\",e);if(i&&i.checked&&(t.some(function(e){return\"firmware\"==e.k})?t.lengt"
+		" e=pane(),t=files(e),o=[],n=[],a=\"\",i=$(\"#yes\");if(\"p5\"==e.id)return"
+		" applyaddr(),!1;if(\"p10\"==e.id||\"p11\"==e.id||\"p12\"==e.id)return!1;YES=null,i.textContent=\"仍要写入\";"
+		"var s=$(\"[name=tryboot]\",e);if(s&&s.checked&&(t.some(function(e){return\"firmware\"==e.k})?t.lengt"
 		"h>1?n.push(\"试跑仅接收固件本身，其他文件不会被写入\"):(o.push(\"固件仅载入内存，不写入闪存；引导失败断电即恢复原系统\"),/recovery/i.test(t[0].f."
 		"name)||o.push(\"这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit"
-		" 卷里，试运行不写闪存也就用不到它，内核多半起不来\")):n.push(\"试跑需要选择一个恢复固件\"),s.textContent=\"启动它\"),$(\"#atitle\").textConten"
+		" 卷里，试运行不写闪存也就用不到它，内核多半起不来\")):n.push(\"试跑需要选择一个恢复固件\"),i.textContent=\"启动它\"),$(\"#atitle\").textConten"
 		"t=$(\"h1\",e).textContent,\"p4\"==e.id&&t.length){var"
 		" r=hex($(\"[name=stockoff]\",e).value),l=INFO&&INFO.flash,d=cecc()?stfv():\"\",c=t[0].f.size;if(\"oob"
 		"\"==d&&(c%rawlen(l.erase)&&n.push(\"带 OOB 的镜像长度应为 \"+sz(rawlen(l.erase))+\" 的整数倍（一个擦除块连"
 		" OOB）\"),c=flashlen(c),o.push(\"连 OOB 原样写入，只能写回备份它的这台机器\")),\"dd\"==d){var"
-		" f=sfbad(SF),h=sfsaved();f?n.push(esc(f)):(o.push(\"按这组参数重算校验码：\"+esc(sfdesc(SF))),h&&\"ok\"==h.st?s"
-		"fsame()?\"dd\"!=h.src&&o.push(\"没有用 dd 备份核对过，坏块标记的位置未确认\"):o.push(\"这组参数与「原厂格式」里的不同，只用于这次写入\"):o.push("
+		" h=sfbad(SF),f=sfsaved();h?n.push(esc(h)):(o.push(\"按这组参数重算校验码：\"+esc(sfdesc(SF))),f&&\"ok\"==f.st?s"
+		"fsame()?\"dd\"!=f.src&&o.push(\"没有用 dd 备份核对过，坏块标记的位置未确认\"):o.push(\"这组参数与「原厂格式」里的不同，只用于这次写入\"):o.push("
 		"\"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了\"))}if(r<0)n.push(\"写入偏移不是有效的十六进制数\");else{l&&r%l.erase&&n.push(\""
 		"写入偏移未按擦除块 \"+sz(l.erase)+\" 对齐\"),l&&r+c>l.size&&n.push(\"偏移加镜像长度超过 flash 容量"
 		" \"+sz(l.size)),o.push(\"自 flash 偏移 0x\"+(r<0?\"?\":r.toString(16))+\" 起写入 \"+sz(c)+(r?\"\":\"，覆盖"
@@ -1355,61 +1403,74 @@ static const char resp_form[] =
 		"选择了卷内容但未填写卷名\"),b&&!m&&n.push(\"填写了卷名但未选择卷内容\"),b&&!/^[A-Za-z0-9_.-]{1,63}$/.test(b)&&n.push(\"卷名仅限字"
 		"母、数字与 _ - .\"),m&&b&&o.push(\"卷 \"+esc(b)+\" 不存在时按文件长度创建\")}if(\"p2\"==e.id){var"
 		" v=$(\"[name=format]\",e).checked,g=t.some(function(e){return\"fip\"==e.k}),w=t.some(function(e){ret"
-		"urn\"bl2\"==e.k});if(v&&!g&&n.push(\"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot"
-		" 设备将无法启动\"),v&&!w&&n.push(\"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot"
-		" 的话重启起不来，只能拆串口救\"),INFO&&INFO.ubi&&!INFO.ubi.fip&&!g&&n.push(\"闪存里没有 U-Boot（fip 卷），本次必须同时上传"
-		" U-Boot 文件\"),!INFO||INFO.ubi||v||n.push(\"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot"
-		" 与固件\"),v&&o.push(\"重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置\"),v)if(INFO&&INFO.ubi){var"
-		" k=bkmissing();k.length&&o.unshift(esc(k.join(\"、\"))+' 未备份 · <a href=\"#\" onclick=\"gobk();return"
-		" false\">去备份</a>')}else bkall().all||o.unshift('原厂系统请先整片备份 · <a href=\"#\" onclick=\"gobk();return"
-		" false\">整片下载</a>'),cecc()&&o.push(sfok()?\"原厂闪存格式已识别，重建 UBI 后自动保存\":\"原厂闪存格式未识别：以后用 dd"
-		" 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响\");t.some(function(e){return\"bl2\"==e.k||\"fip\"==e.k})||o.push(\"未选择"
-		" BL2 或 U-Boot，本次只写入固件\")}var I=null,y=null,B=$(\"[name=format]\",e)&&$(\"[name=format]\",e).checked;("
-		"INFO&&INFO.parts||[]).forEach(function(e){\"bl2\"==e.n&&(I=e)}),(INFO&&INFO.ubi&&INFO.ubi.vols||[]"
-		").forEach(function(e){\"fip\"==e.n&&(y=e)});var N=y&&!B?y.s:1048576;t.forEach(function(e){\"bl2\"==e"
-		".k&&I&&e.f.size>I.s-2048&&n.push(\"BL2 文件 \"+sz(e.f.size)+\"，超过 bl2 分区自 0x800 起可写的"
-		" \"+sz(I.s-2048)),\"fip\"==e.k&&N&&e.f.size>N&&n.push(\"U-Boot 文件 \"+sz(e.f.size)+\"，超过 fip 卷的"
-		" \"+sz(N))}),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||INFO.ubi||n.push(\"闪存里没有可挂载的"
-		" UBI，请先在「引导升级」里完成首次迁移\"),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||!INFO.ubi||INFO.ubi.fip||o.push(\"闪存里没有"
-		" U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot"
+		"urn\"bl2\"==e.k}),B=t.some(function(e){return\"chain\"==e.k}),I=t.some(function(e){return\"firmware\"="
+		"=e.k}),k=chain()&&INFO.chain.bootcmd;if(chain()){if(v&&!I&&n.push(\"打开了「重建"
+		" UBI」却没有选择固件：重建之后闪存里没有系统可以启动\"),INFO&&!INFO.ubi&&I&&!v&&n.push(\"闪存里没有可挂载的 UBI：请打开「重建"
+		" UBI」，并同时上传固件\"),v&&o.push(\"重建 UBI 将清除 U-Boot 环境与用户配置；factory 卷随即从原厂 DSD"
+		" 区重新生成\"),B){o.push(\"U-Boot 写入 chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救\"),k&&!/0x60(0000|2100)(?!"
+		"[0-9a-fA-F])/.test(k)?o.push(\"原厂 bootcmd 不读 0x600000 或 0x602100，原厂引导不会启动写进去的"
+		" U-Boot：\"+esc(k)):k&&!/0x602100(?![0-9a-fA-F])/.test(k)&&o.push(\"原厂 bootcmd 从 0x600000 读，要经前缀"
+		" shim 启动，这条路没有实机验证过：\"+esc(k));var y=INFO.chain.rd,T=t.filter(function(e){return\"chain\"==e.k})[0]"
+		".f,N=0;y&&((N=6291456==y[0]?T.size:6299904==y[0]?T.size-8448:0)&&y[1]<N&&n.push(\"原厂 bootcmd 只读"
+		" \"+sz(y[1])+\"，这份 U-Boot 要 \"+sz(N)+\"：读不全，原厂引导起不来它\"),6291456==y[0]&&2172649472!=y[2]&&n.push(\"原厂"
+		" bootcmd 读到 0x\"+y[2].toString(16)+\"，前缀 shim 只认 0x81800000\"))}}else v&&!g&&n.push(\"打开了「重建"
+		" UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动\"),v&&!w&&n.push(\"打开了「重建 UBI」却没有选择 BL2：重建从"
+		" 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救\"),INFO&&INFO.ubi&&!INFO.ubi.fip&&!g&&n.push(\"闪"
+		"存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件\"),!INFO||INFO.ubi||v||n.push(\"闪存里没有可挂载的 UBI：请打开「重建"
+		" UBI」，并同时上传 BL2、U-Boot 与固件\"),v&&o.push(\"重建 UBI 将清除出厂 MAC、U-Boot"
+		" 环境与用户配置\");if(v)if(INFO&&INFO.ubi){var x=bkmissing();x.length&&o.unshift(esc(x.join(\"、\"))+' 未备份"
+		" · <a href=\"#\" onclick=\"gobk();return false\">去备份</a>')}else bkall().all||o.unshift('原厂系统请先整片备份"
+		" · <a href=\"#\" onclick=\"gobk();return false\">整片下载</a>'),cecc()&&o.push(sfok()?\"原厂闪存格式已识别，重建 UBI"
+		" 后自动保存\":\"原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响\");(chain()?B:w||g)||o.push(chain()?\"未选择"
+		" U-Boot，本次只写入固件\":\"未选择 BL2 或 U-Boot，本次只写入固件\")}var"
+		" C=null,U=null,O=$(\"[name=format]\",e)&&$(\"[name=format]\",e).checked;(INFO&&INFO.parts||[]).forEa"
+		"ch(function(e){\"bl2\"==e.n&&(C=e)}),(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(e){\"fip\""
+		"==e.n&&(U=e)});var F=U&&!O?U.s:1048576;t.forEach(function(e){\"bl2\"==e.k&&C&&e.f.size>C.s-2048&&n"
+		".push(\"BL2 文件 \"+sz(e.f.size)+\"，超过 bl2 分区自 0x800 起可写的"
+		" \"+sz(C.s-2048)),\"fip\"==e.k&&F&&e.f.size>F&&n.push(\"U-Boot 文件 \"+sz(e.f.size)+\"，超过 fip 卷的"
+		" \"+sz(F)),\"chain\"==e.k&&chain()&&e.f.size>INFO.chain.s&&n.push(\"U-Boot 文件 \"+sz(e.f.size)+\"，超过"
+		" chainloader 分区的 \"+sz(INFO.chain.s))}),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||INFO.ubi||n.push(\"闪存里没有可挂载"
+		"的 UBI，请先在「引导升级」里完成首次迁移\"),\"p1\"!=e.id&&\"p3\"!=e.id||!INFO||!INFO.ubi||INFO.ubi.fip||chain()||o.push"
+		"(\"闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot"
 		" 文件\"),(\"p1\"==e.id||\"p2\"==e.id&&t.some(function(e){return\"firmware\"==e.k}))&&o.push(\"rootfs_data"
-		" 将被清空\");var T=0;t.forEach(function(e){T+=e.f.size}),\"p4\"!=e.id&&INFO&&INFO.uploadmax&&T+4096>INF"
-		"O.uploadmax&&n.push(\"本次上传 \"+sz(T)+\"，超过设备单次可接收的 \"+sz(INFO.uploadmax)+\"：内存不足，设备将拒绝\");var"
-		" C=INFO&&INFO.model;return C&&t.some(function(e){return MDK[e.k]})&&(a+=\"<div"
-		" class=r><span>本机</span><span class=v>\"+esc(C)+\"</span></div>\"),t.forEach(function(e){var"
-		" t=fcheck(e.k,e.f.name,C);a+=\"<div class=r><span>\"+esc(e.l)+\"</span>\"+(t?'<span class=vc><span"
+		" 将被清空\");var R=0;t.forEach(function(e){R+=e.f.size}),\"p4\"!=e.id&&INFO&&INFO.uploadmax&&R+4096>INF"
+		"O.uploadmax&&n.push(\"本次上传 \"+sz(R)+\"，超过设备单次可接收的 \"+sz(INFO.uploadmax)+\"：内存不足，设备将拒绝\");var"
+		" E=INFO&&INFO.model;return E&&t.some(function(e){return MDK[e.k]})&&(a+=\"<div"
+		" class=r><span>本机</span><span class=v>\"+esc(E)+\"</span></div>\"),t.forEach(function(e){var"
+		" t=fcheck(e.k,e.f.name,E);a+=\"<div class=r><span>\"+esc(e.l)+\"</span>\"+(t?'<span class=vc><span"
 		" class=\"v'+(t.c?\" \"+t.c:\"\")+'\">':\"<span class=v>\")+esc(e.f.name)+\" ·"
 		" \"+sz(e.f.size)+\"</span>\"+(t?'<span class=\"md'+(t.c?\""
 		" \"+t.c:\"\")+'\">'+t.t+\"</span></span>\":\"\")+\"</div>\"}),t.length||(a=\"<div"
 		" class=r><span>未选择任何文件</span></div>\"),n.forEach(function(e){a+=\"<div"
 		" class=e>\"+e+\"</div>\"}),o.forEach(function(e){a+=\"<div"
-		" class=w>\"+e+\"</div>\"}),$(\"#abody\").innerHTML=a,s.hidden=!t.length||n.length>0,$(\"#mask\").setAtt"
-		"ribute(\"data-on\",\"\"),!1}var EXT={firmware:\".itb\",bl2:\".bin\",fip:\".fip\",stock:\".bin\"},MDK={firmwa"
-		"re:1,bl2:1,fip:1};function fmodel(e){var t=/an75\\d\\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|in"
-		"itramfs|preloader|bl31)/i.exec(e);return t?t[1].toUpperCase():\"\"}function mnorm(e){return"
+		" class=w>\"+e+\"</div>\"}),$(\"#abody\").innerHTML=a,i.hidden=!t.length||n.length>0,$(\"#mask\").setAtt"
+		"ribute(\"data-on\",\"\"),!1}var EXT={firmware:\".itb\",bl2:\".bin\",fip:\".fip\",chain:\".bin\",stock:\".bin\""
+		"},MDK={firmware:1,bl2:1,fip:1,chain:1};function fmodel(e){var"
+		" t=/an75\\d\\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|bl31|chainloader)/i.ex"
+		"ec(e);return t?t[1].toUpperCase():\"\"}function mnorm(e){return"
 		" String(e).toLowerCase().replace(/[^a-z0-9]/g,\"\")}function fcheck(e,t,o){var n,a=EXT[e];return"
 		" a?t.toLowerCase().slice(-a.length)!=a?{c:\"bad\",t:\"应为 \"+a+\""
 		" 文件\"}:MDK[e]?(n=fmodel(t))?o?mnorm(o).indexOf(mnorm(n))>=0?{c:\"ok\",t:esc(n)+\" ·"
 		" 与本机一致\"}:{c:\"bad\",t:esc(n)+\" · 本机是 \"+esc(String(o).replace(/^\\S+\\s+/,\"\"))}:{c:\"\",t:esc(n)}:{c:\"b"
 		"ad\",t:\"文件名里没有机型\"}:null:null}function hide(){$(\"#mask\").removeAttribute(\"data-on\"),YES=null}funct"
 		"ion go(){var e=YES;hide(),e?e():send()}function send(){var e,t=pane(),o=files(t),n=new"
-		" FormData,a=new XMLHttpRequest,s=$(\".prog\",t),i=$(\".pbar\",s),r=$(\"button[type=submit]\",t),l=0;if"
+		" FormData,a=new XMLHttpRequest,i=$(\".prog\",t),s=$(\".pbar\",i),r=$(\"button[type=submit]\",t),l=0;if"
 		"($$(\"input[type=text]\",t).forEach(function(e){e.value.trim()&&n.append(e.name,e.value.trim())}),"
 		"$$(\"input[type=checkbox]\",t).forEach(function(e){e.checked&&n.append(e.name,\"1\")}),o.forEach(fun"
 		"ction(e){n.append(e.k,e.f,e.f.name),l+=e.f.size}),SENT={p:t,rows:o,btxt:r.textContent},WR={n:0,o"
 		"ff:0,k:0,txt:\"\",rows:[],ver:null,secs:0,left:0,rt:Date.now(),rn:0,rate:0,fin:0},clearInterval(WR"
 		"T),WRT=setInterval(wrclock,1e3),RT=Date.now(),RN=0,RATE=0,HBOFF=1,busy(1),r.disabled=!0,r.textCo"
-		"ntent=\"p4\"==t.id?\"写入中…\":\"上传中…\",s.hidden=!1,s.className=\"prog\",i.className=\"pbar\",i.style.width=\""
+		"ntent=\"p4\"==t.id?\"写入中…\":\"上传中…\",i.hidden=!1,i.className=\"prog\",s.className=\"pbar\",s.style.width=\""
 		"0\",a.upload.onprogress=function(n){if(n.lengthComputable){var"
 		" a=Math.min(n.loaded,l),r=0,d=o[0],c=0;for(e=0;e<o.length&&(d=o[e],c=e,!(a<r+o[e].f.size||e==o.l"
-		"ength-1));e++)r+=o[e].f.size;i.style.width=a/l*100+\"%\",$(\".pwhat\",s).textContent=(\"p4\"==t.id?\"正在"
+		"ength-1));e++)r+=o[e].f.size;s.style.width=a/l*100+\"%\",$(\".pwhat\",i).textContent=(\"p4\"==t.id?\"正在"
 		"写入 \":\"正在上传 \")+d.l+(o.length>1?\"（\"+(c+1)+\"/\"+o.length+\"）\":\"\")+\" · \"+sz(Math.min(a-r,d.f.size))+\""
-		" / \"+sz(d.f.size);var f=Date.now(),h=(f-RT)/1e3;h>=1.5&&(RATE=(a-RN)/h,RT=f,RN=a),$(\".pct\",s).te"
+		" / \"+sz(d.f.size);var h=Date.now(),f=(h-RT)/1e3;f>=1.5&&(RATE=(a-RN)/f,RT=h,RN=a),$(\".pct\",i).te"
 		"xtContent=sz(a)+\" / \"+sz(l)+\" · \"+(a/l*100).toFixed(0)+\"%\"+(RATE>0?\" · \"+spd(RATE)+\" · 剩余"
-		" \"+dur((l-a)/RATE):\"\")}},a.upload.onload=function(){i.className=\"pbar ind\";var"
-		" e=$(\"[name=wipe]\",t),o=$(\"[name=tryboot]\",t),n=!(!o||!o.checked);$(\".pwhat\",s).textContent=\"p4\""
+		" \"+dur((l-a)/RATE):\"\")}},a.upload.onload=function(){s.className=\"pbar ind\";var"
+		" e=$(\"[name=wipe]\",t),o=$(\"[name=tryboot]\",t),n=!(!o||!o.checked);$(\".pwhat\",i).textContent=\"p4\""
 		"==t.id?e&&e.checked?\"传输完成，设备正在写入最后一块并擦净尾部…\":\"传输完成，设备正在写入最后一块…\":n?\"已载入内存，即将启动\":\"上传完成，设备开始写入闪存\",$("
-		"\".pct\",s).textContent=\"p4\"==t.id||n?\"\":\"预计 \"+dur(Math.max(8,l/WRSPD))},a.onload=function(){var"
+		"\".pct\",i).textContent=\"p4\"==t.id||n?\"\":\"预计 \"+dur(Math.max(8,l/WRSPD))},a.onload=function(){var"
 		" e=a.responseText||\"\";200==a.status&&(\"p4\"==t.id?/^ok"
 		" /.test(e):'{\"ok\":1}'==e.trim())?done(e):200!=a.status?fail((a.status>=500?\"设备写入失败（\":\"设备拒绝了上传（\")"
 		"+a.status+\"）：\"+a.responseText,a.status):fail(\"设备正忙：另一个上传还没结束，请稍后重试\",409)},a.onerror=function(){f"
@@ -1433,13 +1494,13 @@ static const char resp_form[] =
 		"in&&(++WR.k>1200?fail(\"未收到设备回报，请查看「诊断」中的串口日志\",500):WRP=setTimeout(wrpoll,700))}})}function"
 		" wrline(e){var t,o;if(WR&&!WR.fin)for(;(t=e.indexOf(\"\\n\",WR.n))>=0;)o=e.slice(WR.n,t).replace(/\\"
 		"r$/,\"\"),WR.n=t+1,o&&wrstep(o)}function wrstep(e){var"
-		" t,o,n,a,s,i=$(\".prog\",SENT.p),r=$(\".pbar\",i),l=e.charAt(0),d=e.slice(2).split(\""
+		" t,o,n,a,i,s=$(\".prog\",SENT.p),r=$(\".pbar\",s),l=e.charAt(0),d=e.slice(2).split(\""
 		" \");if(\"s\"==l)return t=+d[d.length-1],WR.left=0,t>0&&(d.pop(),WR.left=Math.max(2,Math.round(t/WR"
 		"SPD))),\"回读校验\"==d[0]&&(WR.vf=d.slice(1).join(\" \")),r.className=\"pbar"
-		" ind\",r.style.width=\"100%\",$(\".pwhat\",i).textContent=d.join(\""
-		" \")+\"…\",void($(\".pct\",i).textContent=WR.left?\"预计 \"+dur(WR.left):\"\");if(\"v\"==l)return"
-		" o=+d[0],n=+d[1],s=((a=Date.now())-WR.rt)/1e3,WR.left=0,r.className=\"pbar\",r.style.width=(n?o/n*"
-		"100:0)+\"%\",s>=1.5&&(WR.rate=(o-WR.rn)/s,WR.rt=a,WR.rn=o),void($(\".pct\",i).textContent=sz(o)+\" /"
+		" ind\",r.style.width=\"100%\",$(\".pwhat\",s).textContent=d.join(\""
+		" \")+\"…\",void($(\".pct\",s).textContent=WR.left?\"预计 \"+dur(WR.left):\"\");if(\"v\"==l)return"
+		" o=+d[0],n=+d[1],i=((a=Date.now())-WR.rt)/1e3,WR.left=0,r.className=\"pbar\",r.style.width=(n?o/n*"
+		"100:0)+\"%\",i>=1.5&&(WR.rate=(o-WR.rn)/i,WR.rt=a,WR.rn=o),void($(\".pct\",s).textContent=sz(o)+\" /"
 		" \"+sz(n)+\" · \"+(n?(o/n*100).toFixed(0):0)+\"%\"+(WR.rate>0?\" · \"+spd(WR.rate)+\" · 剩余"
 		" \"+dur((n-o)/WR.rate):\"\"));if(\"r\"!=l){if(\"c\"==l)return\"ok\"==d[0]?void(WR.ver=\"通过\"):(STUCK&&!STUC"
 		"KN||(STUCK||(STUCKN=[]),(WR.vf?[WR.vf]:WR.rows.map(function(e){return"
@@ -1460,10 +1521,10 @@ static const char resp_form[] =
 		" \"+esc(e.c):\"\")+\"</span></div>\"}),WR.ver&&(a+=\"<div class=r><span>回读校验</span><span"
 		" class=v>\"+esc(WR.ver)+\"</span></div>\"),WR.secs&&(a+=\"<div class=r><span>用时</span><span"
 		" class=v>\"+dur(WR.secs)+\"</span></div>\"),a||(a=\"<div"
-		" class=r><span>设备已写入完成</span></div>\"),a+=\"<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>\",I"
-		"NFO&&INFO.ubi&&!INFO.ubi.fip&&!WR.rows.some(function(e){return\"U-Boot\"==e.n})&&(a+=\"<div"
-		" class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>\"),$(\"#rbody\").innerHTML=a,$(\"#rmask\").setAttribut"
-		"e(\"data-on\",\"\"))}function rhide(){$(\"#rmask\").removeAttribute(\"data-on\"),info()}function"
+		" class=r><span>设备已写入完成</span></div>\"),a+=\"<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>\",!"
+		"INFO||!INFO.ubi||INFO.ubi.fip||chain()||WR.rows.some(function(e){return\"U-Boot\"==e.n})||(a+=\"<di"
+		"v class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>\"),$(\"#rbody\").innerHTML=a,$(\"#rmask\").setAttribu"
+		"te(\"data-on\",\"\"))}function rhide(){$(\"#rmask\").removeAttribute(\"data-on\"),info()}function"
 		" rboot(){$(\"#rmask\").removeAttribute(\"data-on\"),doreboot()}function stdone(e){STUCK=\"\";var"
 		" t,o=/ok (\\d+) bytes crc32 ([0-9a-f]+) skipped (-?\\d+)(?: wiped"
 		" (\\d+))?/.exec(e||\"\"),n=\"\",a=INFO&&INFO.flash;o?(t=+o[3],n=\"<tr><td>写入</td><td>\"+sz(+o[1])+\"（\"+o"
@@ -1507,40 +1568,76 @@ static const char resp_form[] =
 		" selected\",\"可选，同时写入\":\"Optional, written in the same pass\",\"首次迁移\":\"First migration\",\"重建"
 		" UBI\":\"Rebuild UBI\",\"擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。\":\"Erases the ubi partition and"
 		" recreates every volume. The factory MAC, the U-Boot environment and user settings are lost."
-		" \",\"必须同时上传 BL2 与 U-Boot\":\"BL2 and U-Boot must both be uploaded\",\"重建 UBI 前先备份。\":\"Back up before"
-		" rebuilding UBI. \",\"请先在「\":\"Export everything from \",\"」中导出。\":\""
-		" first.\",\"」。\":\".\",\"。\":\".\",\"重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截\":\"The rebuild erases from 0x20000"
-		" on, which covers the back half of the stock bootloader\",\"（原厂 bootloader 分区是 0x0–0x80000，而本布局的"
-		" bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot"
-		" 一起传。\":\" (the stock bootloader partition is 0x0–0x80000, while bl2 in this layout only occupies"
-		" 0x0–0x20000). So if you write U-Boot without BL2, the stock BL2 still starts at boot but can"
-		" no longer find its next stage — only a serial console gets you out of that. Hence this option"
-		" demands BL2 and U-Boot together.\",\"仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data"
-		" 保留。\":\"Upgrading U-Boot alone needs no rebuild: pick only the U-Boot file and rootfs_data"
-		" survives.\",\"把恢复固件载入内存直接引导，\":\"Loads a recovery image into RAM and boots it. \",\"闪存一个字节都不写\":\"Not"
-		" one byte of flash is written\",\"。起不来断电即恢复原系统。\":\". If it does not come up, power-cycle and the"
-		" old system is back.\",\"选择恢复固件\":\"Choose a recovery image\",\"要用 initramfs 恢复固件。\":\"Use an initramfs"
-		" recovery image. \",\"它的根文件系统随镜像一起进内存，不依赖闪存，所以 UBI 是空的、fit 卷没了也照样跑得起来。\":\"Its root filesystem"
-		" travels into RAM with the image and needs no flash, so it runs even when UBI is empty or the"
-		" fit volume is gone. \",\"sysupgrade 固件不适合这里\":\"A sysupgrade image will not do here\",\"：它的根要由"
-		" fitblk 从闪存的 fit 卷里读（设备树的 rootdisk 指着那个卷），试跑时内核是新的、根还是闪存里那份旧的，多半起不来。\":\": its root is read by"
-		" fitblk from the fit volume in flash (rootdisk in the device tree points there), so a trial run"
-		" pairs a new kernel with the old root still in flash, and usually fails to"
-		" boot.\",\"引导成功后本页面不再可用；要回到恢复页，断电重来即可。闪存没写过一个字节，原系统还在。\":\"Once it boots, this page is gone;"
-		" power-cycle to get back to recovery. Flash was never written and the old system is"
-		" intact.\",\"启动它\":\"Boot it\",\"将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0"
-		" 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。\":\"Writes an image to a given flash offset."
-		" It is written as it arrives rather than buffered in RAM, so there is no separate upload stage."
-		" At offset 0 the whole chip is written, which overwrites the running bootloader and this page;"
-		" migrating back to OpenWrt then needs a USB-TTL serial console.\",\"镜像\":\"Image\",\"写入偏移\":\"Write"
-		" offset\",\"十六进制，按擦除块对齐\":\"Hexadecimal, aligned to an erase block\",\"0 为整片，亦可写入单个分区\":\"0 writes the"
-		" whole chip; a single partition works too\",\"擦净尾部\":\"Erase the tail\",\"镜像之后\":\"The erase blocks"
-		" after the image, \",\"直至片尾\":\"all the way to the end of the chip\",\"的擦除块一并擦空；不擦则保留原有内容\":\", are"
-		" erased as well. Leave it off to keep what is there\",\"镜像须来自本机备份，可在「\":\"The image must come from"
-		" a backup of this board, exported from \",\"」中导出。长度上限为 flash 容量 \":\". Its length is capped at the"
-		" flash size, \",\"页面不校验镜像内容、机型与偏移是否匹配\":\"This page does not check that the image, the model and"
-		" the offset match\",\"，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；\":\", and a wrong write can only be undone over"
-		" serial. A whole-chip write takes far longer than a firmware write."
+		" \",\"必须同时上传 BL2 与 U-Boot\":\"BL2 and U-Boot must both be uploaded\",\"写入 chainloader 分区里的"
+		" U-Boot。原厂引导锁着不动，由它从这个分区启动本 U-Boot。\":\"Writes the U-Boot in the chainloader partition. The stock"
+		" bootloader is locked and stays; it starts this U-Boot out of that partition.\",\"首次安装\":\"First"
+		" install\",\"擦除 ubi 分区并重新创建全部卷；U-Boot 环境与用户配置将丢失，factory 卷随即从原厂 DSD 区重新生成。\":\"Erases the ubi"
+		" partition and recreates every volume. The U-Boot environment and user settings are lost; the"
+		" factory volume is rebuilt from the stock DSD area right away. \",\"必须同时上传固件\":\"The firmware must"
+		" be uploaded with it\",\"factory 卷每次开机都按原厂 DSD 区核对重建：DSD 读得出有效数据时，这里写进 factory"
+		" 的内容下次开机就被它换掉。\":\"The factory volume is checked against the stock DSD area and rebuilt on every"
+		" boot: while the DSD reads back valid data, whatever is written to factory here is replaced by"
+		" it at the next boot.\",\"U-Boot 写在 chainloader 分区（flash 0x600000，1 MiB）\":\"U-Boot lives in the"
+		" chainloader partition (flash 0x600000, 1 MiB)\",\"，原厂引导从这里启动它：原厂的 bootcmd 读 0x602100 处的 FIT，改过"
+		" bootcmd 的读 0x600000 处的前缀。写坏了原厂引导就起不来这份 U-Boot，只能接串口救，所以上传前先核对文件头，写完回读校验。\":\", and the stock"
+		" bootloader starts it from there: the stock bootcmd reads the FIT at 0x602100, a changed one"
+		" the prefix at 0x600000. A bad write leaves the stock bootloader unable to start this U-Boot"
+		" and only a serial console gets you out, so the file's headers are checked before the upload"
+		" and the write is read back afterwards.\",\"首次安装：在「引导升级」中上传固件，并启用「重建 UBI」。\":\"First install: on"
+		" Bootloader, upload the firmware and turn on Rebuild UBI.\",\"打开了「重建"
+		" UBI」却没有选择固件：重建之后闪存里没有系统可以启动\":\"Rebuild UBI is on but no firmware was picked: after the rebuild"
+		" there would be no system in flash to start\",\"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传固件\":\"There is no"
+		" mountable UBI in flash: turn on Rebuild UBI and upload the firmware with it\",\"重建 UBI 将清除"
+		" U-Boot 环境与用户配置；factory 卷随即从原厂 DSD 区重新生成\":\"Rebuilding UBI clears the U-Boot environment and"
+		" user settings; the factory volume is rebuilt from the stock DSD area right away\",\"U-Boot 写入"
+		" chainloader 分区，写完回读校验；写坏了原厂引导起不来它，只能接串口救\":\"U-Boot goes into the chainloader partition and is"
+		" read back afterwards; a bad write leaves the stock bootloader unable to start it, and only a"
+		" serial console gets you out\",\"未选择 U-Boot，本次只写入固件\":\"No U-Boot was picked; only the firmware"
+		" goes in this time\",\"chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT\":\"chainloader partition: a"
+		" uImage prefix at 0x0 and a FIT at 0x2100\",\"chainloader 分区只有 0x2100 处的 FIT，从 0x600000 启动的"
+		" bootcmd 起不来\":\"The chainloader partition only has the FIT at 0x2100; a bootcmd that starts from"
+		" 0x600000 will not come up\",\"chainloader 分区为空。断电后原厂引导找不到 U-Boot，请在「引导升级」页上传\":\"The chainloader"
+		" partition is empty. After a power-off the stock bootloader finds no U-Boot — upload one on"
+		" Bootloader\",\"chainloader 分区 0x2100 处没有 FIT，原厂引导起不来这份 U-Boot，请在「引导升级」页重新上传\":\"There is no FIT at"
+		" 0x2100 in the chainloader partition, so the stock bootloader cannot start this U-Boot — upload"
+		" it again on Bootloader\",\"原厂 bootcmd\":\"Stock bootcmd\",\"没有保存过，原厂引导用默认的 flash read 0x602100 启动"
+		" FIT\":\"Never saved; the stock bootloader uses its default, flash read 0x602100, and starts the"
+		" FIT\",\"无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件\":\"Cannot be mounted; there is no usable"
+		" UBI in flash. For the first install, turn on Rebuild UBI on Bootloader and upload the"
+		" firmware\",\"重建 UBI 前先备份。\":\"Back up before rebuilding UBI. \",\"请先在「\":\"Export everything from"
+		" \",\"」中导出。\":\" first.\",\"」。\":\".\",\"。\":\".\",\"重建擦除的范围从 0x20000 起，盖住了原厂引导器的后半截\":\"The rebuild erases"
+		" from 0x20000 on, which covers the back half of the stock bootloader\",\"（原厂 bootloader 分区是"
+		" 0x0–0x80000，而本布局的 bl2 只占 0x0–0x20000）。所以只写 U-Boot、不写 BL2 的话，重启时原厂 BL2"
+		" 会起来、却找不到它的下一级——只能拆串口救。因此这一项要求 BL2 与 U-Boot 一起传。\":\" (the stock bootloader partition is"
+		" 0x0–0x80000, while bl2 in this layout only occupies 0x0–0x20000). So if you write U-Boot"
+		" without BL2, the stock BL2 still starts at boot but can no longer find its next stage — only a"
+		" serial console gets you out of that. Hence this option demands BL2 and U-Boot together.\",\"仅升级"
+		" U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。\":\"Upgrading U-Boot alone needs no rebuild: pick"
+		" only the U-Boot file and rootfs_data survives.\",\"把恢复固件载入内存直接引导，\":\"Loads a recovery image into"
+		" RAM and boots it. \",\"闪存一个字节都不写\":\"Not one byte of flash is written\",\"。起不来断电即恢复原系统。\":\". If it"
+		" does not come up, power-cycle and the old system is back.\",\"选择恢复固件\":\"Choose a recovery"
+		" image\",\"要用 initramfs 恢复固件。\":\"Use an initramfs recovery image. \",\"它的根文件系统随镜像一起进内存，不依赖闪存，所以 UBI"
+		" 是空的、fit 卷没了也照样跑得起来。\":\"Its root filesystem travels into RAM with the image and needs no flash,"
+		" so it runs even when UBI is empty or the fit volume is gone. \",\"sysupgrade 固件不适合这里\":\"A"
+		" sysupgrade image will not do here\",\"：它的根要由 fitblk 从闪存的 fit 卷里读（设备树的 rootdisk"
+		" 指着那个卷），试跑时内核是新的、根还是闪存里那份旧的，多半起不来。\":\": its root is read by fitblk from the fit volume in flash"
+		" (rootdisk in the device tree points there), so a trial run pairs a new kernel with the old"
+		" root still in flash, and usually fails to boot.\",\"引导成功后本页面不再可用；要回到恢复页，断电重来即可。闪存没写过一个字节，原系统还在。\":"
+		"\"Once it boots, this page is gone; power-cycle to get back to recovery. Flash was never written"
+		" and the old system is intact.\",\"启动它\":\"Boot it\",\"将镜像写入 flash"
+		" 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL"
+		" 串口。\":\"Writes an image to a given flash offset. It is written as it arrives rather than"
+		" buffered in RAM, so there is no separate upload stage. At offset 0 the whole chip is written,"
+		" which overwrites the running bootloader and this page; migrating back to OpenWrt then needs a"
+		" USB-TTL serial console.\",\"镜像\":\"Image\",\"写入偏移\":\"Write offset\",\"十六进制，按擦除块对齐\":\"Hexadecimal,"
+		" aligned to an erase block\",\"0 为整片，亦可写入单个分区\":\"0 writes the whole chip; a single partition works"
+		" too\",\"擦净尾部\":\"Erase the tail\",\"镜像之后\":\"The erase blocks after the image, \",\"直至片尾\":\"all the way"
+		" to the end of the chip\",\"的擦除块一并擦空；不擦则保留原有内容\":\", are erased as well. Leave it off to keep what"
+		" is there\",\"镜像须来自本机备份，可在「\":\"The image must come from a backup of this board, exported from"
+		" \",\"」中导出。长度上限为 flash 容量 \":\". Its length is capped at the flash size,"
+		" \",\"页面不校验镜像内容、机型与偏移是否匹配\":\"This page does not check that the image, the model and the offset"
+		" match\",\"，写错仅能通过串口恢复。整片写入耗时显著长于固件写入；\":\", and a wrong write can only be undone over serial. A"
+		" whole-chip write takes far longer than a firmware write."
 		" \",\"写入一旦开始，中断将使闪存处于不一致状态，须重传至成功后方可重启\":\"Once writing starts, an interruption leaves flash"
 		" inconsistent; resend until it succeeds before rebooting\",\"。写入期间指示灯\":\". The LEDs"
 		" \",\"流水\":\"chase\",\"，与其他页面一致；本页写入与接收同时进行，\":\" while writing, as on the other pages. Here writing"
@@ -1795,7 +1892,24 @@ static const char resp_form[] =
 		" transfer is done\",\"卷名不合法\":\"Invalid volume name\",\"卷名缺失或过长\":\"The volume name is missing or too"
 		" long\",\"没有 Content-Length\":\"No Content-Length\",\"读取失败，详见串口日志\":\"Read failed — see the serial"
 		" log\",\"起始偏移超过闪存容量\":\"The start offset is past the flash size\",\"偏移加长度超过闪存容量\":\"Offset plus length"
-		" is past the flash size\",\"内存不足，无法分配读取窗口\":\"Not enough memory for a read window\"},I18P={\" 未备份 ·"
+		" is past the flash size\",\"内存不足，无法分配读取窗口\":\"Not enough memory for a read window\"},I18P={\"原厂"
+		" bootcmd 只读 \":\"The stock bootcmd reads only \",\"，这份 U-Boot 要 \":\", and this U-Boot needs"
+		" \",\"：读不全，原厂引导起不来它\":\": read short, the stock bootloader cannot start it\",\"原厂 bootcmd 读到 0x\":\"The"
+		" stock bootcmd loads to 0x\",\"，前缀 shim 只认 0x81800000\":\", but the prefix shim only looks at"
+		" 0x81800000\",\"（只读 0x\":\" (reads only 0x\",\" 字节，U-Boot 要 0x\":\" bytes, U-Boot needs"
+		" 0x\",\"，读不全就起不来）\":\" — read short, it cannot start)\",\"（读到 0x\":\" (loads to 0x\",\"，前缀 shim 只认"
+		" 0x81800000）\":\", but the prefix shim only looks at 0x81800000)\",\"，超过 chainloader 分区的 \":\", more"
+		" than the chainloader partition's \",\"原厂 bootcmd 不读 0x600000 或 0x602100，原厂引导不会启动写进去的"
+		" U-Boot：\":\"The stock bootcmd reads neither 0x600000 nor 0x602100, so the stock bootloader will"
+		" not start the U-Boot written here: \",\"原厂 bootcmd 从 0x600000 读，要经前缀 shim 启动，这条路没有实机验证过：\":\"The"
+		" stock bootcmd reads from 0x600000, which starts through the prefix shim — a path not yet tried"
+		" on real hardware: \",\"（经 0x0 处的前缀 shim 启动，这条路没有实机验证过；原厂的 0x602100 直接启动 FIT）\":\" (starts through"
+		" the prefix shim at 0x0, a path not yet tried on real hardware; the stock 0x602100 starts the"
+		" FIT directly)\",\"（不读 0x600000 或 0x602100，原厂引导不会启动 chainloader 分区）\":\" (reads neither 0x600000"
+		" nor 0x602100, so the stock bootloader will not start the chainloader partition)\",\" 个，其中"
+		" chainloader 分区有坏块：原厂引导按它自己的 BMT 读这个分区，U-Boot 写不进去：\":\" bad, including one in the chainloader"
+		" partition: the stock bootloader reads that partition through its own BMT, so U-Boot cannot be"
+		" written there: \",\"chainloader 分区读取失败（\":\"Reading the chainloader partition failed (\",\" 未备份 ·"
 		" \":\" not backed up · \",\"与本机一致\":\"matches this device\",\"本机是 \":\"this device is \",\"。宽度为各卷的预留容量，按卷"
 		" ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置\":\". Widths are each volume's reserved size, ordered by volume"
 		" ID. UBI volumes are not contiguous in flash, so this is not a physical layout\",\" 个，其中 bl2"
@@ -3058,6 +3172,140 @@ static struct mtd_info *flash_master(void)
 	return NULL;
 }
 
+/*
+ * The partition this U-Boot is started from on a board whose vendor
+ * bootloader stays -- see CHAIN_PART -- or NULL on a board where it is
+ * the second stage of our own BL2.  Asked of the partition table rather
+ * than configured: a board with both would be a contradiction, and one
+ * with a bl2 partition is the kind this page has always served.  The
+ * caller puts the reference back.
+ */
+static struct mtd_info *chain_part(void)
+{
+	struct mtd_info *m;
+
+	mtd_probe_devices();
+	m = get_mtd_device_nm(BL2_PART);
+	if (!IS_ERR_OR_NULL(m)) {
+		put_mtd_device(m);
+		return NULL;
+	}
+	m = get_mtd_device_nm(CHAIN_PART);
+
+	return IS_ERR_OR_NULL(m) ? NULL : m;
+}
+
+static int chain_board(void)
+{
+	struct mtd_info *m = chain_part();
+
+	if (!m)
+		return 0;
+	put_mtd_device(m);
+
+	return 1;
+}
+
+/*
+ * The bootcmd the vendor U-Boot has saved, which decides the half of the
+ * slot it starts: "flash read 0x602100 ...; bootm" (the stock one) boots
+ * the FIT, "flash read 0x600000 ...; bootm" the prefix shim in front of
+ * it.  Found by name in the vendor environment, whose exact framing is the
+ * vendor's business: "bootcmd=" at the start of an entry -- after a NUL, or
+ * right behind the CRC (and the flag byte of a redundant copy).  1 with the
+ * value in out, 0 when there is none: the vendor U-Boot then runs its
+ * built-in default, which is the stock command.
+ */
+static int chain_vendor_env(const char *name, char *out, int outsz)
+{
+	char key[32];
+	int klen = snprintf(key, sizeof(key), "%s=", name);
+	struct mtd_info *m;
+	size_t rl = 0;
+	char *buf;
+	int i, n, ret, found = 0;
+
+	mtd_probe_devices();
+	m = get_mtd_device_nm(VENDOR_PART);
+	if (IS_ERR_OR_NULL(m))
+		return 0;
+	buf = malloc(VENDOR_ENV_LEN);
+	if (!buf) {
+		put_mtd_device(m);
+		return 0;
+	}
+	ret = mtd_read(m, VENDOR_ENV_OFF, VENDOR_ENV_LEN, &rl, (u8 *)buf);
+	put_mtd_device(m);
+	if (ret && ret != -EUCLEAN)
+		rl = 0;
+
+	for (i = 0; !found && i + klen < (int)rl; i++) {
+		int start = !i || !buf[i - 1] || i == 4 || i == 5;
+
+		if (!start || memcmp(buf + i, key, klen))
+			continue;
+		i += klen;
+		for (n = 0; n < outsz - 1 && i + n < (int)rl; n++) {
+			unsigned char c = buf[i + n];
+
+			if (c < 0x20 || c > 0x7e)
+				break;
+			out[n] = c;
+		}
+		out[n] = '\0';
+		found = n > 0;
+	}
+	free(buf);
+
+	return found;
+}
+
+static int chain_vendor_bootcmd(char *out, int outsz)
+{
+	return chain_vendor_env("bootcmd", out, outsz);
+}
+
+/*
+ * What the vendor bootcmd reads: "flash read <offset> <length> <address>".
+ * 1 with the three filled in, the address resolved through the vendor's own
+ * $loadaddr (0x81800000 when it has none saved, as in its built-in default);
+ * 0 when the command is not of that shape.
+ */
+static int chain_vendor_read(const char *cmd, ulong *off, ulong *len,
+			     ulong *addr)
+{
+	const char *p = strstr(cmd, "flash read");
+	char *e;
+	char la[24];
+
+	if (!p)
+		return 0;
+	p += strlen("flash read");
+	while (*p == ' ')
+		p++;
+	*off = simple_strtoul(p, &e, 16);
+	if (e == p)
+		return 0;
+	for (p = e; *p == ' '; p++)
+		;
+	*len = simple_strtoul(p, &e, 16);
+	if (e == p)
+		return 0;
+	for (p = e; *p == ' '; p++)
+		;
+	if (!strncmp(p, "$loadaddr", 9) || !strncmp(p, "${loadaddr}", 11)) {
+		*addr = 0x81800000;
+		if (chain_vendor_env("loadaddr", la, sizeof(la)))
+			*addr = simple_strtoul(la, NULL, 16);
+	} else {
+		*addr = simple_strtoul(p, &e, 16);
+		if (e == p)
+			return 0;
+	}
+
+	return 1;
+}
+
 /* One value out of "a=1&b=2"; 0 when the key is not there. */
 static int qs_get(const char *qs, const char *key, char *out, int max)
 {
@@ -4050,6 +4298,35 @@ static int httpd_info(void)
 	P(",\"stock\":%d", IS_ENABLED(CONFIG_CMD_HTTPD_STOCK_RESTORE) ? 1 : 0);
 	P(",\"log\":%d", IS_ENABLED(CONFIG_CONSOLE_RECORD) ? 1 : 0);
 
+	/*
+	 * On a board whose vendor bootloader stays, U-Boot lives in a partition
+	 * of its own and the page offers that in place of BL2 and FIP.  The
+	 * vendor bootcmd goes along: it is what decides whether a slot written
+	 * there is ever started.
+	 */
+	{
+		struct mtd_info *cp = chain_part();
+		char cmd[160];
+
+		if (cp) {
+			P(",\"chain\":{\"o\":%llu,\"s\":%llu,\"bootcmd\":",
+			  (unsigned long long)cp->offset,
+			  (unsigned long long)cp->size);
+			put_mtd_device(cp);
+			if (chain_vendor_bootcmd(cmd, sizeof(cmd))) {
+				ulong o, l, a;
+
+				S(cmd);
+				/* What it reads, for the page to hold a slot to. */
+				if (chain_vendor_read(cmd, &o, &l, &a))
+					P(",\"rd\":[%lu,%lu,%lu]", o, l, a);
+			} else {
+				P("null");
+			}
+			P("}");
+		}
+	}
+
 	P(",\"fv\":[");
 	for (i = 0; i < nfvols; i++) {
 		P("%s{\"n\":", i ? "," : "");
@@ -4159,7 +4436,6 @@ static int httpd_net(void)
  * Where the BootROM expects the BL2 container inside the bl2 partition; the
  * 2 KiB before it are left erased (see web_uboot_write_bl2 in the defenv).
  */
-#define BL2_PART	"bl2"
 #define BL2_IMAGE_OFF	0x800
 /*
  * What ubi_write_fip creates the volume as when there is none yet
@@ -4452,13 +4728,18 @@ static void chk_parts(struct jbuf *jb, int *first, struct mtd_info *m)
 
 static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
 {
-	struct mtd_info *bl2 = get_mtd_device_nm(BL2_PART);
+	/* Whichever of the two this board boots U-Boot from. */
+	struct mtd_info *bl2 = chain_part();
+	int chain = !!bl2;
 	char list[80];
 	int n = 0, nbad = 0, inbl2 = 0;
 	loff_t off;
 
-	if (IS_ERR(bl2))
-		bl2 = NULL;
+	if (!bl2) {
+		bl2 = get_mtd_device_nm(BL2_PART);
+		if (IS_ERR(bl2))
+			bl2 = NULL;
+	}
 
 	for (off = 0; off < m->size; off += m->erasesize) {
 		if (!mtd_block_isbad(m, off))
@@ -4473,7 +4754,11 @@ static void chk_badblocks(struct jbuf *jb, int *first, struct mtd_info *m)
 	if (bl2)
 		put_mtd_device(bl2);
 
-	if (inbl2)
+	if (inbl2 && chain)
+		chk_item(jb, first, "坏块", CHK_FAIL,
+			 "%d 个，其中 chainloader 分区有坏块：原厂引导按它自己的 BMT 读这个分区，U-Boot 写不进去：%s",
+			 nbad, list);
+	else if (inbl2)
 		chk_item(jb, first, "坏块", CHK_FAIL,
 			 "%d 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：%s",
 			 nbad, list);
@@ -4513,6 +4798,101 @@ static void chk_bl2(struct jbuf *jb, int *first, u8 *buf)
 	else
 		chk_item(jb, first, "BL2", CHK_WARN,
 			 "0x%x 处无 BL2 镜像头，可能为原厂或第三方引导程序", BL2_IMAGE_OFF);
+}
+
+/*
+ * The chainloader partition of a board whose vendor bootloader stays: the
+ * uImage in front (the 0x600000 entry) and the FIT at CHAIN_FIT_OFF (the
+ * stock 0x602100 one), then which of the two the vendor bootcmd takes.
+ */
+/* addr in cmd as a whole number: 0x600000 is not in "0x6000000". */
+static int cmd_has_addr(const char *cmd, const char *addr)
+{
+	const char *p = cmd;
+	int n = strlen(addr);
+
+	while ((p = strstr(p, addr))) {
+		if (!isxdigit(p[n]))
+			return 1;
+		p += n;
+	}
+
+	return 0;
+}
+
+static void chk_chain(struct jbuf *jb, int *first, u8 *buf)
+{
+	struct mtd_info *m = chain_part();
+	char cmd[160];
+	size_t rl = 0;
+	ulong off, len, addr;
+	int ret, pre, fit;
+
+	if (!m)
+		return;
+	ret = mtd_read(m, 0, CHAIN_FIT_OFF + 64, &rl, buf);
+	put_mtd_device(m);
+
+	if (ret && ret != -EUCLEAN) {
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区读取失败（%d）", ret);
+		return;
+	}
+	pre = get_unaligned_be32(buf) == IH_MAGIC;
+	fit = get_unaligned_be32(buf + CHAIN_FIT_OFF) == FIT_MAGIC;
+	if (pre && fit)
+		chk_item(jb, first, "U-Boot", CHK_OK,
+			 "chainloader 分区：0x0 处有 uImage 前缀，0x2100 处有 FIT");
+	else if (fit)
+		chk_item(jb, first, "U-Boot", CHK_WARN,
+			 "chainloader 分区只有 0x2100 处的 FIT，从 0x600000 启动的 bootcmd 起不来");
+	else if (all_ff(buf, CHAIN_FIT_OFF + 64))
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区为空。断电后原厂引导找不到 U-Boot，请在「引导升级」页上传");
+	else
+		chk_item(jb, first, "U-Boot", CHK_FAIL,
+			 "chainloader 分区 0x2100 处没有 FIT，原厂引导起不来这份 U-Boot，请在「引导升级」页重新上传");
+
+	if (!chain_vendor_bootcmd(cmd, sizeof(cmd))) {
+		chk_item(jb, first, "原厂 bootcmd", CHK_OK,
+			 "没有保存过，原厂引导用默认的 flash read 0x602100 启动 FIT");
+		return;
+	}
+	if (!cmd_has_addr(cmd, "0x602100") && !cmd_has_addr(cmd, "0x600000")) {
+		chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+			 "%s（不读 0x600000 或 0x602100，原厂引导不会启动 chainloader 分区）",
+			 cmd);
+		return;
+	}
+	/*
+	 * It also has to read all of what it starts: the FIT from 0x602100,
+	 * or the whole slot from 0x600000 -- and for the latter to 0x81800000,
+	 * the one place the shim looks.  Only checkable with a FIT in place.
+	 */
+	if (fit && chain_vendor_read(cmd, &off, &len, &addr)) {
+		ulong need = get_unaligned_be32(buf + CHAIN_FIT_OFF + 4);
+
+		if (off == 0x600000)
+			need += CHAIN_FIT_OFF;
+		if ((off == 0x600000 || off == 0x602100) && len < need) {
+			chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+				 "%s（只读 0x%lx 字节，U-Boot 要 0x%lx，读不全就起不来）",
+				 cmd, len, need);
+			return;
+		}
+		if (off == 0x600000 && addr != 0x81800000) {
+			chk_item(jb, first, "原厂 bootcmd", CHK_FAIL,
+				 "%s（读到 0x%lx，前缀 shim 只认 0x81800000）",
+				 cmd, addr);
+			return;
+		}
+	}
+	if (cmd_has_addr(cmd, "0x602100"))
+		chk_item(jb, first, "原厂 bootcmd", CHK_OK, "%s", cmd);
+	else
+		chk_item(jb, first, "原厂 bootcmd", CHK_WARN,
+			 "%s（经 0x0 处的前缀 shim 启动，这条路没有实机验证过；原厂的 0x602100 直接启动 FIT）",
+			 cmd);
 }
 
 /*
@@ -4877,7 +5257,7 @@ static int httpd_check(void)
 	ulong max = upload_max();
 	u32 __maybe_unused e1 = 0, __maybe_unused e2 = 0;
 	int __maybe_unused e1ok = 0;
-	int first = 1, i;
+	int first = 1, i, chain = chain_board();
 
 	jb_init(&jb, check_buf, sizeof(check_buf));
 
@@ -4911,13 +5291,20 @@ static int httpd_check(void)
 	chk_badblocks(&jb, &first, master);
 
 	chk_group("引导");
-	chk_bl2(&jb, &first, buf);
+	if (chain)
+		chk_chain(&jb, &first, buf);
+	else
+		chk_bl2(&jb, &first, buf);
 	chk_env_defaults(&jb, &first);
 
 	chk_group("UBI");
 	if (ubi_part(part_name, NULL)) {
-		chk_item(&jb, &first, "UBI", CHK_FAIL,
-			 "无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
+		if (chain)
+			chk_item(&jb, &first, "UBI", CHK_FAIL,
+				 "无法挂载，闪存上无可用的 UBI。首次安装请在「引导升级」页启用「重建 UBI」并上传固件");
+		else
+			chk_item(&jb, &first, "UBI", CHK_FAIL,
+				 "无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件");
 	} else {
 		struct ubi_device *ubi = ubi_get_device(0);
 
@@ -4931,7 +5318,8 @@ static int httpd_check(void)
 
 		chk_avail(&jb, &first, ubi);
 		chk_wear(&jb, &first, ubi);
-		chk_fip(&jb, &first, ubi, buf, max);
+		if (!chain)
+			chk_fip(&jb, &first, ubi, buf, max);
 		chk_fit(&jb, &first, ubi, buf);
 		chk_firmware(&jb, &first, ubi, buf, max);
 
@@ -6250,7 +6638,163 @@ static struct fvol *fvol_find(const char *field)
 	return NULL;
 }
 
+/*
+ * A chainloader slot before it goes anywhere near the partition: it fits,
+ * it has the uImage and the FIT where the two vendor bootcmds look, and no
+ * block it would land in is bad (see CHAIN_PART for why not skip one).
+ * 0, or -1 with the reason in why.  Shared by the upload and by the
+ * chaincheck command the serial menu's TFTP entry runs, so that one is
+ * held to the same rules; d has to be 8-byte aligned for libfdt.
+ */
+static int chain_slot_check(const u8 *d, u32 len, char *why, int whylen)
+{
+	struct mtd_info *m = chain_part();
+	const struct legacy_img_hdr *h = (const struct legacy_img_hdr *)d;
+	const void *fit = d + CHAIN_FIT_OFF;
+	char cmd[160];
+	ulong roff, rlen, raddr;
+	u64 size;
+	loff_t off;
+
+	if (!m) {
+		snprintf(why, whylen, "the " CHAIN_PART " partition is gone");
+		return -1;
+	}
+	size = m->size;
+	for (off = 0; off < len && off < size; off += m->erasesize)
+		if (mtd_block_isbad(m, off) > 0)
+			break;
+	put_mtd_device(m);
+
+	if (len > size) {
+		snprintf(why, whylen, "the U-Boot slot is %u bytes; the "
+			 CHAIN_PART " partition holds %llu", len,
+			 (unsigned long long)size);
+		return -1;
+	}
+	/*
+	 * The write erases the partition first, so a slot that would not
+	 * start has to be refused here, not found out at the next power-on.
+	 * Both halves are checked the way the vendor bootm will check them:
+	 * the uImage by its two CRCs, the FIT by its structure and hashes.
+	 */
+	if (len < CHAIN_FIT_OFF + 64 || get_unaligned_be32(d) != IH_MAGIC ||
+	    get_unaligned_be32(d + CHAIN_FIT_OFF) != FIT_MAGIC) {
+		snprintf(why, whylen, "not a chainloader slot: it needs a "
+			 "uImage at 0 and a FIT at 0x%x", CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (!image_check_hcrc(h) ||
+	    image_get_header_size() + image_get_data_size(h) > CHAIN_FIT_OFF ||
+	    !image_check_dcrc(h)) {
+		snprintf(why, whylen, "the uImage at 0 is damaged (header or "
+			 "data CRC, or it runs into the FIT at 0x%x)",
+			 CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (fit_check_format(fit, len - CHAIN_FIT_OFF) ||
+	    fdt_totalsize(fit) > len - CHAIN_FIT_OFF ||
+	    !fit_all_image_verify(fit)) {
+		snprintf(why, whylen, "the FIT at 0x%x is damaged or cut short "
+			 "(see the serial log)", CHAIN_FIT_OFF);
+		return -1;
+	}
+	if (off < len) {
+		snprintf(why, whylen, "block 0x%llx of the " CHAIN_PART
+			 " partition is bad, and the vendor U-Boot reads the "
+			 "partition through its own BMT: an image written "
+			 "around it is not the one it would read",
+			 (unsigned long long)off);
+		return -1;
+	}
+	/*
+	 * And the vendor bootcmd has to read all of it, to where the shim
+	 * looks -- the same rule chk_chain() applies afterwards.  The page
+	 * holds a slot to /info's "rd" as well, but the page is not the
+	 * only client.  With no bootcmd saved the vendor runs its built-in
+	 * one, whose length is not ours to know.
+	 */
+	if (chain_vendor_bootcmd(cmd, sizeof(cmd)) &&
+	    chain_vendor_read(cmd, &roff, &rlen, &raddr)) {
+		ulong need = roff == 0x600000 ? len :
+			     roff == 0x602100 ? len - CHAIN_FIT_OFF : 0;
+
+		if (rlen < need) {
+			snprintf(why, whylen, "the vendor bootcmd reads 0x%lx "
+				 "bytes from 0x%lx and this slot needs 0x%lx "
+				 "there: the vendor U-Boot would start it cut "
+				 "short", rlen, roff, need);
+			return -1;
+		}
+		if (roff == 0x600000 && raddr != 0x81800000) {
+			snprintf(why, whylen, "the vendor bootcmd loads the "
+				 "slot to 0x%lx, and the prefix shim only runs "
+				 "from 0x81800000", raddr);
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+/* Aligned first -- libfdt wants its blob on an 8-byte boundary, and
+ * CHAIN_FIT_OFF keeps the FIT on one. */
 static ulong part_align(struct up_part *part);
+
+static int chain_check(struct up_part *p)
+{
+	char why[256];
+
+	if (chain_slot_check((const u8 *)part_align(p), p->size, why,
+			     sizeof(why))) {
+		httpd_reject("%s", why);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * The serial menu's way to the same partition: TFTP, then
+ * web_uboot_write_chain, which is a plain mtd erase and write.  mtd write
+ * steps over a bad block and shifts the rest along, which the vendor
+ * U-Boot then reads through its BMT as something else -- so the menu entry
+ * asks this first.
+ */
+static int do_chaincheck(struct cmd_tbl *cmdtp, int flag, int argc,
+			 char *const argv[])
+{
+	char why[256];
+	ulong addr, len;
+
+	if (argc != 3)
+		return CMD_RET_USAGE;
+	addr = hextoul(argv[1], NULL);
+	len = hextoul(argv[2], NULL);
+	if (addr & 7) {
+		printf("chaincheck: the slot has to sit on an 8-byte boundary\n");
+		return CMD_RET_FAILURE;
+	}
+	if (len > U32_MAX) {
+		printf("chaincheck: 0x%lx bytes is no U-Boot slot\n", len);
+		return CMD_RET_FAILURE;
+	}
+	if (chain_slot_check((const u8 *)addr, len, why, sizeof(why))) {
+		printf("Not writing the U-Boot slot: %s\n", why);
+		return CMD_RET_FAILURE;
+	}
+
+	return CMD_RET_SUCCESS;
+}
+
+U_BOOT_CMD(
+	chaincheck,	3,	0,	do_chaincheck,
+	"check a chainloader slot before it is written",
+	"<addr> <size>\n"
+	"    - fails, saying why, when the slot at <addr> would not start from\n"
+	"      the " CHAIN_PART " partition: damaged, too big, a bad block in\n"
+	"      its way, or longer than the vendor bootcmd reads"
+);
 
 /*
  * Everything that can be checked before answering is checked here, so a
@@ -6265,6 +6809,7 @@ static int httpd_validate(void)
 	struct up_part *p;
 	int nvols = 0;
 	int needs_ubi;
+	int chain = chain_board();
 	int i;
 
 	for (i = 0; i < up_nparts; i++) {
@@ -6328,6 +6873,40 @@ static int httpd_validate(void)
 	}
 
 	/*
+	 * A board has one boot chain or the other: BL2 and FIP where this
+	 * U-Boot came in with its own BL2, the chainloader partition where
+	 * the vendor's stays.  Writing the wrong kind would put a file where
+	 * nothing will ever look for it -- or, for a BL2, over a vendor
+	 * bootloader that nothing here can put back.
+	 */
+	if (chain && (part_find(FIELD_BL2) || part_find(FIELD_FIP))) {
+		httpd_reject("this board boots U-Boot out of the " CHAIN_PART
+			     " partition; it has no BL2 or FIP to write");
+		return -1;
+	}
+	if (!chain && part_find(FIELD_CHAIN)) {
+		httpd_reject("this board has no " CHAIN_PART " partition to "
+			     "write");
+		return -1;
+	}
+
+	p = part_find(FIELD_CHAIN);
+	if (p && chain_check(p))
+		return -1;
+
+	/*
+	 * On a chainloaded board the U-Boot is outside UBI, so a rebuild
+	 * takes nothing it cannot put back -- except the system, which is
+	 * the one thing the upload then has to bring.  The FIP and BL2 rules
+	 * below are about a boot chain this board does not have.
+	 */
+	if (chain && part_find(FIELD_FORMAT) && !part_find(FIELD_FIT)) {
+		httpd_reject("rebuilding UBI without a firmware image would "
+			     "leave nothing to boot");
+		return -1;
+	}
+
+	/*
 	 * Rebuilding ubi erases the fip volume with everything else, so the
 	 * upload has to bring back both halves of the boot chain.  The page
 	 * refuses this too, but the page is not the only client.
@@ -6349,12 +6928,12 @@ static int httpd_validate(void)
 	 * UBI rebuilt.  The guide has always said to send all three for a
 	 * migration; this makes the page say the same thing.
 	 */
-	if (part_find(FIELD_FORMAT) && !part_find(FIELD_FIP)) {
+	if (!chain && part_find(FIELD_FORMAT) && !part_find(FIELD_FIP)) {
 		httpd_reject("rebuilding UBI without a U-Boot FIP would leave "
 			     "nothing to boot");
 		return -1;
 	}
-	if (part_find(FIELD_FORMAT) && !part_find(FIELD_BL2)) {
+	if (!chain && part_find(FIELD_FORMAT) && !part_find(FIELD_BL2)) {
 		httpd_reject("rebuilding UBI erases what a factory BL2 loads "
 			     "after itself; upload the BL2 preloader too");
 		return -1;
@@ -6393,7 +6972,8 @@ static int httpd_validate(void)
 	 */
 	if ((nvols || part_find(FIELD_UBIVOL_FILE)) &&
 	    (part_find(FIELD_BL2) || part_find(FIELD_FIP) ||
-	     part_find(FIELD_FIT) || part_find(FIELD_FORMAT))) {
+	     part_find(FIELD_CHAIN) || part_find(FIELD_FIT) ||
+	     part_find(FIELD_FORMAT))) {
 		httpd_reject("volumes and the boot chain are written by two "
 			     "different paths; send them as two uploads");
 		return -1;
@@ -6501,9 +7081,14 @@ static int httpd_validate(void)
 		    part_find(FIELD_UBIVOL_FILE) || nvols;
 
 	if (ubi_part(part_name, NULL) && needs_ubi) {
-		httpd_reject("no usable UBI on the flash to write into: "
-			     "tick \"rebuild UBI\" and upload BL2, U-Boot "
-			     "and firmware together");
+		if (chain)
+			httpd_reject("no usable UBI on the flash to write into: "
+				     "tick \"rebuild UBI\" and upload the "
+				     "firmware with it");
+		else
+			httpd_reject("no usable UBI on the flash to write into: "
+				     "tick \"rebuild UBI\" and upload BL2, "
+				     "U-Boot and firmware together");
 		return -1;
 	}
 
@@ -8950,15 +9535,17 @@ static int flash_part(const char *what, struct up_part *part, const char *var,
 #define VF_NONE		0
 #define VF_VOL		1
 #define VF_BL2		2
+#define VF_CHAIN	3
 
 enum {
 	FS_START = 0,
 	FS_STOCK,
 	FS_ATTACH,
 	FS_VOLS,
-	FS_BL2,
+	FS_CHAIN,
 	FS_UBI,
 	FS_FIP,
+	FS_BL2,
 	FS_FIT,
 	FS_VERIFY,
 	FS_END,
@@ -8971,7 +9558,7 @@ static void flash_label(struct up_part *p, char *buf, int n)
 
 	if (!strcmp(p->name, FIELD_BL2))
 		strlcpy(buf, "BL2", n);
-	else if (!strcmp(p->name, FIELD_FIP))
+	else if (!strcmp(p->name, FIELD_FIP) || !strcmp(p->name, FIELD_CHAIN))
 		strlcpy(buf, "U-Boot", n);
 	else if (!strcmp(p->name, FIELD_FIT))
 		strlcpy(buf, "固件", n);
@@ -8992,6 +9579,8 @@ static int vf_target(struct up_part *p, char *vol, int voln)
 
 	if (!strcmp(p->name, FIELD_BL2))
 		return VF_BL2;
+	if (!strcmp(p->name, FIELD_CHAIN))
+		return VF_CHAIN;
 
 	if (!strcmp(p->name, FIELD_FIP))
 		strlcpy(vol, "fip", voln);
@@ -9064,15 +9653,17 @@ static int vf_ubi_read(const char *name, ulong off, ulong len)
 /* One window of what was just written, back off the flash. */
 static int vf_read(int kind, char *vol, ulong off, ulong len)
 {
-	if (kind == VF_BL2) {
-		struct mtd_info *m = get_mtd_device_nm(BL2_PART);
+	if (kind == VF_BL2 || kind == VF_CHAIN) {
+		struct mtd_info *m = kind == VF_BL2 ?
+			get_mtd_device_nm(BL2_PART) : chain_part();
 		size_t rl = 0;
 		int ret;
 
-		if (IS_ERR(m))
+		if (IS_ERR_OR_NULL(m))
 			return -1;
 
-		ret = mtd_read(m, BL2_IMAGE_OFF + off, len, &rl, vf_buf);
+		ret = mtd_read(m, (kind == VF_BL2 ? BL2_IMAGE_OFF : 0) + off,
+			       len, &rl, vf_buf);
 		put_mtd_device(m);
 
 		/* A corrected bit-flip is a read that worked. */
@@ -9095,6 +9686,7 @@ static int httpd_flash_step(void)
 {
 	struct up_part *bl2 = part_find(FIELD_BL2);
 	struct up_part *fip = part_find(FIELD_FIP);
+	struct up_part *chain = part_find(FIELD_CHAIN);
 	struct up_part *fit = part_find(FIELD_FIT);
 	struct up_part *ubifile = part_find(FIELD_UBIVOL_FILE);
 	int format = part_find(FIELD_FORMAT) != NULL;
@@ -9159,7 +9751,7 @@ static int httpd_flash_step(void)
 				nvols++;
 
 		if (!nvols && !ubifile) {
-			flash_stage = FS_BL2;
+			flash_stage = FS_CHAIN;
 
 			return FLASH_MORE;
 		}
@@ -9255,35 +9847,36 @@ static int httpd_flash_step(void)
 
 		return FLASH_MORE;
 
-	case FS_BL2:
-		if (!bl2) {
+	/* Before the firmware: the board has to come back up. */
+	case FS_CHAIN:
+		if (!chain) {
 			flash_stage = FS_UBI;
 
 			return FLASH_MORE;
 		}
 		if (!flash_said) {
-			wr_printf("s 写入 BL2 %u\n", bl2->size);
+			wr_printf("s 写入 U-Boot %u\n", chain->size);
 			flash_said = 1;
 
 			return FLASH_MORE;
 		}
 		flash_said = 0;
-		if (flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2)) {
-			wr_printf("f 写入 BL2 失败，详见串口日志\n");
+		if (flash_part("U-Boot slot", chain, ENV_WRITE_CHAIN,
+			       DEF_WRITE_CHAIN)) {
+			wr_printf("f 写入 U-Boot 失败，详见串口日志\n");
 
 			return FLASH_FAIL;
 		}
-		flash_wrote += bl2->size;
-		wr_printf("r BL2 %u %08x\n", bl2->size,
-			  crc32(0, (const u8 *)part_align(bl2), bl2->size));
+		flash_wrote += chain->size;
+		wr_printf("r U-Boot %u %08x\n", chain->size,
+			  crc32(0, (const u8 *)part_align(chain), chain->size));
 		flash_stage = FS_UBI;
 
 		return FLASH_MORE;
 
 	case FS_UBI:
 		if (!fip && !fit) {
-			flash_i = 0;
-			flash_stage = FS_VERIFY;
+			flash_stage = FS_BL2;
 
 			return FLASH_MORE;
 		}
@@ -9320,7 +9913,7 @@ static int httpd_flash_step(void)
 
 	case FS_FIP:
 		if (!fip) {
-			flash_stage = FS_FIT;
+			flash_stage = FS_BL2;
 
 			return FLASH_MORE;
 		}
@@ -9339,6 +9932,40 @@ static int httpd_flash_step(void)
 		flash_wrote += fip->size;
 		wr_printf("r U-Boot %u %08x\n", fip->size,
 			  crc32(0, (const u8 *)part_align(fip), fip->size));
+		flash_stage = FS_BL2;
+
+		return FLASH_MORE;
+
+	/*
+	 * After the FIP, not before it.  A board still on its vendor
+	 * bootloader (the XR1710G with a BL2 of its own) boots that until
+	 * BL2 is replaced, and the vendor one never reads the fip volume: a
+	 * FIP that fails to go in -- no room left in the vendor UBI -- leaves
+	 * it booting as before.  BL2 first would have left our BL2 with no
+	 * U-Boot to start, and only XMODEM to get back.  Still before the
+	 * firmware, for the reason FS_CHAIN gives.
+	 */
+	case FS_BL2:
+		if (!bl2) {
+			flash_stage = FS_FIT;
+
+			return FLASH_MORE;
+		}
+		if (!flash_said) {
+			wr_printf("s 写入 BL2 %u\n", bl2->size);
+			flash_said = 1;
+
+			return FLASH_MORE;
+		}
+		flash_said = 0;
+		if (flash_part("BL2", bl2, ENV_WRITE_BL2, DEF_WRITE_BL2)) {
+			wr_printf("f 写入 BL2 失败，详见串口日志\n");
+
+			return FLASH_FAIL;
+		}
+		flash_wrote += bl2->size;
+		wr_printf("r BL2 %u %08x\n", bl2->size,
+			  crc32(0, (const u8 *)part_align(bl2), bl2->size));
 		flash_stage = FS_FIT;
 
 		return FLASH_MORE;
@@ -9657,8 +10284,8 @@ U_BOOT_CMD(
 	"start the web recovery server",
 	"\n"
 	"    - serve the recovery page on port 80 and hand out one DHCP lease;\n"
-	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\" and \"" FIELD_FIT "\" fields are\n"
-	"      flashed by " ENV_WRITE_BL2 " / " ENV_WRITE_FIP " / \n"
-	"      " ENV_WRITE_FIT ", or by a built-in equivalent when those\n"
-	"      are not defined"
+	"      uploaded \"" FIELD_BL2 "\", \"" FIELD_FIP "\", \"" FIELD_CHAIN "\" and\n"
+	"      \"" FIELD_FIT "\" fields are flashed by " ENV_WRITE_BL2 " /\n"
+	"      " ENV_WRITE_FIP " / " ENV_WRITE_CHAIN " / " ENV_WRITE_FIT ",\n"
+	"      or by a built-in equivalent when those are not defined"
 );

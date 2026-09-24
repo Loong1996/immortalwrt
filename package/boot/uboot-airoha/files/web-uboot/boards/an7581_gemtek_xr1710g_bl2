@@ -1,0 +1,16 @@
+# The XR1710G started by our own BL2 (arm-trusted-firmware-airoha
+# an7581-gemtek-bl2), for a board whose BootROM runs it: BL2 in the first
+# erase block, BL31 + U-Boot in the fip volume of the vendor-placed UBI at
+# 0x700000.  Otherwise the chainloaded board's settings: the 16 KiB
+# environment its firmware uses, no whole-chip restore (the vendor BMT pool
+# is not ours to write), and the factory volume kept from the DSD.
+soc=an7581
+profile=gemtek_xr1710g-ubi
+dts=airoha/an7581-gemtek-xr1710g-bl2
+fdt=airoha/an7581-gemtek-xr1710g-bl2.dtb
+led=red:status
+bundle=an7581_chain_defconfig
+policy=gemtek
+factory_vols=factory:0x6006
+factory_mac=factory:0x6000
+extra_defconfig=fragments/gemtek_dsd.config

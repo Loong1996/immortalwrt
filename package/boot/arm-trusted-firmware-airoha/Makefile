@@ -19,6 +19,8 @@ define Trusted-Firmware-A/Default
   PLAT:=en7523
   HIDDEN:=y
   PNAND:=
+  UBI_START:=
+  UBI_END:=
 endef
 
 define Trusted-Firmware-A/bl2/Default
@@ -47,6 +49,20 @@ define Trusted-Firmware-A/an7581-pnand-bl2
   BUILD_DEVICES:=fiberhome_hg5382a-ubi
 endef
 
+# Gemtek XR1710G run from this BL2 instead of the vendor's: same SPI NAND
+# BL2, but the UBI (and the 'fip' volume in it) stays where the vendor put
+# it, 0x700000 up to the vendor BMT pool, so the firmware's partitions and
+# the DSD at 0x400000 are left alone (patches/103).
+define Trusted-Firmware-A/an7581-gemtek-bl2
+  $(call Trusted-Firmware-A/bl2/Default)
+  NAME:=Airoha an7581 bl2 (Gemtek UBI layout)
+  BUILD_SUBTARGET:=an7581
+  SOC:=EN7581
+  UBI_START:=0x700000
+  UBI_END:=0x1be00000
+  BUILD_DEVICES:=gemtek_xr1710g-ubi
+endef
+
 define Trusted-Firmware-A/an7583-bl2
   $(call Trusted-Firmware-A/bl2/Default)
   BUILD_SUBTARGET:=an7583
@@ -65,7 +81,8 @@ define Trusted-Firmware-A/an7581-bl31
   $(call Trusted-Firmware-A/bl31/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d-ubi fiberhome_hg5382a-ubi
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d-ubi fiberhome_hg5382a-ubi \
+	gemtek_xr1710g-ubi
 endef
 
 define Trusted-Firmware-A/an7583-bl31
@@ -77,7 +94,7 @@ define Trusted-Firmware-A/an7583-bl31
 endef
 
 TFA_TARGETS:= \
-	an7581-bl2 an7581-pnand-bl2 an7581-bl31 \
+	an7581-bl2 an7581-pnand-bl2 an7581-gemtek-bl2 an7581-bl31 \
 	an7583-bl2 an7583-bl31
 
 TFA_MAKE_FLAGS= \
@@ -88,6 +105,8 @@ TFA_MAKE_FLAGS= \
 	TCSUPPORT_CPU_$(SOC)=1 TCSUPPORT_CPU_EN7523=1 \
 	TCSUPPORT_CPU_ARMV8=1 TCSUPPORT_UBOOT_64BIT=1 \
 	$(if $(PNAND),TCSUPPORT_PARALLEL_NAND=1,TCSUPPORT_EMMC=1) \
+	$(if $(UBI_START),OVERRIDE_UBI_START_ADDR=$(UBI_START)) \
+	$(if $(UBI_END),OVERRIDE_UBI_END_ADDR=$(UBI_END)) \
 	TCSUPPORT_UBOOT=1 TCSUPPORT_BL2_OPTIMIZATION=1 \
 	TOOLS_DIR=$(STAGING_DIR_HOST)/bin
 
