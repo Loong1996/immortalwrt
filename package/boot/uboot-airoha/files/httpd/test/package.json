@@ -6,6 +6,7 @@
     "test": "node page.test.js"
   },
   "devDependencies": {
-    "jsdom": "^29.1.1"
+    "jsdom": "^29.1.1",
+    "terser": "5.51.2"
   }
 }
