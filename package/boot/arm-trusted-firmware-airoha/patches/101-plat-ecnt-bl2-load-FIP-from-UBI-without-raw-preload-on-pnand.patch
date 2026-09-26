@@ -1,0 +1,119 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Loong <1031313955@qq.com>
+Date: Thu, 24 Sep 2026 01:36:19 +0800
+Subject: [PATCH] plat: ecnt: bl2: load the FIP from UBI without raw pre-load
+ on parallel NAND
+
+BL23 pre-loads 0x7f800 bytes from offset 0x800 (boot block plus the first
+UBI PEBs) into the memmap FIP window and panics if any page fails ECC or
+the window carries no ToC, even though on NAND the BL31 + U-Boot FIP is
+actually loaded from the UBI 'fip' volume.  On parallel NAND with
+controller BCH those raw pages can legitimately fail to decode, which
+turns a healthy UBI boot into a hang (see pbs05/uboot-an758x#4).
+
+When the UBI policy is active skip the raw pre-load and the ToC check,
+and fall back to the memmap policy instead of asserting if the UBI device
+cannot be opened.  Guarded by TCSUPPORT_PARALLEL_NAND; SPI-NAND BL2 is
+unchanged.
+
+Derived from pbs05/uboot-an758x tf-a/ (without its XMODEM recovery loop).
+---
+ plat/ecnt/en7523/ecnt_bl2_setup.c       | 22 ++++++++++++++++++++++
+ plat/ecnt/en7523/ecnt_io_storage.c      | 21 +++++++++++++++++++++
+ plat/ecnt/en7523/include/plat_private.h |  3 +++
+ 3 files changed, 46 insertions(+)
+
+diff --git a/plat/ecnt/en7523/ecnt_bl2_setup.c b/plat/ecnt/en7523/ecnt_bl2_setup.c
+index c48604b..88e5986 100644
+--- a/plat/ecnt/en7523/ecnt_bl2_setup.c
++++ b/plat/ecnt/en7523/ecnt_bl2_setup.c
+@@ -438,6 +438,21 @@ void bl2_plat_preload_setup(void)
+ 		}
+ 		else
+ 		{
++#if defined(IMAGE_BL23) && defined(TCSUPPORT_PARALLEL_NAND)
++			/*
++			 * With the FIP in the UBI 'fip' volume the image loader
++			 * reads it through the UBI device.  Raw pages of the boot
++			 * area and of the first UBI PEBs covered by this window can
++			 * legitimately fail ECC on parallel NAND (erased, or written
++			 * with another layout), which must not stop a healthy UBI
++			 * boot, so skip the memmap pre-load in that case.
++			 */
++			if (plat_ecnt_fip_uses_ubi())
++			{
++				NOTICE("FIP source: UBI volume\n");
++			}
++			else
++#endif
+ 			if (flash_read(fip_offset, PLAT_ECNT_FIP_MAX_SIZE, (uint8_t *) PLAT_ECNT_FIP_BASE) == FLASH_READ_STATUS_CORRECT)
+ 			{
+ 			}
+@@ -458,6 +473,13 @@ void bl2_plat_preload_setup(void)
+ 		else
+ #endif
+ 		{
++#if defined(IMAGE_BL23) && defined(TCSUPPORT_PARALLEL_NAND)
++			/* The UBI reader validates the ToC of the volume it loads. */
++			if (plat_ecnt_fip_uses_ubi())
++			{
++				break;
++			}
++#endif
+ 			panic();
+ 		}
+ 	}
+diff --git a/plat/ecnt/en7523/ecnt_io_storage.c b/plat/ecnt/en7523/ecnt_io_storage.c
+index c581318..0860303 100644
+--- a/plat/ecnt/en7523/ecnt_io_storage.c
++++ b/plat/ecnt/en7523/ecnt_io_storage.c
+@@ -315,6 +315,19 @@ static int open_memmap(const uintptr_t spec)
+ 	return result;
+ }
+ 
++#if defined(IMAGE_BL23) && defined(TCSUPPORT_PARALLEL_NAND)
++/*
++ * Report whether the FIP is loaded from the UBI 'fip' volume rather than from
++ * the pre-loaded memmap window.  The memmap pre-load describes the boot
++ * partition layout only; when UBI owns the FIP the image loader reads the
++ * volume directly, so the window is neither needed nor meaningful.
++ */
++int plat_ecnt_fip_uses_ubi(void)
++{
++	return policies[FIP_IMAGE_ID] == &fip_ubi_policy;
++}
++#endif
++
+ void plat_ecnt_io_setup(const hw_trap_t *hw_trap)
+ {
+ 	int io_result;
+@@ -328,7 +341,15 @@ void plat_ecnt_io_setup(const hw_trap_t *hw_trap)
+ 		policies[FIP_IMAGE_ID] = &fip_ubi_policy;
+ 		io_result = mtk_fip_image_setup(&ubi_dev_handle,
+ 						&policies[FIP_IMAGE_ID]->image_spec);
++#if defined(TCSUPPORT_PARALLEL_NAND)
++		if (io_result != 0) {
++			ERROR("Failed to initialize NAND UBI FIP source (%i)\n",
++			      io_result);
++			policies[FIP_IMAGE_ID] = &fip_memmap_policy;
++		}
++#else
+ 		assert(io_result == 0);
++#endif
+ 	}
+ #endif
+ 
+diff --git a/plat/ecnt/en7523/include/plat_private.h b/plat/ecnt/en7523/include/plat_private.h
+index 90eb972..641d60c 100644
+--- a/plat/ecnt/en7523/include/plat_private.h
++++ b/plat/ecnt/en7523/include/plat_private.h
+@@ -77,6 +77,9 @@ int get_freq_sel(void);
+ void fill_secure_data(uint8_t *p_data, uint8_t offset, size_t len);
+ int efuse_init(void);
+ void plat_ecnt_io_setup(const hw_trap_t *hw_trap);
++#if defined(IMAGE_BL23) && defined(TCSUPPORT_PARALLEL_NAND)
++int plat_ecnt_fip_uses_ubi(void);
++#endif
+ int plat_check_bypass(void);
+ #ifdef TCSUPPORT_ARM_SECURE_BOOT_FLASH_KEY
+ int plat_check_secure_boot_flash_key(void);

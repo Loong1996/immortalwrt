@@ -1,0 +1,37 @@
+Subject: [PATCH] mtd: rawnand: add Airoha EN7581 parallel NAND controller
+
+Hook the EN7581 parallel NAND (PNAND) driver into Kconfig and the raw NAND
+Makefile.  The driver itself lives in src/drivers/mtd/nand/raw/ and is
+copied over the tree before the patches run.
+
+Taken from https://github.com/pbs05/uboot-an758x (also U-Boot 2026.07).
+
+--- a/drivers/mtd/nand/raw/Kconfig
++++ b/drivers/mtd/nand/raw/Kconfig
+@@ -650,6 +650,16 @@
+ 	  MT7621 platform.
+ 	  The controller supports 4~12 bits correction per 512 bytes with a
+ 	  maximum 4KB page size.
++
++config NAND_AIROHA_EN7581
++	bool "Support for Airoha EN7581 parallel NAND controller"
++	depends on ARCH_AIROHA && TARGET_AN7581
++	select SYS_NAND_SELF_INIT
++	imply CMD_NAND
++	help
++	  Enables the 8-bit parallel NAND datapath and BCH ECC engine in EN7581.
++	  The controller keeps eight FDM bytes in each 512-byte sector and uses
++	  UBI for bad-block and wear management.
+ 
+ comment "Generic NAND options"
+ 
+--- a/drivers/mtd/nand/raw/Makefile
++++ b/drivers/mtd/nand/raw/Makefile
+@@ -77,6 +77,7 @@
+ obj-$(CONFIG_CORTINA_NAND) += cortina_nand.o
+ obj-$(CONFIG_ROCKCHIP_NAND) += rockchip_nfc.o
+ obj-$(CONFIG_NAND_MT7621) += mt7621_nand.o
++obj-$(CONFIG_NAND_AIROHA_EN7581) += airoha_en7581_nand.o
+ 
+ else  # minimal SPL drivers
+ 

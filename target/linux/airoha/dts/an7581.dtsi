@@ -712,6 +712,35 @@
 			};
 		};
 
+		/*
+		 * 并口 NAND 与 snfi 共用 NFI 寄存器（0x1fa11000）和引脚，由启动
+		 * 拨码决定走哪条路。两者默认都关，板子只能开其中一个。
+		 * 驱动见 patches-6.18/902、903。
+		 */
+		pnand: nand-controller@1fa11000 {
+			compatible = "airoha,en7581-nfc";
+			reg = <0x0 0x1fa11000 0x0 0x580>;
+
+			clocks = <&scuclk EN7523_CLK_SPI>;
+			clock-names = "nfi_clk";
+			ecc-engine = <&pnand_ecc>;
+
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			status = "disabled";
+		};
+
+		pnand_ecc: ecc@1fa12000 {
+			compatible = "airoha,en7581-nand-ecc";
+			reg = <0x0 0x1fa12000 0x0 0x150>;
+
+			clocks = <&scuclk EN7523_CLK_SPI>;
+			clock-names = "nfiecc_clk";
+
+			status = "disabled";
+		};
+
 		mmc0: mmc@1fa0e000 {
 			compatible = "mediatek,mt7622-mmc";
 			reg = <0x0 0x1fa0e000 0x0 0x1000>,

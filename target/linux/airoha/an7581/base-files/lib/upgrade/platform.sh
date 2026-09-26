@@ -19,6 +19,7 @@ platform_check_image() {
 		nand_do_platform_check "$board" "$1"
 		return $?
 		;;
+	fiberhome,hg5382a|\
 	nokia,xg-040g-md-ubi|\
 	nokia,xg-040g-tf-ubi|\
 	quantum,q1000k-ubi|\
@@ -35,6 +36,7 @@ platform_do_upgrade() {
 	local board=$(board_name)
 
 	case "$board" in
+		fiberhome,hg5382a|\
 		gemtek,w1700k-ubi|\
 		nokia,xg-040g-md-ubi|\
 		nokia,xg-040g-tf-ubi|\

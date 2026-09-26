@@ -12,6 +12,7 @@ touch /etc/config/ubootenv
 board=$(board_name)
 
 case "$board" in
+fiberhome,hg5382a|\
 gemtek,w1700k-ubi|\
 nokia,xg-040g-md-ubi|\
 nokia,xg-040g-tf-ubi|\

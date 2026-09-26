@@ -20,6 +20,7 @@ an7581_setup_interfaces()
 	nokia,valyrian)
 		ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 10g" "wan"
 		;;
+	fiberhome,hg5382a |\
 	nokia,xg-040g-md |\
 	nokia,xg-040g-md-ubi |\
 	nokia,xg-040g-tf-ubi |\
