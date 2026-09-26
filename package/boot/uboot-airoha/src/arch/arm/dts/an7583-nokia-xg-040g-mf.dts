@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+/dts-v1/;
+
+#include <dt-bindings/leds/common.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+#include "an7583.dtsi"
+
+/ {
+	model = "Nokia XG-040G-MF";
+	compatible = "nokia,xg-040g-mf", "airoha,an7583";
+
+	chosen {
+		bootargs = "console=ttyS0,115200 earlycon";
+		stdout-path = "serial0:115200n8";
+		linux,usable-memory-range = <0x0 0x80200000 0x0 0x1fe00000>;
+	};
+
+	options {
+		u-boot {
+			compatible = "u-boot,config";
+			/* Web recovery LED chase, in this order; red stays out. */
+			httpd-chase-leds = <&led_power &led_wan &led_online &led_usb1 &led_usb2>;
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x0 0x20000000>;
+	};
+
+	keys {
+		compatible = "gpio-keys";
+
+		button-0 {
+			label = "reset";
+			linux,code = <KEY_RESTART>;
+			gpios = <&an7583_pinctrl 0 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		led_wan: led-0 {
+			label = "green:wan";
+			gpios = <&an7583_pinctrl 6 GPIO_ACTIVE_LOW>;
+		};
+
+		led_online: led-1 {
+			label = "green:online";
+			gpios = <&an7583_pinctrl 7 GPIO_ACTIVE_LOW>;
+		};
+
+		led_power: led-2 {
+			label = "green:power";
+			gpios = <&an7583_pinctrl 25 GPIO_ACTIVE_LOW>;
+		};
+
+		led_usb1: led-3 {
+			label = "green:usb-1";
+			gpios = <&an7583_pinctrl 26 GPIO_ACTIVE_LOW>;
+		};
+
+		led-4 {
+			label = "red:wan";
+			gpios = <&an7583_pinctrl 27 GPIO_ACTIVE_LOW>;
+		};
+
+		led_usb2: led-5 {
+			label = "green:usb-2";
+			gpios = <&an7583_pinctrl 33 GPIO_ACTIVE_LOW>;
+		};
+	};
+};
+
+&snfi {
+	status = "okay";
+};
+
+&spi_nand {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		partition@0 {
+			label = "bl2";
+			reg = <0x0 0x20000>;
+		};
+
+		partition@20000 {
+			label = "ubi";
+			reg = <0x20000 0xffe0000>;
+		};
+	};
+};
+
+&i2c0 {
+	status = "okay";
+};
+
+&gdm1 {
+	status = "okay";
+};
