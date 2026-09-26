@@ -8,3 +8,19 @@
 	compatible = "nokia,xg-040g-mf-ubi", "airoha,an7583",
 		     "airoha,en7583";
 };
+
+/*
+ * 与 an7581-nokia_xg-040g-md-ubi.dts 相同：ri 卷不是镜像的一部分，缺卷时
+ * nvmem provider 永不注册，of_get_ethdev_address() 返回 -EPROBE_DEFER，
+ * airoha_eth 与其下游的 DSA 交换机会永久停在 deferred probe，整机无网络。
+ * 改由 base-files/lib/preinit/90_airoha_ubi_mac 在用户态读取同一个卷。
+ */
+&gdm1 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
+
+&gdm3 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
