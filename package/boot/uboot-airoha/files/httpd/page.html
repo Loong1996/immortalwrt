@@ -1,0 +1,2550 @@
+<!DOCTYPE html><html lang=zh data-t=light><head><meta charset=utf-8>
+<script>function sysdk(){try{return matchMedia('(prefers-color-scheme: dark)').matches}catch(e){return false}}function svth(){try{return localStorage.getItem('xgtheme')}catch(e){return null}}document.documentElement.setAttribute('data-t',svth()||(sysdk()?'dark':'light'));var g=null;try{g=localStorage.getItem('xglang')}catch(e){}if((g||(/^zh/i.test(navigator.language||'')?'zh':'en'))=='en')document.documentElement.setAttribute('lang','en')</script>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Airoha Web U-Boot</title>
+<style>
+:root{--bg:#e8edf6;--fg:#1d1d1f;--c2:rgba(60,60,67,.7);--c3:rgba(60,60,67,.38);--sep:rgba(60,60,67,.12);--blue:#007aff;--red:#e0301e;--org:#c24e00;--grn:#248a3d;--on:#34c759;--fill:rgba(120,120,128,.13);--segon:#fff;--btn:rgba(255,255,255,.72);--btnb:rgba(60,60,67,.2);--card:rgba(255,255,255,.66);--side:rgba(255,255,255,.5);--pop:rgba(255,255,255,.84);--rim:rgba(255,255,255,.95);--rim2:rgba(255,255,255,.2);--sh:0 1px 2px rgba(20,30,60,.05),0 14px 40px -12px rgba(40,55,100,.24);--b1:rgba(125,181,255,.62);--b2:rgba(199,162,255,.6);--b3:rgba(136,240,218,.58);--b4:rgba(255,180,200,.55)}
+[data-t=dark]{--bg:#07080c;--fg:#f5f5f7;--c2:rgba(235,235,245,.64);--c3:rgba(235,235,245,.32);--sep:rgba(235,235,245,.1);--blue:#0a84ff;--red:#ff453a;--org:#ff9f0a;--grn:#30d158;--on:#30d158;--fill:rgba(120,120,128,.26);--segon:#636366;--btn:rgba(255,255,255,.1);--btnb:rgba(235,235,245,.2);--card:rgba(30,32,40,.62);--side:rgba(26,28,36,.5);--pop:rgba(40,42,52,.86);--rim:rgba(255,255,255,.26);--rim2:rgba(255,255,255,.03);--sh:0 1px 1px rgba(0,0,0,.3),0 16px 44px -12px rgba(0,0,0,.7);--b1:rgba(31,79,214,.72);--b2:rgba(109,47,224,.66);--b3:rgba(11,143,134,.55);--b4:rgba(176,24,79,.52);color-scheme:dark}
+/* 浏览器画不了毛玻璃时，半透明卡片压在彩色背景上字会发花，退回不透明 */
+@supports not ((backdrop-filter:blur(1px)) or (-webkit-backdrop-filter:blur(1px))){:root{--card:#fff;--side:#f7f8fb;--pop:#fff}[data-t=dark]{--card:#26272d;--side:#1d1e23;--pop:#2c2d33}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+html{height:100%;max-width:100%;overflow-x:hidden}
+body{height:100%;max-width:100%;margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Microsoft YaHei","Helvetica Neue",sans-serif;-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;background:radial-gradient(55vmax 55vmax at 0 0,var(--b1),transparent 70%),radial-gradient(50vmax 50vmax at 100% 5%,var(--b2),transparent 70%),radial-gradient(55vmax 50vmax at 25% 100%,var(--b3),transparent 70%),radial-gradient(45vmax 45vmax at 100% 100%,var(--b4),transparent 70%)}
+a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+svg{width:1em;height:1em;vertical-align:-.15em;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.app{display:grid;grid-template-columns:minmax(11.5rem,16rem) minmax(0,1fr);min-height:100%;width:100%;max-width:100%;position:relative}
+/* 玻璃：半透明底 + 背景模糊 + 左上亮、右下再亮一点的描边 */
+.side,.box,.drop,.about,.fin,.alert{position:relative;background:var(--card);-webkit-backdrop-filter:blur(26px) saturate(1.8);backdrop-filter:blur(26px) saturate(1.8);box-shadow:var(--sh),inset 0 1px 0 var(--rim2)}
+.box::before,.about::before,.fin::before,.alert::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;pointer-events:none;background:linear-gradient(145deg,var(--rim),var(--rim2) 35%,var(--rim2) 65%,var(--rim));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude}
+input[type=file]{position:absolute;width:1px;height:1px;opacity:0;pointer-events:none}
+.pb{border:0;background:var(--btn);color:var(--fg);border-radius:99px;font:inherit;font-weight:500;padding:.36rem 1rem;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.08),inset 0 0 0 1px var(--sep),inset 0 1px 0 var(--rim2);white-space:nowrap;transition:transform .2s cubic-bezier(.2,.9,.25,1.15),filter .15s}
+.pb:hover{filter:brightness(1.04)}
+.pb:active{transform:scale(.96);filter:brightness(.94)}
+/* 焦点框用 outline：主按钮、危险按钮、侧栏当前项都有自己的 box-shadow，同优先级写在后面会把它盖掉 */
+.pb:focus-visible,.nav:focus-visible,.tb:focus-visible{outline:3px solid rgba(0,122,255,.45);outline-offset:1px}
+.pb.pri{background:linear-gradient(180deg,#3d9bff,#007aff);color:#fff;box-shadow:0 6px 16px -6px rgba(0,122,255,.75),inset 0 1px 0 rgba(255,255,255,.35)}
+.pb:disabled{opacity:.45;cursor:default;transform:none}
+.pb.red{background:linear-gradient(180deg,#ff6259,#ff3b30);color:#fff;box-shadow:0 6px 16px -6px rgba(255,59,48,.75),inset 0 1px 0 rgba(255,255,255,.3)}
+.fn{color:var(--c2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fn.has{color:var(--fg)}
+.fs{color:var(--c3);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:.9em}
+.sw{appearance:none;-webkit-appearance:none;position:relative;width:44px;height:26px;margin:0;border-radius:99px;background:var(--fill);flex:none;cursor:pointer;transition:background .25s;outline:0}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 2px 5px rgba(0,0,0,.22),0 0 0 .5px rgba(0,0,0,.04);transition:transform .3s cubic-bezier(.2,.9,.25,1.15)}
+.sw:checked{background:var(--on)}.sw:checked::after{transform:translateX(18px)}
+.sw:focus-visible{box-shadow:0 0 0 3px rgba(0,122,255,.4)}
+.mono{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.9em}
+.box{border-radius:22px;overflow:hidden}
+.bh{font-weight:600;margin:1.6rem 1.1rem .45rem;font-size:.87rem;color:var(--c2)}
+.bh small{color:var(--c2);font-weight:400;margin-left:.5rem}
+.fr{display:grid;grid-template-columns:170px minmax(0,1fr);gap:.9rem;align-items:center;padding:.7rem 1.1rem;position:relative;min-height:50px}
+.fr+.fr::before{content:"";position:absolute;left:1.1rem;right:0;top:0;border-top:1px solid var(--sep)}
+.fr.wide{grid-template-columns:minmax(0,1fr) auto}
+.fl{font-weight:500}
+.fl small{display:block;color:var(--c2);font-weight:400;font-size:.86em;line-height:1.35;margin-top:.1rem}
+.fc{display:flex;align-items:center;gap:.6rem;min-width:0}
+.fc.end{justify-content:flex-end}
+input[type=text],.fc select{border:0;background:var(--fill);color:var(--fg);border-radius:10px;font:inherit;padding:.38rem .7rem;width:100%;max-width:240px;outline:0;transition:box-shadow .15s}
+.fc select{width:auto}
+input[type=text]:focus,.fc select:focus{box-shadow:0 0 0 3px rgba(0,122,255,.35)}
+input::placeholder{color:var(--c3)}
+.note{color:var(--c2);font-size:.9em;line-height:1.55;margin:.55rem 1.1rem 0}
+.note b{color:var(--org);font-weight:600}
+.note.ok b{color:var(--grn)}.note.bad b{color:var(--red)}
+.act{display:flex;align-items:center;justify-content:flex-end;gap:.8rem;margin-top:auto;padding-top:1.6rem}
+.st{color:var(--c2);margin-right:auto;font-variant-numeric:tabular-nums;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st.ok{color:var(--grn)}.st.warn{color:var(--org)}.st.bad{color:var(--red)}
+/* 结果可能是一整句话，不能被截成省略号 */
+.st.wrap{white-space:normal}
+input[type=radio]{accent-color:var(--blue);width:18px;height:18px;margin:0;flex:none;cursor:pointer}
+@media (min-width:701px){.side{position:sticky;top:16px;align-self:start;height:calc(100vh - 32px);overflow-y:auto;scrollbar-width:none}
+.side::-webkit-scrollbar{display:none}}
+/* 侧栏窗口矮了会滚动，::before 的描边会跟着内容滚走，改用内阴影画：左上一道亮边，一圈淡边 */
+.side{margin:16px 0 16px 16px;border-radius:30px;padding:1rem .7rem .7rem;display:flex;flex-direction:column;background:var(--side);box-shadow:var(--sh),inset 1px 1px 0 var(--rim),inset 0 0 0 1px var(--rim2)}
+/* 图标跟「关于」里那枚一样，靠背景画，不加标签 */
+.id{display:grid;grid-template-columns:40px minmax(0,1fr);column-gap:.7rem;align-items:center;padding:.1rem .45rem 1.1rem}
+.id::before{content:"";grid-row:span 2;width:40px;height:40px;border-radius:11px;box-shadow:0 6px 16px -4px rgba(88,86,214,.6),inset 0 1px 0 rgba(255,255,255,.45);background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 16V4M6 10l6-6 6 6M4 20h16'/%3E%3C/svg%3E") center/22px no-repeat,linear-gradient(145deg,#5ac8fa,#5856d6 70%,#af52de)}
+.id b{display:block;font-size:1.02rem;font-weight:700;letter-spacing:-.02em;line-height:1.25;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.id small{color:var(--c2);font-size:.8rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.id small a,.about span a{color:inherit}
+.id small a:hover,.about span a:hover{color:var(--blue)}
+.foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem .45rem;padding:.6rem .65rem;border-radius:20px;background:var(--fill)}
+.foot .tb{margin-top:0;align-self:auto}
+.fbtns{display:flex;align-items:center;gap:.35rem}
+.lg{display:inline-flex;align-items:center;height:28px;padding:2px;gap:2px;border-radius:99px;background:var(--fill);flex:none}
+.lg button{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:var(--c2);font:inherit;font-size:.8em;font-weight:600;line-height:1;padding:0 .5rem;height:100%;border-radius:99px;cursor:pointer;outline:0;display:inline-flex;align-items:center;transition:background .2s,color .2s,box-shadow .2s}
+.lg button:hover{color:var(--fg)}
+.lg button[aria-checked=true]{background:var(--segon);color:var(--fg);box-shadow:0 2px 6px rgba(0,0,0,.14)}
+.lg button:focus-visible{box-shadow:0 0 0 3px rgba(0,122,255,.4)}
+.live{display:flex;align-items:center;color:var(--c2);font-size:.85em;font-weight:500;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.alert .mi.bad{background-color:#ff3b30}
+.alert .mi.info{background-color:#007aff}
+.alert .mi.ok{background-color:#34c759}
+.alert .hint{color:var(--c2);font-size:.9em;margin-top:.7rem}
+.nav{border:0;background:transparent;color:var(--fg);font:inherit;font-weight:500;width:100%;text-align:left;display:flex;align-items:center;gap:.7rem;min-height:40px;padding:.3rem .5rem;border-radius:13px;cursor:pointer;transition:background .2s,transform .25s cubic-bezier(.2,.9,.25,1.15)}
+/* 图标底色各给一个，上面统一压一层高光，做出 iOS 设置里那种渐变 */
+.nav .ic,.alert .mi,.drop .ic{width:28px;height:28px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;color:#fff;flex:none;background-image:linear-gradient(160deg,rgba(255,255,255,.3),rgba(255,255,255,0) 65%);box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}
+.nav .ic svg{width:16px;height:16px}
+.n1 .ic{background-color:#0a84ff}.n2 .ic{background-color:#5e5ce6}.n3 .ic{background-color:#8e8e93}.n4 .ic{background-color:#ff9f0a}.n5 .ic{background-color:#64748b}.n6 .ic{background-color:#af52de}.n7 .ic{background-color:#30d158}.n8 .ic{background-color:#40c8e0}.n9 .ic{background-color:#00b4a0}.n10 .ic{background-color:#a2845e}.n11 .ic{background-color:#ff453a}
+.nav:hover{background:var(--fill)}
+.nav:active{transform:scale(.97)}
+.nav[aria-current],.nav[aria-current]:hover{background:var(--pop);box-shadow:0 2px 10px -4px rgba(0,0,0,.2),inset 0 1px 0 var(--rim)}
+[data-busy] .nav{opacity:.45;pointer-events:none}
+.nsep{height:1px;background:var(--sep);margin:.5rem .6rem}
+.tb{margin-top:auto;align-self:flex-start;border:0;background:var(--btn);color:var(--c2);border-radius:50%;padding:0;width:28px;height:28px;font:inherit;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;box-shadow:inset 0 0 0 1px var(--sep)}
+.tb svg{width:14px;height:14px}
+.tb:hover{color:var(--fg)}
+.pane{display:none;padding:2rem 2.2rem 2rem;min-width:0;max-width:64rem}
+.pane[data-on]{display:flex;flex-direction:column;min-height:0;flex:1}
+h1{font-size:2rem;font-weight:700;margin:0 0 .3rem;letter-spacing:-.025em;line-height:1.15}
+.sub{color:var(--c2);margin:0 0 1.4rem;line-height:1.5}
+.drop{display:flex;align-items:center;gap:1rem;border:1.5px dashed var(--btnb);border-radius:22px;padding:1.2rem 1.3rem;cursor:pointer;transition:border-color .2s,transform .25s cubic-bezier(.2,.9,.25,1.15)}
+.drop:hover,.drop.has,.drop.over{border-color:var(--blue);border-style:solid}
+.drop.over{transform:scale(1.01)}
+.fr.over{background:var(--fill)}
+:root{--drop:"松手放到这里"}
+[lang=en]{--drop:"Drop it here"}
+<!--#if PNAND-->
+/* 原厂格式的参数框默认收起：只编进并口板，SPI 板一个字节不多 */
+:root{--fo:"展开";--fc:"收起"}
+[lang=en]{--fo:"Show";--fc:"Hide"}
+.fold>summary{list-style:none;cursor:pointer}
+.fold>summary::-webkit-details-marker{display:none}
+.fold>summary{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:.9rem;align-items:center;padding:.7rem 1.1rem;min-height:50px}
+.fold>summary::after{content:var(--fo) " \203A";color:var(--blue);font-size:.9em;font-weight:500;white-space:nowrap}
+.fold[open]>summary::after{content:var(--fc)}
+.fold>summary:hover::after{text-decoration:underline}
+.fold>summary:focus-visible{outline:3px solid rgba(0,122,255,.45);outline-offset:-3px;border-radius:inherit}
+.fsv{color:var(--c2);font-size:.88em;line-height:1.45}
+.fold .fr:first-child::before{content:"";position:absolute;left:1.1rem;right:0;top:0;border-top:1px solid var(--sep)}
+<!--#endif-->
+.fr.over::after{content:var(--drop);position:absolute;right:1.1rem;color:var(--blue);font-size:.9em}
+.drop .ic{width:48px;height:48px;border-radius:13px;background-color:#007aff}
+.drop .ic svg{width:24px;height:24px}
+.drop .tx{min-width:0;flex:1}
+.drop .t{font-weight:600;font-size:1.02rem;display:flex;min-width:0}
+.drop .t .fn{display:block}
+.drop .s{color:var(--c2)}
+.prog{margin-top:auto;padding-top:1.6rem}
+.pw{height:8px;border-radius:99px;background:var(--fill);overflow:hidden}
+.pbar{height:100%;width:0;background:linear-gradient(90deg,#5ac8fa,#007aff);border-radius:99px;transition:width .3s;box-shadow:0 0 12px rgba(0,122,255,.5)}
+.pbar.ind{width:100%;animation:pu 1.4s ease-in-out infinite}
+@keyframes pu{0%,100%{opacity:.4}50%{opacity:1}}
+.ps{display:flex;justify-content:space-between;color:var(--c2);margin-top:.5rem;font-variant-numeric:tabular-nums;font-size:.92em}
+.ps span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ps .pct{flex:none;margin-left:1rem;max-width:60%;font-weight:600}
+.prog.ok .pbar{background:var(--on);box-shadow:0 0 12px rgba(52,199,89,.5)}.prog.ok .ps{color:var(--grn)}
+.prog.bad .pbar{background:var(--red);box-shadow:none}.prog.bad .ps{color:var(--red);align-items:flex-start}.prog.bad .pwhat{white-space:normal;overflow:visible;text-overflow:clip}
+.kv{width:100%;border-collapse:collapse}
+.kv td{padding:.62rem 1.1rem;vertical-align:top;border-top:1px solid var(--sep);word-break:break-all}
+.kv tr:first-child td{border-top:0}
+.kv td:first-child{width:160px;color:var(--c2);word-break:normal}
+.kv th{text-align:left;font-weight:500;color:var(--c2);padding:.55rem 1.1rem;font-size:.88em}
+.kv .n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.about{display:flex;gap:1.1rem;align-items:center;border-radius:22px;padding:1.3rem 1.4rem}
+.about .logo{width:64px;height:64px;border-radius:16px;background:linear-gradient(145deg,#5ac8fa,#5856d6 70%,#af52de);color:#fff;display:flex;align-items:center;justify-content:center;flex:none;box-shadow:0 8px 20px -6px rgba(88,86,214,.6),inset 0 1px 0 rgba(255,255,255,.45)}
+.about .logo svg{width:32px;height:32px}
+.about b{font-size:1.2rem;font-weight:700;letter-spacing:-.015em;display:block}
+.about span{color:var(--c2)}
+.fin{border-radius:22px;padding:1.2rem 1.3rem;display:flex;gap:1rem;align-items:flex-start}
+.fin .ic{width:44px;height:44px;border-radius:50%;background:linear-gradient(160deg,#5ee27f,#30b050);color:#fff;display:inline-flex;align-items:center;justify-content:center;flex:none;box-shadow:0 6px 16px -6px rgba(52,199,89,.8)}
+.fin .ic svg{width:22px;height:22px;stroke-width:2.6}
+.fin>div{min-width:0;flex:1}
+.fin>div>b{display:block;font-size:1.05rem;margin:.4rem 0 .5rem}
+.lt{border-collapse:collapse;width:100%}
+.lt td{padding:.4rem 0;vertical-align:top;border-top:1px solid var(--sep)}
+.lt td:first-child{width:4.5rem;color:var(--c2);font-weight:500}
+.lt td b{color:var(--red);font-weight:500}
+.steps{margin:0;padding-left:1.3rem}
+.steps li{padding:.2rem 0}
+.steps b{color:var(--org);font-weight:500}
+.mask{position:fixed;inset:0;background:rgba(10,12,20,.22);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);display:none;z-index:9;padding:1rem}
+.mask[data-on]{display:flex;animation:fi .2s ease-out}
+.mask[data-on] .alert{animation:pop .35s cubic-bezier(.2,.9,.25,1.15)}
+@keyframes fi{from{opacity:0}}
+@keyframes pop{from{opacity:0;transform:scale(.92)}}
+.alert{margin:auto;width:min(380px,100%);background:var(--pop);border-radius:28px;padding:1.4rem 1.4rem 1.2rem;box-shadow:0 30px 80px -20px rgba(20,30,70,.45),inset 0 1px 0 var(--rim2)}
+.alert .hd{display:flex;align-items:center;gap:.8rem;margin-bottom:.9rem}
+.alert .mi{width:40px;height:40px;border-radius:11px;background-color:#ff9500}
+.alert .mi svg{width:22px;height:22px;stroke-width:2.2}
+.alert h2{font-size:1.08rem;margin:0;letter-spacing:-.01em}
+.alert h2 small{display:block;color:var(--c2);font-weight:400;font-size:.85rem}
+.r{display:flex;justify-content:space-between;gap:1rem;padding:.4rem 0;font-size:.93em}
+.r+.r{border-top:1px solid var(--sep)}
+.r span:first-child{color:var(--c2)}
+.r .v{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+/* 文件名那一格：.r span:first-child 会连 .vc 里的文件名一起染灰，这里压过它 */
+.r .vc{min-width:0;display:flex;flex-direction:column;align-items:flex-end;text-align:right}
+.r:has(.vc)>span:first-child{flex:none}
+.r .vc .v{max-width:100%;color:var(--fg)}
+.r .vc .md{font-size:.86em;color:var(--c2)}
+.r .vc .ok{color:var(--grn)}.r .vc .bad{color:var(--red)}.r .vc .md.bad{font-weight:500}
+.w{font-size:.9em;color:var(--org);margin-top:.55rem;line-height:1.5}
+.w+.w{margin-top:.3rem}
+.e{font-size:.9em;color:var(--red);margin-top:.55rem;line-height:1.5;font-weight:500}
+.btns{display:flex;justify-content:flex-end;gap:.6rem;margin-top:1.2rem}
+.btns .pb{flex:1;padding:.55rem 1rem}
+.demo{color:var(--c3);font-size:.85em;margin-top:1.4rem}
+.ban{position:relative;margin:1.4rem 2.2rem 0;max-width:59.6rem;padding:.8rem 1.1rem;border-radius:18px;background:rgba(255,59,48,.12);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);box-shadow:inset 0 0 0 1px rgba(255,59,48,.35);color:var(--red);font-weight:500;line-height:1.5;display:flex;gap:.6rem;align-items:flex-start}
+.ban svg{flex:none;margin-top:.22em;stroke-width:2.2}
+.ban b{font-weight:600}
+.tag{display:inline-block;margin-left:.45rem;padding:.05rem .45rem;border-radius:99px;background:var(--fill);color:var(--c2);font-size:.82em;font-weight:500;vertical-align:.05em}
+.dlb{padding:.18rem .75rem;font-size:.9em}
+.kv td.empty{text-align:center;color:var(--c3);padding:2rem 1.1rem;line-height:1.6;word-break:normal}
+.kv td.empty b{display:block;color:var(--c2);font-weight:600;margin-bottom:.15rem}
+.kv td.b{text-align:right;padding:.4rem 1.1rem;width:1%}
+.kv th.g{padding-top:.8rem;font-weight:600;color:var(--fg);border-top:1px solid var(--sep)}
+.kv tr:first-child th.g{padding-top:.55rem;border-top:0}
+.seg{display:flex;align-self:flex-start;max-width:100%;overflow-x:auto;background:var(--fill);border-radius:99px;padding:3px;gap:2px;margin:0 0 1.2rem;flex:none;scrollbar-width:none}
+.seg::-webkit-scrollbar{display:none}
+.seg button{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:var(--c2);font:inherit;font-weight:500;padding:.36rem 1.05rem;border-radius:99px;cursor:pointer;white-space:nowrap;outline:0;transition:background .2s,color .2s,box-shadow .2s}
+.seg button:hover{color:var(--fg)}
+.seg button[aria-selected=true]{background:var(--segon);color:var(--fg);font-weight:600;box-shadow:0 3px 8px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.04)}
+.seg button:focus-visible{box-shadow:0 0 0 3px rgba(0,122,255,.4)}
+.sp{display:none;min-width:0}
+.sp[data-on]{display:flex;flex-direction:column;flex:1;min-width:0}
+.sp>.bh:first-child{margin-top:0}
+.bar{display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;margin:0 0 .7rem}
+.bar label{display:flex;gap:.45rem;align-items:center;color:var(--c2)}
+.envv{font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.9em;white-space:pre-wrap;word-break:break-all}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:.4rem;background:var(--c3)}
+.dot.s0{background:var(--on);box-shadow:0 0 6px var(--on)}.dot.s1{background:#ff9f0a}.dot.s2{background:var(--red)}
+.kv td.s0{color:var(--grn)}.kv td.s1{color:var(--org)}.kv td.s2{color:var(--red)}
+.kv td.hot{color:var(--red)}
+.kv td.cmd{color:var(--c2);font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.9em}
+.row{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:.8rem;justify-content:flex-end;align-items:center}
+.log{margin:0;padding:.8rem 1.1rem;max-height:min(380px,60vh);overflow:auto;font-family:"SF Mono",ui-monospace,Menlo,Consolas,monospace;font-size:.84em;line-height:1.45;white-space:pre-wrap;word-break:break-all;color:var(--fg)}
+.vbar{display:flex;height:28px;border-radius:10px;overflow:hidden;background:var(--fill);margin:0 0 .6rem;box-shadow:inset 0 0 0 1px var(--sep)}
+.vbar i{display:block;min-width:2px;position:relative}
+.vbar i.re::after{content:"";position:absolute;inset:0;background:repeating-linear-gradient(45deg,rgba(255,255,255,.5) 0 3px,transparent 3px 7px)}
+.vbar i.free{background:var(--fill)}
+.vbar i.rsv{background:var(--c3)}
+.vleg{display:flex;flex-wrap:wrap;gap:.25rem .9rem;margin:0 0 .4rem;color:var(--c2);font-size:.9em}
+.vleg span{display:flex;align-items:center;gap:.35rem;white-space:nowrap}
+.vleg em{width:10px;height:10px;border-radius:3px;font-style:normal;flex:none;position:relative}
+.vleg em.re::after{content:"";position:absolute;inset:0;border-radius:3px;background:repeating-linear-gradient(45deg,rgba(255,255,255,.55) 0 2px,transparent 2px 4px)}
+.vleg em.free{background:var(--fill);box-shadow:inset 0 0 0 1px var(--sep)}
+@media (prefers-reduced-motion:reduce){*{transition-duration:0s!important}.mask[data-on],.mask[data-on] .alert{animation:none}}
+@media (max-width:860px){.fr{grid-template-columns:1fr;gap:.5rem}input[type=text]{max-width:100%}.kv td:first-child{width:auto}}
+@media (max-width:700px){.app{grid-template-columns:minmax(0,1fr)}.side{margin:12px 12px 0;border-radius:26px}.fr{grid-template-columns:1fr}.tb{margin-top:.4rem}.foot{margin-top:.6rem}.ban{margin:1rem 12px 0}.pane{padding:1.3rem 16px 1.5rem}h1{font-size:1.7rem}.note,.bh{margin-left:.9rem;margin-right:.9rem}}
+</style>
+</head><body><div class=app id=app>
+<div class=side>
+<div class=id><b>Airoha Web U-Boot</b><small>@@WEB_VERSION@@ · <a href="@@AUTHOR_URL@@" target=_blank rel=noopener title="@@AUTHOR_HOST@@">@@AUTHOR@@</a></small></div>
+<button class="nav n1" data-p=p1 aria-current=true onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span>日常刷机</button>
+<button class="nav n2" data-p=p2 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>引导升级</button>
+<button class="nav n8" data-p=p14 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><polygon points="8 5 19 12 8 19"/></svg></span>试跑固件</button>
+<!--#if STOCK-->
+<button class="nav n4" data-p=p4 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5"/></svg></span>刷回原厂</button>
+<!--#endif-->
+<button class="nav n3" data-p=p3 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M4 7h16v10H4zM8 7v10M16 7v10"/></svg></span>按卷写入</button>
+<div class=nsep></div>
+<button class="nav n9" data-p=p10 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M12 4v12M6 10l6 6 6-6M4 20h16"/></svg></span>备份下载</button>
+<button class="nav n5" data-p=p5 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="12" rx="2"/><path d="M8 21h8M12 17v4"/></svg></span>设备详情</button>
+<button class="nav n7" data-p=p8 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 7-6-14-3 7H2"/></svg></span>系统诊断</button>
+<button class="nav n10" data-p=p11 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M4 6h6M4 12h9M4 18h5M16 5l4 4-4 4"/></svg></span>环境变量</button>
+<div class=nsep></div>
+<button class="nav n11" data-p=p12 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/></svg></span>启动与重启</button>
+<button class="nav n6" data-p=p6 onclick=nav(this)><span class=ic><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></svg></span>关于</button>
+<div class=foot><span class=fbtns><button type=button class=tb onclick=tg() title="切换深浅色" aria-label="切换深浅色"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z" fill=currentColor stroke=none/></svg></button><span class=lg data-raw role=radiogroup aria-label="Language"><button type=button role=radio data-g=zh aria-checked=true lang=zh onclick="setlang('zh')">中</button><button type=button role=radio data-g=en aria-checked=false lang=en onclick="setlang('en')">EN</button></span></span><span class=live><span class="dot s1" id=lived></span><span id=lives>连接中…</span></span></div>
+</div>
+<form method=post enctype=multipart/form-data onsubmit="return ask()">
+<div class=ban id=ban hidden><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span id=bant></span></div>
+
+<div class=pane id=p1 data-on>
+<h1>日常刷机</h1><p class=sub>将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。</p>
+<label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span><span class=tx><span class=t><span class=fn style="color:inherit">选择固件文件</span></span><span class="s mono">…-squashfs-sysupgrade.itb</span></span><span class=pb>选择文件…</span></label>
+<p class=note>设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改；写完回读校验一遍，再由你决定是否重启。</p>
+<p class=note>想先不写闪存试一次，去「<a href="#" onclick="return jump('p14')">试跑固件</a>」。</p>
+<div class=act><span class=st></span><button type=submit class="pb pri">上传并刷写</button></div>
+<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+</div>
+
+<div class=pane id=p2>
+<h1>引导升级</h1><p class=sub>写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。</p>
+<div class=box>
+<div class=fr><span class=fl>BL2<small class=mono>…-preloader.bin</small></span><label class=fc><input type=file name=bl2 data-l=BL2><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr><span class=fl>U-Boot<small class=mono>…-bl31-uboot.fip</small></span><label class=fc><input type=file name=fip data-l=U-Boot><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr><span class=fl>固件<small>可选，同时写入</small></span><label class=fc><input type=file name=firmware data-l=固件><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+</div>
+<p class=bh>首次迁移</p>
+<div class=box>
+<div class="fr wide"><span class=fl>重建 UBI<small>擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。<b>必须同时上传 BL2 与 U-Boot</b></small></span><span class="fc end"><input type=checkbox class=sw name=format value=1></span></div>
+</div>
+<p class=note><b>重建 UBI 前先备份。</b>请先在「<a href="#" onclick="return jump('p10')">备份下载</a>」中导出。</p>
+<p class=note><b>重建从 0x20000 起擦，盖住原厂引导器至 0x80000。</b>只写 U-Boot、不写 BL2，重启后原厂 BL2 找不到下一级，只能串口救。</p>
+<p class=note><b>仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。</b></p>
+<div class=act><span class=st></span><button type=submit class="pb pri">上传并刷写</button></div>
+<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+</div>
+
+<div class=pane id=p14>
+<h1>试跑固件</h1><p class=sub>把恢复固件载入内存直接引导，<b>闪存一个字节都不写</b>。起不来断电即恢复原系统。</p>
+<label class=drop><input type=file name=firmware data-l=固件><span class=ic><svg viewBox="0 0 24 24"><polygon points="8 5 19 12 8 19"/></svg></span><span class=tx><span class=t><span class=fn style="color:inherit">选择恢复固件</span></span><span class="s mono">…-initramfs-recovery.itb</span></span><span class=pb>选择文件…</span></label>
+<input type=checkbox name=tryboot value=1 checked hidden>
+<p class=note><b>要用 initramfs 恢复固件。</b>它的根文件系统随镜像一起进内存，不依赖闪存，所以 UBI 是空的、fit 卷没了也照样跑得起来。<b>sysupgrade 固件不适合这里</b>：它的根要由 fitblk 从闪存的 fit 卷里读（设备树的 rootdisk 指着那个卷），试跑时内核是新的、根还是闪存里那份旧的，多半起不来。</p>
+<p class=note>引导成功后本页面不再可用；要回到恢复页，断电重来即可。闪存没写过一个字节，原系统还在。</p>
+<div class=act><span class=st></span><button type=submit class="pb pri">启动它</button></div>
+<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+</div>
+
+<!--#if STOCK-->
+<div class=pane id=p4>
+<h1>刷回原厂</h1><p class=sub>将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。</p>
+<div class=box>
+<div class=fr><span class=fl>镜像<small class=mono>all_flash.bin</small></span><label class=fc><input type=file name=stock data-l=镜像><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+<div class=fr><span class=fl>写入偏移<small>十六进制，按擦除块对齐</small></span><span class=fc><input type=text name=stockoff class=mono value=0x0 style="width:130px" oninput=stwipe()><span class=fn>0 为整片，亦可写入单个分区</span></span></div>
+<div class="fr wide"><span class=fl>擦净尾部<small>镜像之后<b>直至片尾</b>的擦除块一并擦空；不擦则保留原有内容</small></span><span class="fc end"><input type=checkbox class=sw name=wipe value=1 checked onchange="this.dataset.t=1"></span></div>
+</div>
+<!--#if PNAND-->
+<div data-oob=1 hidden><p class=bh>镜像格式<small>选择文件后按大小自动判断</small></p>
+<div class=box>
+<label class="fr wide"><span class=fl>带 OOB<small>由「备份下载 → 整片下载」导出的文件</small></span><span class="fc end"><input type=radio name=stfmt value=oob checked onchange="stfmtset(1)"></span></label>
+<label class="fr wide"><span class=fl>不带 OOB<small>原厂系统里 dd 出来的文件</small></span><span class="fc end"><input type=radio name=stfmt value=dd onchange="stfmtset(1)"></span></label>
+</div>
+<div id=stpw hidden><p class=bh>重算校验码的参数<small>默认取「备份下载 → 原厂格式」里的</small></p><details class="box fold"><summary><span class="fsv mono"></span></summary><div id=sfp2></div></details></div>
+<p class=note id=stfn></p></div>
+<!--#endif-->
+<p class=note>镜像须来自本机备份（「<a href="#" onclick="return jump('p10')">备份下载</a>」导出），不超过 <span id=upmax>—</span>。<b>页面不核对镜像、偏移是否适合本机，写错只能串口救</b>。<b>写入开始后网线和电源都不能断</b>，中断了就重传，成功前别重启。</p>
+<div class=act><span class=st></span><button type=submit class="pb pri">刷写</button></div>
+<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+</div>
+<!--#endif-->
+
+<div class=pane id=p3>
+<h1>写入 UBI 卷</h1><p class=sub>按卷名写入 UBI 卷，卷不存在时按文件长度创建。物理位置由 UBI 层管理，不涉及 bl2 分区。</p>
+<div id=fvh hidden><p class=bh>出厂数据<small>文件须来自本机备份，可同时写入</small></p><div class=box id=fv></div></div>
+<p class=bh>任意卷<small>卷名错误将覆盖对应卷的内容</small></p>
+<div class=box>
+<div class=fr><span class=fl>卷名</span><span class=fc><input type=text name=ubivol placeholder="如 fip、fit" pattern="[A-Za-z0-9_.-]{1,63}"><span class=fn>仅限字母、数字与 _ - .</span></span></div>
+<div class=fr><span class=fl>内容</span><label class=fc><input type=file name=ubifile data-l=卷内容><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>
+</div>
+<p class=note>写完由你决定是否重启，所以可以连着写好几个卷。</p>
+<div class=act><span class=st></span><button type=submit class="pb pri">上传并刷写</button></div>
+<div class=prog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+</div>
+
+<div class=pane id=p10>
+<h1>备份下载</h1><p class=sub>读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。</p>
+<div class=seg data-seg=g10 role=tablist><button type=button role=tab data-s=s101 aria-controls=s101 aria-selected=true onclick=seg(this)>UBI 卷</button><button type=button role=tab data-s=s102 aria-controls=s102 aria-selected=false onclick=seg(this)>原始区段</button>
+<!--#if PNAND-->
+<button type=button role=tab data-s=s103 aria-controls=s103 aria-selected=false onclick=seg(this) id=sftab hidden>原厂格式</button>
+<!--#endif-->
+</div>
+<div class=sp data-g=g10 id=s101 data-on>
+<div class=box><table class=kv id=dl><tr><td>正在读取…</td></tr></table></div>
+</div>
+<div class=sp data-g=g10 id=s102>
+<p class=note>绕过 UBI 按 flash 偏移读取，偏移与「刷回原厂」一致。</p>
+<div class=box>
+<div class=fr><span class=fl>起始偏移<small>十六进制</small></span><span class=fc><input type=text id=dumpoff class=mono value=0x0 style="width:130px"><span class=fn>0 为片首</span></span></div>
+<div class=fr><span class=fl>长度<small>十六进制</small></span><span class=fc><input type=text id=dumplen class=mono placeholder="留空到片尾" style="width:130px"><span class=fn id=dumphint>留空读至片尾</span></span></div>
+</div>
+<p class=note>整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。</p>
+<p class=note data-oob=0><b>文件偏移等于 flash 偏移</b>，坏块在文件中保留占位，格式与 <code>dd</code> 镜像一致：外部 <code>all_flash.bin</code> 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。</p>
+<!--#if PNAND-->
+<p class=note data-oob=1 hidden><b>这台连 OOB 一起原样读出</b>，每页 <span class=oobpg>2048 + 128</span> 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；<b>只能写回本机</b>。偏移与长度按 flash 计，须按页对齐。</p>
+<!--#endif-->
+<div class=row><button type=button class=pb id=dumpallb onclick=dumpall()>整片下载</button><button type=button class="pb pri" onclick=dumpraw()>下载区段</button></div>
+</div>
+<!--#if PNAND-->
+<div class=sp data-g=g10 id=s103>
+<p class=note>原厂系统里 <code>dd</code> 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。<b>自动识别只能在首次迁移前做</b>，那时闪存还是原厂内容；参数也可以手动填写。</p>
+<div class=box><table class=kv id=sfmt><tr><td>正在读取…</td></tr></table></div>
+<p class=bh>参数<small>自动识别的结果填在这里，也可以手动改</small></p>
+<details class="box fold"><summary><span class="fsv mono"></span></summary><div id=sfp1></div></details>
+<p class=note id=sfv1 hidden></p>
+<div class=row><span class="st wrap" id=sfh></span><button type=button class=pb id=sfa onclick=sfauto()>自动识别</button><button type=button class=pb id=sfb onclick=sfddpick()>用 dd 备份核对</button><input type=file id=sfdd hidden><button type=button class=pb id=sft onclick=sftry()>用这组参数试读</button><button type=button class="pb pri" id=sfs onclick=sfsave()>保存</button></div>
+<p class=note>已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。</p>
+<p class=note>「用 dd 备份核对」可选：选一份原厂系统里 dd 出来的整片备份，确认坏块标记的位置，并找出原厂挪动过的块。</p>
+</div>
+<!--#endif-->
+<div id=dllh hidden><p class=bh>已完成<small>crc32 基于实际传出的字节计算，可与本地文件核对</small></p><div class=box><table class=kv id=dll></table></div></div>
+<div class=act><span class=st id=dlh></span></div>
+<div class=prog id=dlprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+<p class=note id=dlwhy hidden>传输期间设备不应答：U-Boot 的 TCP 栈同时只有一条连接，而这条连接正被下载占着，所以本页面问不到「传了多少字节」。<b>字节进度请看浏览器自己的下载栏</b>。传完这里会给出 crc32，可与本地文件核对。</p>
+</div>
+
+<div class=pane id=p5>
+<h1>设备详情</h1><p class=sub>运行时从设备树、MTD 与 UBI 读取。</p>
+<div class=seg data-seg=g5 role=tablist><button type=button role=tab data-s=s51 aria-controls=s51 aria-selected=true onclick=seg(this)>硬件</button><button type=button role=tab data-s=s52 aria-controls=s52 aria-selected=false onclick=seg(this)>网络</button><button type=button role=tab data-s=s53 aria-controls=s53 aria-selected=false onclick=seg(this)>UBI 卷</button></div>
+<div class=sp data-g=g5 id=s51 data-on>
+<div class=box><table class=kv id=dev><tr><td colspan=2 class=c2>正在读取…</td></tr></table></div>
+</div>
+<div class=sp data-g=g5 id=s52>
+<div class=box><table class=kv id=net><tr><td>正在读取…</td></tr></table></div>
+<p class=note id=portn hidden>端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。</p>
+<p class=bh>地址<small>三种模式互斥，应用后需以新地址重新打开本页面</small></p>
+<div class=box>
+<div class=fr><span class=fl>模式</span><span class=fc><select id=amode onchange=amodesw()><option value=server>DHCP 服务器 · 本机发地址</option><option value=static>静态地址</option><option value=client>DHCP 客户端 · 向上级路由要</option></select></span></div>
+<div class=fr id=arow1><span class=fl id=iplab>路由器 IP<small>本机地址，末位固定为 1</small></span><span class=fc><input type=text id=nip class=mono style="width:160px" oninput=ippv()><span class=fn id=ipfn></span></span></div>
+<div class=fr id=arow2><span class=fl>子网掩码</span><span class=fc><input type=text id=nmask class=mono value=255.255.255.0 style="width:160px"></span></div>
+<div class="fr wide" id=arow3><span class=fl>保存到闪存<small>不保存则只在本次开机有效</small></span><span class="fc end"><input type=checkbox class=sw id=nsave value=1></span></div>
+</div>
+<p class=note id=nh></p>
+<div class=row><button type=button class="pb pri" onclick=applyaddr()>应用</button></div>
+<p class=note id=nboot></p>
+<p class=note id=dhsum hidden></p>
+<div id=dgwbox hidden><p class=bh>DHCP 服务器</p>
+<div class=box><div class="fr wide"><span class=fl>下发网关<small>关掉后路由器不下发网关</small></span><span class="fc end"><input type=checkbox class=sw id=ndgw checked onchange=dgwset()></span></div></div>
+<p class=note id=dgwh></p></div>
+</div>
+<div class=sp data-g=g5 id=s53>
+<div class=vbar id=vbar hidden></div>
+<div class=vleg id=vleg hidden></div>
+<p class=note id=ubih></p>
+<div class=box><table class=kv id=ubi><tr><td>正在读取…</td></tr></table></div>
+</div>
+</div>
+
+<div class=pane id=p8>
+<h1>系统诊断</h1><p class=sub>读取设备状态：关键位置检查、全片扫描，以及本次上电的控制台输出。</p>
+<div class=seg data-seg=g8 role=tablist><button type=button role=tab data-s=s81 aria-controls=s81 aria-selected=true onclick=seg(this)>快速检查</button><button type=button role=tab data-s=s82 aria-controls=s82 aria-selected=false onclick=seg(this)>全片扫描</button><button type=button role=tab data-s=s83 aria-controls=s83 id=logtab aria-selected=false onclick=seg(this)>串口日志</button></div>
+<div class=sp data-g=g8 id=s81 data-on>
+<p class=note>检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。</p>
+<div class=box><table class=kv id=chk><tr><td colspan=2 class=empty><b>未执行检查</b>点「开始检查」读取 BL2、坏块与各卷状态</td></tr></table></div>
+<div class=row><span class=st id=chkh></span><button type=button class=pb id=chkb onclick=check()>开始检查</button><button type=button class=pb onclick=diag(this)>复制诊断信息</button><button type=button class=pb onclick=diagfile(this)>下载诊断包</button></div>
+</div>
+<div class=sp data-g=g8 id=s82>
+<div class=box><table class=kv id=scan><tr><td class=empty><b>未扫描</b>点「开始扫描」逐页读一遍整片闪存</td></tr></table></div>
+<p class=note>逐页读取全片；只读，不改动闪存。「快速检查」只覆盖关键位置，颗粒退化需整片读取才能发现。分段执行，段间页面保持响应；整片耗时数分钟，其间设备响应变慢。</p>
+<div class=prog id=scanprog hidden><div class=pw><div class=pbar></div></div><div class=ps><span class=pwhat></span><span class=pct></span></div></div>
+<div class=row><span class=st id=scanh></span><button type=button class=pb id=scanb onclick=scanrun()>开始扫描</button></div>
+</div>
+<div class=sp data-g=g8 id=s83>
+<p class=note>U-Boot 本次上电以来的控制台输出。</p>
+<div class=box><pre class=log id=log data-ph>未读取</pre></div>
+<p class=note id=logovf hidden>日志缓冲已满，后续输出未记录。重启后重新开始记录。</p>
+<div class=row><label><input type=checkbox class=sw id=logf onchange=logfollow()>实时跟随</label><button type=button class=pb id=logb onclick=getlog()>读取日志</button><button type=button class=pb onclick="copy(this,$('#log').textContent)">复制日志</button></div>
+</div>
+</div>
+
+<div class=pane id=p11>
+<h1>U-Boot 环境变量</h1><p class=sub>当前生效的变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。</p>
+<div class=seg data-seg=g11 role=tablist><button type=button role=tab data-s=s111 aria-controls=s111 aria-selected=true onclick=seg(this)>变量</button><button type=button role=tab data-s=s112 aria-controls=s112 aria-selected=false onclick=seg(this)>引导菜单预览</button><button type=button role=tab data-s=s113 aria-controls=s113 aria-selected=false onclick=seg(this)>恢复默认</button></div>
+<div class=sp data-g=g11 id=s111 data-on>
+<div class=bar><input type=text id=envq placeholder="过滤名称或值" oninput=envfill() style="max-width:200px"><label><input type=checkbox class=sw id=envkey onchange=envfill()>只看关键项</label><span class=fs id=envh></span></div>
+<div class=box><table class=kv id=envt><tr><td>正在读取…</td></tr></table></div>
+<div class=row><button type=button class=pb id=envb onclick=getenv()>重新读取</button><button type=button class=pb onclick=envcopy(this)>复制全部</button></div>
+</div>
+<div class=sp data-g=g11 id=s112>
+<p class=note id=bmh>设备启动时的菜单，由 bootmenu_* 变量构成。</p>
+<div class=box><table class=kv id=bmenu><tr><td>正在读取…</td></tr></table></div>
+</div>
+<div class=sp data-g=g11 id=s113>
+<div class=box>
+<div class="fr wide"><span class=fl>恢复为本版 U-Boot 的默认值<small>清除自定义的 bootcmd、引导菜单与网络设置并保存</small></span><span class="fc end"><span class=fs id=envdh></span><button type=button class="pb red" onclick=askenvdef()>恢复默认</button></span></div>
+</div>
+<p class=note>出厂 MAC 位于 ri 卷，<b>不受影响</b>；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。</p>
+</div>
+</div>
+
+<div class=pane id=p12>
+<h1>启动与重启</h1><p class=sub>离开本页面的三种方式，均不改动闪存。</p>
+<p class=note>重启后正常引导，<b>引导成功就离开本页面了</b> —— 之后这个地址上是系统自己的页面。只有引导失败才回到恢复页，届时本页面自动刷新。</p>
+<div class=act><span class=st></span><button type=button class="pb red" onclick=askreboot()>立即重启</button></div>
+<p class=bh>其他启动方式</p>
+<div class=box>
+<div class="fr wide"><span class=fl>直接启动系统<small>执行 bootcmd，不经过冷启动；引导失败回到本页面</small></span><span class="fc end"><button type=button class=pb onclick=askboot()>启动系统</button></span></div>
+<div class="fr wide"><span class=fl>下次开机进恢复页<small>仅生效一次，进入后自动还原</small></span><span class="fc end"><button type=button class=pb id=bob onclick=bootonce()>设置</button></span></div>
+</div>
+<p class=note id=boh>设置后下次开机停在本页面，再下次开机恢复正常引导。</p>
+<p class=bh>清空设置</p>
+<div class=box>
+<div class="fr wide"><span class=fl>清空系统设置<small>删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动</small></span><span class="fc end"><button type=button class="pb red" id=wcb onclick=askwipe()>清空</button></span></div>
+</div>
+<p class=note id=wch></p>
+</div>
+
+<div class=pane id=p6>
+<h1>关于</h1><p class=sub>U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。</p>
+<div class=about><span class=logo><svg viewBox="0 0 24 24"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg></span><div><b>Airoha Web U-Boot</b><span>@@WEB_VERSION@@ · <a href="@@AUTHOR_URL@@" target=_blank rel=noopener title="@@AUTHOR_HOST@@">@@AUTHOR@@</a></span></div></div>
+<div class=box style="margin-top:1rem"><table class=kv>
+<tr><td>作者</td><td><a href="@@AUTHOR_URL@@" target=_blank rel=noopener title="@@AUTHOR_HOST@@">@@AUTHOR@@</a></td></tr>
+<tr><td>项目主页</td><td><a href="@@PROJECT_URL@@" target=_blank rel=noopener>@@PROJECT_HOST@@</a></td></tr>
+<tr><td>门户</td><td><a href="@@PORTAL_URL@@" target=_blank rel=noopener>@@PORTAL_HOST@@</a></td></tr>
+<tr><td>问题反馈</td><td><a href="@@PROJECT_URL@@/issues" target=_blank rel=noopener>Issues</a></td></tr>
+<tr><td>基于</td><td id=based>U-Boot</td></tr>
+</table></div>
+</div>
+
+<div class=pane id=p7>
+<h1>已交给设备启动</h1><p class=sub>设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。</p>
+<div class=fin><span class=ic><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><div><b>起不来怎么办</b>
+<table class=lt><tr><td>断电</td><td>再上电即回到原有系统，闪存一个字节都没写</td></tr><tr><td>等待</td><td>引导失败时设备自行回到本页面，届时自动刷新</td></tr></table></div></div>
+<p class=bh>本次动作</p>
+<div class=box style="padding:.7rem 1rem"><ol class=steps id=steps></ol></div>
+</div>
+
+<!--#if STOCK-->
+<div class=pane id=p13>
+<h1>写入完成</h1><p class=sub>镜像已全部写入闪存，设备正在重启。本页面可以关闭。</p>
+<div class=fin><span class=ic><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><div><b>设备回报</b>
+<table class=lt id=stres></table></div></div>
+<p class=note>crc32 由设备对收到的字节计算，与备份时记录的值一致即说明传输无误。</p>
+<p class=note>重启约需 1–2 分钟。整片写入后本页面所属的 U-Boot 已被覆盖，设备将按镜像中的引导程序启动。</p>
+</div>
+<!--#endif-->
+
+</form>
+<iframe id=dlsink hidden title=download></iframe>
+<div class=mask id=off><div class=alert>
+<div class=hd><span class="mi bad" id=offm><svg viewBox="0 0 24 24" id=offi></svg></span><h2 id=offt></h2></div>
+<div id=offb></div>
+<div class=btns><button type=button class=pb id=offr onclick=reconnect()>重新连接</button></div>
+</div></div>
+<div class=mask id=mask onclick="if(event.target===this)hide()"><div class=alert>
+<div class=hd><span class=mi><svg viewBox="0 0 24 24"><path d="M12 9v4M12 17h.01M10.3 3.9L2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span><h2>确认写入<small id=atitle></small></h2></div>
+<div id=abody></div>
+<div class=btns><button type=button class=pb onclick=hide()>取消</button><button type=button class="pb red" id=yes onclick=go()>仍要写入</button></div>
+</div></div>
+<div class=mask id=rmask><div class=alert>
+<div class=hd><span class="mi ok"><svg viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg></span><h2 id=rtitle>写入完毕</h2></div>
+<div id=rbody></div>
+<div class=btns><button type=button class=pb onclick=rhide()>留在恢复页</button><button type=button class="pb red" onclick=rboot()>立即重启</button></div>
+</div></div>
+</div>
+<script>
+var INFO=null,FV=[],SENT=null,CHK=null,ENV=null,YES=null,INFOQ=0,CHKQ=0,ENVQ=0;
+var HB=0,HBT=null,HBGEN=0,HBOFF=0,LIVE=1,MISS=0,UP=-1,OFFWHY='',SILENT=0,GONE=0;
+/*
+ * 试跑交出去之后，p7 那一页说的比任何遮罩都全：闪存动没动、起不来断电就回
+ * 来、失败时设备自己会回到恢复页。再盖一个「设备正在启动系统」只是挡住它。
+ * 所以这段时间一个框都不弹；设备真回来了就整页刷新 —— 那正是 p7 上承诺的
+ * 那一行，而 bootm 失败是原地返回、uptime 不会倒退，靠不了那条判据。
+ */
+var TRYB=0;
+var RT=0,RN=0,RATE=0;
+/* STUCKN：红条说的是哪几个部分，重写成功一个划掉一个，划完才撤；null 是刷回原厂写了一半，只有刷回原厂成功才撤 */
+var DLSEQ=0,DLBAD=0,STUCK='',STUCKN=null,DLWHAT='';
+var LOGN=0,LOGT=null,LOGGEN=0;
+/* 表单只照着设备填一次，之后归用户；轮询回来不许覆盖 */
+var NETINIT=0;
+var NET=null,NETT=null;
+/*
+ * 擦除加写入，SPI-NAND 上大致这个量级，只用于估算等待时间。设备写完会报
+ * 一次实测速度，存下来给下次用 —— 同一块板子第二次起就不是拍脑袋了。
+ */
+var WRSPD=1400000;
+try{var wr0=+localStorage.getItem('xgwrspd');if(wr0>0)WRSPD=wr0}catch(e){}
+var WR=null,WRT=null,WRP=null;
+function $(s,r){return (r||document).querySelector(s)}
+function $$(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
+/* 没手动选过就跟着系统走，打开期间系统切了也跟；手动切回与系统相同的那边，就回到跟随系统 */
+function tg(){var d=document.documentElement,n=d.getAttribute('data-t')=='dark'?'light':'dark';d.setAttribute('data-t',n);try{if(n==(sysdk()?'dark':'light'))localStorage.removeItem('xgtheme');else localStorage.setItem('xgtheme',n)}catch(e){}}
+try{var mq=matchMedia('(prefers-color-scheme: dark)'),mqf=function(){if(!svth())document.documentElement.setAttribute('data-t',mq.matches?'dark':'light')};if(mq.addEventListener)mq.addEventListener('change',mqf);else mq.addListener(mqf)}catch(e){}
+function sz(n){return n>=1048576?(n/1048576).toFixed(1)+' MiB':n>=1024?(n/1024).toFixed(0)+' KiB':n+' B'}
+function spd(b){return b>=1048576?(b/1048576).toFixed(1)+' MiB/s':b>=1024?(b/1024).toFixed(0)+' KiB/s':Math.round(b)+' B/s'}
+/*
+ * 秒数说成人话；超过一小时就不必精确到秒了。这一处不走字典 —— 「 分」「 秒」
+ * 当片段太短，会咬进「擦除 UBI 分区」这种词里，所以在这里直接分语言。
+ */
+function dur(s){s=Math.round(s);var e=LANG=='en';
+if(s<60)return s+(e?' s':' 秒');
+var m=Math.floor(s/60);if(m<60)return m+(e?' min ':' 分 ')+(s%60)+(e?' s':' 秒');
+return Math.floor(m/60)+(e?' h ':' 小时 ')+(m%60)+(e?' min':' 分')}
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function pane(){return $('.pane[data-on]')}
+function show(id){$$('.pane').forEach(function(p){if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')})}
+/* 同一屏里并列的几组：一次只显示一组，其余留在 DOM 里不动 */
+function seg(b){var w=b.parentNode,g=w.getAttribute('data-seg'),
+id=b.getAttribute('data-s');
+$$('button',w).forEach(function(x){
+x.setAttribute('aria-selected',x==b?'true':'false')});
+$$('.sp[data-g='+g+']').forEach(function(p){
+if(p.id==id)p.setAttribute('data-on','');else p.removeAttribute('data-on')});
+/* 跟随开着的时候整篇重读会和增量追加叠出重复，而且会把按钮解禁 */
+if(g=='g8'){if(id=='s83'){if(!$('#logf').checked)getlog()}else logstop()}
+if(g=='g5')netpoll(id=='s52')}
+function logstop(){var c=$('#logf');if(c&&c.checked){c.checked=false;logfollow()}}
+function nav(b){$$('.nav').forEach(function(x){if(x===b)x.setAttribute('aria-current','true');else x.removeAttribute('aria-current')});var id=b.getAttribute('data-p');show(id);if(id=='p5'&&!INFO&&!INFOQ)info();netpoll(id=='p5'&&$('#s52').hasAttribute('data-on'));if(id!='p8')logstop();if(id=='p8'&&!CHK&&!CHKQ)check();if(id=='p10')dlfill();if(id=='p11'&&!ENV&&!ENVQ)getenv()}
+function jump(id){var b=$('.nav[data-p='+id+']');if(b)b.click();return false}
+/*
+ * 上传与写入期间锁住侧栏。0.3.0 之前写入期间设备根本不应答，锁不锁只是好看；
+ * 现在它一边写一边服务，侧栏里的改地址、恢复默认环境变量、重启这几项点下去
+ * 是在写到一半的闪存上动手。设备那边各自回 503 挡了一道，这里是别让人碰到。
+ * 光有 pointer-events 不够：键盘 Tab 过去按回车照样走得通。
+ */
+function busy(on){var a=$('#app');
+if(on)a.setAttribute('data-busy','');else a.removeAttribute('data-busy');
+$$('.nav').forEach(function(b){b.disabled=!!on})}
+function files(p){return $$('input[type=file]',p).filter(function(i){return i.files&&i.files.length}).map(function(i){return{k:i.name,l:i.getAttribute('data-l'),f:i.files[0]}})}
+function onfile(i){var f=i.files[0],lab=i.parentNode,fn=$('.fn',lab);if(!f)return;
+/* dd 核对的文件框藏在按钮后面，选完就核对，结果写在按钮那一行 */
+if(i.id=='sfdd'){sfcheck();return}
+fn.textContent=f.name;fn.classList.add('has');lab.classList.add('has');var s=$('.fs',lab);if(!s){s=document.createElement('span');s.className='fs';fn.parentNode.insertBefore(s,fn.nextSibling)}s.textContent=sz(f.size);if(i.name=='stock'&&cecc())stguess(f);
+refresh()}
+function refresh(){var p=pane(),st=$('.st',p);if(!st)return;var fs=files(p),n=0;fs.forEach(function(x){n+=x.f.size});st.textContent=fs.length?'已选 '+fs.length+' 个文件 · '+sz(n):''}
+/* 每个文件框都能拖：大框是 .drop，表格里的是它所在的 .fr */
+function drag(d,i){if(!d||d.__drag)return;d.__drag=1;
+d.ondragover=function(e){e.preventDefault();d.classList.add('over')};
+d.ondragleave=function(){d.classList.remove('over')};
+d.ondrop=function(e){e.preventDefault();d.classList.remove('over');
+if(e.dataTransfer&&e.dataTransfer.files.length){try{i.files=e.dataTransfer.files;onfile(i)}catch(x){}}}}
+function bind(){$$('input[type=file]').forEach(function(i){i.onchange=function(){onfile(i)};
+drag(i.closest?(i.closest('.drop')||i.closest('.fr')):null,i)})}
+function hex(v){v=(v||'').trim();if(!/^(0x)?[0-9a-fA-F]{1,8}$/.test(v))return-1;return parseInt(v,16)}
+/*
+ * 擦净尾部擦到的是片尾，不是分区尾 —— 设备那边 st_wipe_end 就是 flash 容量。
+ * 偏移 0 是「整片写回」，把镜像之后的残留擦掉是对的；偏移非 0 是往单个分区里
+ * 写，再擦就把它后面的东西一起带走了：按页面自己教的「备份下载→原始区段」
+ * 导出一段再写回来，默认勾着就会连 UBI 和 ri/bosa 一起擦空。所以偏移一改就
+ * 松勾。用户亲手动过这个开关之后不再代他决定 —— dataset.t 记的就是这个。
+ */
+function stwipe(){var w=$('[name=wipe]');if(w&&!w.dataset.t)w.checked=hex($('[name=stockoff]').value)===0}
+/*
+ * 并口 NAND 的那一半（带 OOB 的整片备份、原厂闪存格式）在页尾单独一段脚本里，
+ * 只编进带并口 NAND 驱动的 U-Boot（gen.py 的 PNAND 标记）。SPI NAND 上只剩
+ * 这两个空壳；那段脚本在的时候，后声明的同名函数盖掉它们。
+ */
+function cecc(){return false}
+function oobmode(){}
+function fvrows(){var h='';FV.forEach(function(v){h+='<div class=fr><span class=fl>'+esc(v.n)+(v.d?'<small>'+esc(v.d)+'</small>':'')+'</span><label class=fc><input type=file name="fvol_'+esc(v.n)+'" data-l="'+esc(v.n)+'"><span class=pb>选择文件…</span><span class=fn>未选择</span></label></div>'});$('#fv').innerHTML=h;$('#fvh').hidden=!FV.length;bind()}
+function get(u,cb){var x=new XMLHttpRequest();x.onload=function(){cb(x.status,x.responseText)};x.onerror=function(){cb(0,'')};x.open('GET',u);x.send()}
+/*
+ * 出错的 /info 是一个 JSON 500（{"err":…}），解析得出来但里面没有 ubi ——
+ * 当成读到了，横幅就会叫人在好好的板子上重建 UBI。所以只认 200。
+ * INFOQ：1 正在读，2 读的同时又有人要一份新的（写完之后），回来后再读一次。
+ */
+function info(){if(INFOQ){INFOQ=2;return}INFOQ=1;
+get('/info',function(st,t){var r=null,again=INFOQ==2;INFOQ=0;
+if(st==200)try{r=JSON.parse(t)}catch(e){}INFO=r;fill();if(again)info()})}
+/*
+ * 链路是会变的：网线换个口之后，这张表还停在打开页面那一刻就没意义了。
+ * 但 /info 会重新挂载 UBI —— 整片扫描、串口刷屏、要好几秒，为了看一眼哪个
+ * 口亮着不值当。所以只报地址与端口的那一半单独开在 /net，网络这一页在前台
+ * 时每 3 秒问一次，切走就停。
+ */
+function netget(){if(GONE)return;get('/net',function(st,t){var r=null;
+try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.net)return;NET=r;
+if(INFO){INFO.net=r.net;INFO.ports=r.ports}
+netfill()})}
+function netpoll(on){if(NETT){clearInterval(NETT);NETT=null}
+if(!on)return;netget();NETT=setInterval(netget,3000)}
+function banner(){var t='';if(STUCK){t=STUCK}else if(INFO){if(!INFO.ubi&&INFO.ubirefuse)t=ubirefuse(INFO.ubirefuse);else if(!INFO.ubi)t='<b>闪存中没有可挂载的 UBI。</b>首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。';else if(!INFO.ubi.fip)t='<b>闪存中没有 U-Boot（fip 卷）。</b>当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。'}$('#bant').innerHTML=t;if(t)$('#ban').removeAttribute('hidden');else $('#ban').setAttribute('hidden','')}
+/*
+ * UBI 不是没有，是 U-Boot 不肯挂（补丁 205）：闪存上有它读不懂、又不肯擦的数据。
+ * ecc：扫描时读不出的块到了 5%（混合状态，卷表多半读得出）；eccall：抽样就读
+ * 不出，整片是别的 ECC 格式（原厂，或本项目 ECC8 时期）—— 连卷表也读不出，强制
+ * 挂载扫完整片照样挂不上，所以不给这个按钮；foreign：UBI 分区底下是 UBI 没写过
+ * 的数据，又没有 fip 卷（原厂布局）。挂上就得把这些块擦掉，所以默认不挂。
+ * FORCEKEY：那句强制挂载的结果说的是哪一次拒绝；拒绝换了，那句话就作废。
+ */
+var FORCEMSG='',FORCEKEY='';
+function ubirefuse(r){var h;if(FORCEKEY!=r.why+'/'+r.n)FORCEMSG='';
+h=r.why=='eccall'?'<b>UBI 没有挂载：闪存上的数据不是按本 U-Boot 的 ECC 格式写的。</b>'
+:r.why=='ecc'?'<b>UBI 没有挂载：闪存上有一部分数据不是按本 U-Boot 的 ECC 格式写的。</b>'
+:'<b>UBI 没有挂载：有 UBI 没写过的数据，且没有 fip 卷。</b>';
+if(r.why=='eccall')return h+'为保护数据一块都没擦。'
++'<span>要保留这些数据，先在「备份下载」中整片备份，或用原来的引导启动后备份；不要的话，在「引导升级」中启用「重建 UBI」。</span>'
++'<span>强制挂载在这里挂不上：卷表也读不出来。</span>';
+if(r.why!='ecc')return h+'至少 <b>'+(r.n|0)+'</b> 块，一块都没擦。'
++'要保留请先在「备份下载」整片备份；否则在「引导升级」重建 UBI，或'
++'<a href="#" onclick="askforce();return false">强制挂载</a>（擦掉这些块）。'
++(FORCEMSG?'<br><b>'+FORCEMSG+'</b>':'');
+return h+'这样的块至少 <b>'+(r.n|0)+'</b> 块，为保护数据一块都没擦。'
++'<span>要保留这些数据，先在「备份下载」中整片备份，或用原来的引导启动后备份；不要的话，在「引导升级」中启用「重建 UBI」，或者</span>'
++'<a href="#" onclick="askforce();return false">强制挂载</a>（擦掉这些块，按原来的方式挂载）。'
++(FORCEMSG?'<br><b>'+FORCEMSG+'</b>':'')}
+function askforce(){var r=INFO&&INFO.ubirefuse,h;if(!r||r.why=='eccall')return;$('#atitle').textContent='强制挂载 UBI';
+h='<div class=r><span>动作</span><span class=v>setenv ubi_force 1 ; ubi part ubi</span></div>'
++'<div class=e>第一次写入时擦除 UBI 读不出的块：至少 <b>'+(r.n|0)+'</b> 块，可能更多</div>'
++'<div class=w>'+(r.why=='ecc'?'这些块是按别的 ECC 格式写的，用原来的引导还能读出来；擦掉就找不回了':'这些块是 UBI 之外的数据（原厂分区、出厂数据等），擦掉就找不回了')+'</div>'
++'<div class=w>挂上后先重启一次：开机读环境那次被拒了，U-Boot 现在用的是默认环境变量</div>'
++'<div class=w>挂不上仍可在「引导升级」中重建 UBI</div>';
+if(!bkall().all)h='<div class=w>还没有整片备份 · <a href="#" onclick="gobk();return false">去备份</a></div>'+h;
+$('#abody').innerHTML=h;var y=$('#yes');y.hidden=false;y.textContent='强制挂载';
+YES=doforce;$('#mask').setAttribute('data-on','')}
+/*
+ * 挂载要把整片扫一遍，这期间设备不理人：先让心跳别报断线。读不出的块不在这时
+ * 擦，留到第一次写入（补丁 208）。
+ * 连接断了（st 为 0）说明不了挂没挂上，只能照实说；这时 /info 也读不到，不去问。
+ */
+function doforce(){var r=INFO&&INFO.ubirefuse;FORCEKEY=r?r.why+'/'+r.n:'';
+FORCEMSG='正在挂载，读取闪存期间设备不响应…';silent();banner();
+get('/ubiforce',function(st,t){t=(t||'').trim();
+if(st==200&&/^ok/.test(t)){FORCEMSG='';CHK=null;ENV=null;forced();info();return}
+if(st==0){FORCEMSG='连接中断，挂载结果未知。请稍后刷新页面查看';banner();return}
+FORCEMSG=st==503?'设备正在写入，稍后再试':'强制挂载也没有成功：闪存上没有可用的 UBI。请在「引导升级」中重建 UBI';
+CHK=null;ENV=null;info()})}
+/* 挂上了，但开机读环境那次被拒，内存里是默认环境：这时 saveenv 会拿默认值盖掉闪存里那份。先重启 */
+function forced(){$('#atitle').textContent='已挂载 UBI';
+$('#abody').innerHTML='<div class=r><span>结果</span><span class=v>已挂载，读不出的块在第一次写入时擦除</span></div>'
++'<div class=w>开机时读环境变量那次被拒了，U-Boot 现在用的是默认环境变量；这时保存设置会盖掉闪存里原来那份</div>'
++'<div class=w>请先重启，让 U-Boot 按闪存里的环境变量启动，再做别的操作</div>';
+var y=$('#yes');y.hidden=false;y.textContent='重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
+var ICON_OFF='<path d="M2 8.8a16 16 0 0 1 6-3.4M16 5.4a16 16 0 0 1 6 3.4M5 12.5a11 11 0 0 1 3.5-2.2M15.5 10.3a11 11 0 0 1 3.5 2.2M9 16.1a6 6 0 0 1 6 0M12 20h.01M2 2l20 20"/>';
+var ICON_RB='<path d="M12 3v9M18.4 6.6a9 9 0 1 1-12.8 0"/>';
+function live(st){var d=$('#lived'),t=$('#lives');if(!d)return;
+d.className='dot s'+st;t.textContent=st==0?'已连接':SILENT?'设备忙…':st==1?'无响应…':'已断开'}
+function hbstart(){HB=1;ping()}
+/* 代数：停一次就换一代，飞行中的那次 ping 回来时对不上，直接丢掉 */
+function hbstop(){HB=0;HBGEN++;clearTimeout(HBT);HBT=null}
+function hbnext(){if(!HB)return;clearTimeout(HBT);HBT=setTimeout(ping,LIVE?3000:2000)}
+function ping(){if(!HB)return;if(HBOFF){hbnext();return}
+var g=HBGEN,x=new XMLHttpRequest(),fired=0,fin=function(o,u){if(fired)return;fired=1;if(g!=HBGEN)return;seen(o,u);hbnext()};
+x.timeout=2500;
+x.onload=function(){var u=-1,r=null;try{r=JSON.parse(x.responseText)}catch(e){}
+if(r){if(r.up!==undefined)u=r.up;$('#logovf').hidden=!r.ovf}
+/* 200 不算凭据：那个地址上随便什么东西都能回 200 —— 电脑另一条网卡后面的
+   路由器、浏览器缓存、中间的代理。认这块板子的是 up 这个字段 */
+fin(x.status==200&&u>=0,u)};
+x.onerror=function(){fin(0,-1)};x.ontimeout=function(){fin(0,-1)};
+x.open('GET','/ping');x.send()}
+function seen(o,u){
+if(o){SILENT=0;if(!LIVE){if(TRYB||OFFWHY=='reboot'||(UP>=0&&u>=0&&u<UP)){location.reload();return}LIVE=1;online()}
+ MISS=0;if(u>=0)UP=u;live(0);return}
+MISS++;
+/*
+ * 自己发起的读取（体检、备份）会让设备静默几十秒。那一页上已经写着在读什么，
+ * 再盖一个框纯是噪音 —— 只把左下角的点变掉。真的很久不回来才退回通用提示。
+ */
+if(LIVE&&MISS>=2&&(!SILENT||MISS>=40)){LIVE=0;SILENT=0;offline(OFFWHY)}
+live(LIVE?1:2)}
+/* 已知会断，而且要立刻说明：重启、试跑启动 */
+function expect(why){OFFWHY=why;MISS=0;LIVE=0;offline(why);live(2)}
+/* 已知会静默，但用户自己发起的：只变点，不弹框 */
+function silent(){SILENT=1;MISS=0}
+/* 设备已经移走、或者页面自己已经把话说完了：通用的「断开」框只会盖掉那条指引 */
+function offline(why){if(GONE||TRYB)return;var i,t,b,r=0;
+if(why=='reboot'){i=ICON_RB;t='设备正在重启';b='引导成功即进入系统，<b>本页面不再可用</b>；引导失败才回到这里并自动刷新。'}
+else if(why=='boot'){i=ICON_RB;t='设备正在启动系统';b='闪存未改动。引导成功后<b>本页面不再可用</b>；引导失败则回到本页面。'}
+else{i=ICON_OFF;t='与设备的连接已断开';b='设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。';r=1}
+$('#offi').innerHTML=i;$('#offm').className='mi '+(r?'bad':'info');$('#offt').textContent=t;
+$('#offb').innerHTML='<div class=w style="color:inherit">'+b+'</div>'+
+(r?'<div class=hint>每 2 秒自动重试。</div>':'');
+$('#offr').hidden=!r;$('#offr').disabled=false;$('#offr').textContent='重新连接';
+$('#off').setAttribute('data-on','')}
+function online(){OFFWHY='';$('#off').removeAttribute('data-on')}
+/* 心跳可能已被停掉（写入、改地址），不先恢复的话按钮会永远停在「正在重试…」 */
+function reconnect(){var b=$('#offr');b.disabled=true;b.textContent='正在重试…';clearTimeout(HBT);if(!HB)HB=1;ping()}
+/*
+ * 「闪存内容不受影响」单说这一句会误导：闪存没变正是问题所在 —— 当前这个
+ * U-Boot 只在内存里（首次迁移经串口传进来，或 fip 卷已丢），reset 之后就没了。
+ * 顶部红条已经在报同一件事，这里把它的后果直接写进确认框。
+ */
+function askreboot(){var w='<div class=w>闪存内容不受影响</div>';
+if(INFO&&!INFO.ubi)w+='<div class=w><b>闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。</b>重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入</div>';
+else if(INFO&&INFO.ubi&&!INFO.ubi.fip)w+='<div class=w><b>闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。</b>重启后本页面将无法再打开</div>';
+$('#atitle').textContent='重启';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>reset</span></div>'+w;
+var y=$('#yes');y.hidden=false;y.textContent='立即重启';YES=doreboot;$('#mask').setAttribute('data-on','')}
+function doreboot(){get('/reboot',function(){});expect('reboot')}
+/*
+ * 一个下拉框，三种模式，互斥：本机发地址 / 本机用固定地址 / 向上级路由要
+ * 地址。原来是「静态 or 自动获取」再叠一个独立的 DHCP 服务开关 —— 两个维度
+ * 四种组合，其中「自动获取 + 服务开着」是纯粹的错，只能靠代码在背后偷偷关
+ * 掉，而「关掉」这件事又存不进闪存。合成一维之后，那种组合根本表达不出来。
+ *
+ * DHCP 服务器那一档掩码固定 /24：设备发出去的地址一直是按 /24 算的
+ * （net_ip & 0xffffff00 | 100），能改掩码只会让它和实际发出去的地址对不上。
+ */
+var MODES={server:'DHCP 服务器',static:'静态地址',client:'DHCP 客户端'};
+function amodesw(){var m=$('#amode').value;
+$('#dgwbox').hidden=m!='server';
+$('#arow1').hidden=m=='client';
+$('#arow2').hidden=m!='static';
+$('#iplab').innerHTML=m=='server'?'路由器 IP<small>本机地址，末位固定为 1</small>'
+:'IP<small>设备的接口地址</small>';
+$('#nh').innerHTML=m=='server'
+?'电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 <b>255.255.255.0</b>，电脑拿到的是本网段 <b>.100</b>，不带 DNS。<b>接入已有网络前不要用这一档</b>：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。'
+:m=='static'?'接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。'
+:'地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。';
+ippv();bootline()}
+/* 末位固定 .1 是这一档的规矩，那就当场把结果摆出来，别等按了「应用」才说 */
+function ippv(){var m=$('#amode').value,ip=$('#nip').value.trim(),f=$('#ipfn'),b;
+if(m=='client'){f.textContent='';return}
+if(m=='static'){f.textContent='主机需在同一网段';return}
+if(!IP4.test(ip)){f.textContent='填本网段内任一地址即可，如 192.168.1.1';return}
+b=ip.replace(/\.\d+$/,'');
+f.innerHTML='设备 <b>'+esc(b)+'.1</b> · 电脑 <b>'+esc(b)+'.100</b>'}
+/* 闪存里存着的那一套；从没存过就是出厂默认 */
+function bootdesc(){var v=INFO&&INFO.net&&INFO.net.saved;
+if(!v)return 'DHCP 服务器 192.168.1.1 / 255.255.255.0（出厂默认）';
+return MODES[v.mode]+(v.mode=='client'?'':' '+v.ip
++(v.mode=='static'?' / '+v.mask:''))}
+function bootline(){$('#nboot').innerHTML='<b>下次开机：'+esc(bootdesc())
++'</b>。勾上「保存到闪存」才会把当前这一套写进去替换它；不勾就只管本次开机。'}
+var IP4=/^(\d{1,3}\.){3}\d{1,3}$/;
+function applyaddr(){var m=$('#amode').value,ip=$('#nip').value.trim(),
+mk=m=='server'?'255.255.255.0':($('#nmask').value.trim()||'255.255.255.0'),
+sv=$('#nsave').checked,h;
+if(m!='client'){
+if(!IP4.test(ip)){$('#nh').textContent='IP 不是一个合法的地址';return}
+if(m=='server')ip=ip.replace(/\.\d+$/,'.1');
+else if(!IP4.test(mk)){$('#nh').textContent='子网掩码不是一个合法的地址';return}}
+$('#atitle').textContent='改网络模式';
+h='<div class=r><span>模式</span><span class=v>'+MODES[m]+'</span></div>'
++(m=='client'?'':'<div class=r><span>地址</span><span class=v>'+esc(ip)
+ +(m=='static'?' / '+esc(mk):' / 255.255.255.0')+'</span></div>');
+if(m=='server')h+='<div class=r><span>网关</span><span class=v>'
+ +($('#ndgw').checked?'下发':'不下发')+'</span></div>'
+ +'<div class=w>本机开始发地址：电脑将拿到 <b>'
+ +esc(ip.replace(/\.\d+$/,'.100'))+'</b></div>';
+if(m=='static')h+='<div class=w>本机<b>不再发地址</b>，电脑需手动配置同网段的 IP</div>';
+if(m=='client')h+='<div class=w><b>地址由上级路由分配，本页面无法预知。</b>'
+ +'请在上级路由的客户端列表中按 MAC 查找：'+esc((INFO&&INFO.mac)||'')+'</div>'
+ +'<div class=w>本机<b>不再发地址</b>；未取得租约时退回当前地址</div>';
+if(m!='client')h+='<div class=w>本页面将断开，需以 http://'+esc(ip)+'/ 重新打开</div>';
+h+=sv?'<div class=w><b>保存到闪存</b>：下次开机就用这一套。地址填错时断电也无法恢复</div>'
+:'<div class=w>不保存：只管本次开机，下次开机回到 <b>'+esc(bootdesc())+'</b></div>';
+if(INFO&&INFO.net&&INFO.net.ack&&m!='server')h+='<div class=w><b>本机用的是设备发的地址</b>'
++'：本机这个地址马上就没人续租了，'+(m=='static'?'需手动把本机配成 '
++esc(ip.replace(/\.\d+$/,'.x'))+' 的一个地址':'请改用上级路由那个网络里的机器')+'</div>';
+$('#abody').innerHTML=h;
+var y=$('#yes');y.hidden=false;y.textContent='应用';
+YES=function(){donetmode(m,ip,mk,sv)};$('#mask').setAttribute('data-on','')}
+function donetmode(m,ip,mk,sv){
+get('/netmode?mode='+m+(m=='client'?'':'&ip='+encodeURIComponent(ip)
++'&mask='+encodeURIComponent(mk))+'&save='+(sv?1:0),function(st,t){
+if(st!=200||!/^ok /.test((t||'').trim())){
+$('#nh').textContent='设备没有接受：'+((t||'').trim()||st);return}
+hbstop();
+if(m=='client')gone('正在获取地址',
+'获取成功后设备位于新地址，请在上级路由的客户端列表中按 <b>'
++esc((INFO&&INFO.mac)||'')+'</b> 查找。未取得租约时退回原地址。'
++(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'');
+else gone('设备已移至 '+ip,
+'本页面连接的是旧地址，不会自动恢复。请以 <b>http://'+esc(ip)+'/</b> 重新打开。'
++(sv?'':'下次开机回到 <b>'+esc(bootdesc())+'</b>。'),'http://'+ip+'/')})}
+/* 设备换地址之后这个页面就没用了：说清楚去哪找它，别装作还连着 */
+function gone(title,body,url){GONE=1;netpoll(0);
+$('#offi').innerHTML=ICON_OFF;$('#offm').className='mi info';
+$('#offt').textContent=title;
+$('#offb').innerHTML='<div class=w style="color:inherit">'+body+'</div>'
++(url?'<div class=hint>10 秒后自动跳转。</div>':'');
+$('#offr').hidden=true;$('#off').setAttribute('data-on','');
+if(url)setTimeout(function(){location.href=url},10000)}
+/*
+ * 下发网关：默认发，电脑插上就把本机当出口；关掉之后电脑的外网还走它原来
+ * 那条（Wi-Fi），救砖时照样能查教程、下固件。只管之后拿地址的电脑，已经
+ * 拿过的要重新插一下网线。拨了就存，不走「应用」—— 那条路要断开重开页面。
+ */
+function dgwset(){var c=$('#ndgw'),on=c.checked?1:0;c.disabled=true;
+get('/dhcpgw?on='+on,function(st,t){c.disabled=false;t=(t||'').trim();
+if(st!=200||!/^ok/.test(t)){c.checked=!on;$('#dgwh').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'+(t||st);return}
+var n=(NET&&NET.net)||(INFO&&INFO.net);if(n)n.dgw=on;
+$('#dgwh').textContent=(on?'已打开':'已关闭')+(t.indexOf('saved')<0?'，但未能保存到闪存':'')+'。电脑重新插拔网线后生效'})}
+/*
+ * 清空系统设置 = 删掉 rootfs_data。下次正常启动时 ubi_prepare_rootfs 建一个
+ * 空的，UBIFS 挂上去自己格式化，OpenWrt 就当第一次开机。日常刷机本来就走
+ * 这一步，这里只是把它单拿出来。
+ */
+function wcvol(){var v=null;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n=='rootfs_data')v=x});return v}
+function wcfill(){var b=$('#wcb'),h=$('#wch');if(!INFO||b.textContent=='已清空')return;
+b.disabled=!INFO.ubi||!wcvol();
+h.textContent=!INFO.ubi?'闪存上没有 UBI，没有可清空的设置':!wcvol()?'没有 rootfs_data 卷，下次启动就是全新系统':''}
+function askwipe(){var b=bkall(),h;$('#atitle').textContent='清空系统设置';
+h='<div class=r><span>删除</span><span class=v>rootfs_data 卷</span></div>'
++'<div class=w>OpenWrt 的设置和软件包全部清空，下次启动为全新系统</div>';
+if(!b.rootfs_data&&!b.all)h='<div class=w>rootfs_data 未备份 · <a href="#" onclick="gobk();return false">去备份</a></div>'+h;
+$('#abody').innerHTML=h;var y=$('#yes');y.hidden=false;y.textContent='清空';
+YES=dowipe;$('#mask').setAttribute('data-on','')}
+function dowipe(){var b=$('#wcb');b.disabled=true;$('#wch').textContent='正在清空…';
+get('/wipecfg',function(st,t){t=(t||'').trim();
+if(st!=200||!/^ok/.test(t)){b.disabled=false;$('#wch').textContent=st==503?'设备正在写入，稍后再试':'设备没有接受：'+(t||st);return}
+CHK=null;b.textContent='已清空';$('#wch').textContent='已清空。下次启动为全新系统';
+info()})}
+function askboot(){$('#atitle').textContent='启动系统';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>run boot_production</span></div>'+
+'<div class=w>闪存内容不受影响；引导失败回到本页面</div>';
+var y=$('#yes');y.hidden=false;y.textContent='启动系统';YES=doboot;$('#mask').setAttribute('data-on','')}
+function doboot(){get('/boot',function(){});expect('boot')}
+/* 一次性的，所以「设置」之后按钮不该还写着「设置」 */
+function bootonce(){var b=$('#bob');b.disabled=true;
+get('/bootonce',function(st,t){b.disabled=false;CHK=null;ENV=null;
+t=(t||'').trim();
+if(st!=200){$('#boh').textContent='设置失败（'+st+'）';return}
+/* saveenv 失败时只在内存里生效，断电即失效 —— 按钮不能跟着说「已设置」 */
+b.textContent=t.indexOf('armed')<0?'未设置':t.indexOf('saving failed')>=0?'未保存':'已设置';
+$('#boh').textContent=t.indexOf('armed')<0?'设备没有接受：'+t
+:t.indexOf('saving failed')>=0?'已设置，但未能保存到闪存：断电后失效，'+'请在「诊断」中确认 ubootenv 卷'
+:t.indexOf('already')>=0?'此前已设置，下次开机将停在本页面'
+:'已设置。下次开机停在本页面，再下次开机恢复正常引导'})}
+function dlfill(){var t=$('#dl'),f=INFO&&INFO.flash,fv={},h='';
+if(f)$('#dumphint').textContent='读至片尾，'+sz(cecc()?rawlen(f.size):f.size);
+if(!INFO){t.innerHTML=INFOQ?'<tr><td>正在读取…</td></tr>':'<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
+if(!INFO.ubi){t.innerHTML='<tr><td class=empty><b>UBI 未挂载</b>首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份</td></tr>';return}
+(INFO.fv||[]).forEach(function(v){fv[v.n]=v.s});
+(INFO.ubi.vols||[]).slice().sort(function(a,b){var x=(fv[b.n]?1:0)-(fv[a.n]?1:0);return x||(a.n<b.n?-1:a.n>b.n?1:0)}).forEach(function(v){var n=v.u||v.s;
+/* 出厂卷下载只给到规定长度，与 dlvol() 一致 */
+if(fv[v.n]&&n>fv[v.n])n=fv[v.n];
+h+='<tr><td>'+esc(v.n)+(fv[v.n]?'<span class=tag>出厂数据</span>':'')+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(n)+'</td><td class=b><button type=button class="pb dlb" data-v="'+esc(v.n)+'">下载</button></td></tr>'});
+t.innerHTML=h;dlbind(t)}
+/* 卷名是设备给的字符串：只进 data 属性，绝不进 JS 代码里 */
+function dlbind(t){if(t.__b)return;t.__b=1;
+t.addEventListener('click',function(e){var b=e.target;
+while(b&&b!=t){if(b.getAttribute&&/(^| )dlb( |$)/.test(b.className||'')){
+dlvol(b.getAttribute('data-v'));return}b=b.parentNode}})}
+/* 单独一层，好让预览把真正的下载换掉而不动上面的逻辑 */
+function dlstart(u,n){var f=$('#dlsink');f.onload=function(){dlrefused(f)};f.src=u}
+/* 真下载会被浏览器接走，iframe 不触发 load；只有错误页会 —— 那就是信号 */
+function dlrefused(f){var t='';
+try{t=f.contentDocument&&f.contentDocument.body?f.contentDocument.body.textContent:''}catch(e){}
+t=t.replace(/\s+/g,' ').trim();if(!t)return;
+DLBAD=1;dlstop('bad');
+$('.pwhat',$('#dlprog')).textContent='设备拒绝了本次备份';
+$('#dlh').textContent='设备拒绝了本次备份：'+t}
+/*
+ * 进度条只能是不确定的那根，这不是偷懒。net/tcp.c 里只有一个
+ * static struct tcp_stream，旧连接没进 CLOSED 之前新的 SYN 直接被拒 —— 而下载
+ * 那条连接从浏览器点「保存」一直开到文件传完。所以这期间 /dumpinfo 根本连不上
+ * 设备，字节数是问不到的。
+ *
+ * 设备侧照样在数（dump_sent），也照样在 /dumpinfo 里报，只是送不出去；哪天
+ * tcp.c 长出第二条流，这里改回轮询即可。在那之前把话说清楚，比摆一个永远不动
+ * 的百分比强。
+ */
+function sink(u,what,n){silent();DLBAD=0;
+var pg=$('#dlprog');pg.hidden=false;pg.className='prog';
+$('.pbar',pg).className='pbar ind';$('.pbar',pg).style.width='100%';
+$('.pwhat',pg).textContent='正在读取并传送 '+what;
+$('.pct',pg).textContent=n===null?'到片尾':sz(n);
+$('#dlwhy').hidden=false;
+$('#dlh').textContent='正在读取并传送 '+what+'（'+(n===null?'到片尾':sz(n))+'）…';
+get('/dumpinfo',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
+DLSEQ=(r&&r.seq)||0;dlstart(u,n);dlpoll(0)})}
+/*
+ * 传输期间这几次问必然打不通（见 sink() 上面那段），所以这里等的只有一件事：
+ * 连接关掉之后 /dumpinfo 的 seq 变了 —— 那说明读完了，crc32 也就有了。
+ */
+function dlpoll(k){if(DLBAD)return;
+get('/dumpinfo',function(st,t){if(DLBAD)return;var r=null;try{r=JSON.parse(t)}catch(e){}
+if(st==200&&r&&r.seq&&r.seq!=DLSEQ){DLSEQ=r.seq;
+dlrow(r);return}
+if(k<120)setTimeout(function(){dlpoll(k+1)},2000);
+else{dlstop('bad');
+$('#dlh').textContent='未收到设备回报，本次备份可能未完成，请查看「诊断」中的串口日志'}})}
+function dlstop(cls){var pg=$('#dlprog');pg.className='prog'+(cls?' '+cls:'');
+$('#dlwhy').hidden=true;
+$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='100%';
+$('.pct',pg).textContent=''}
+/* 完成的段往下排，不覆盖 —— 分段存档的人正好需要每一段的 crc32 */
+/* 传完了才有 crc32：它算的是真正发出去的那些字节 */
+/*
+ * 备份过什么记在浏览器里，按本机 MAC 分开：重建 UBI 之前要问的就是「这台
+ * 的出厂卷存过没有」。只记完整传完、没有读取失败的；整片备份算全都存过。
+ * 浏览器不让存也不要紧，那就每次都提醒。
+ */
+function bkall(){var m=INFO&&INFO.mac,a={};if(!m)return{};
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}return a[m]||{}}
+function bkmark(w){var m=INFO&&INFO.mac,a={};if(!m||!w)return;
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();
+localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}}
+/* 重建会清掉的出厂卷里，这台还没备份过的；整片备份过就一个都不缺 */
+function bkmissing(){var b=bkall();if(b.all)return[];
+return FV.map(function(v){return v.n}).filter(function(n){return !b[n]})}
+function gobk(){hide();nav($('.nav[data-p=p10]'));
+if(!INFO||!INFO.ubi){seg($('[data-s=s102]'));$('#dumpallb').focus()}}
+function dlrow(r){var t=$('#dll'),h=r.holes|0;if(!h)bkmark(DLWHAT);
+t.innerHTML+='<tr><td>'+esc(r.name)+(h?'<span class=tag>'+h+' 块读取失败</span>':'')+'</td><td class=n>'+sz(r.len)+'</td><td class="n mono">'+esc(r.crc)+'</td></tr>';
+$('#dllh').hidden=false;
+dlstop(h?'':'ok');
+$('.pwhat',$('#dlprog')).textContent=h?h+' 个块读取失败，该部分以 0xff 填充':'传输完成';
+$('#dlh').textContent=h?'传输完成；'+h+' 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志':'传输完成'}
+
+function dlvol(n){var v=null,s;DLWHAT=n;(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n==n)v=x});
+s=v?(v.u||v.s):0;
+/* 出厂卷设备只给到它规定的长度（后面是擦除态），和原厂分区备份一样大 */
+FV.forEach(function(f){if(f.n==n&&(!s||s>f.s))s=f.s});
+sink('/dump?vol='+encodeURIComponent(n),n+' 卷',s)}
+/* 长度留空，让设备自己数到片尾 —— 坏块吃掉多少，只有它算得准 */
+function dumpall(){var f=INFO&&INFO.flash;if(!f){$('#dlh').textContent='无法读取闪存信息';return}
+$('#dumpoff').value='0x0';$('#dumplen').value='';dumpraw()}
+function dumpraw(){var f=INFO&&INFO.flash,o=hex($('#dumpoff').value),lv=$('#dumplen').value.trim(),l=lv?hex(lv):null;
+if(o<0){$('#dlh').textContent='起始偏移不是有效的十六进制数';return}
+if(l!==null&&l<0){$('#dlh').textContent='长度不是有效的十六进制数';return}
+if(l===0){$('#dlh').textContent='长度为 0';return}
+if(f&&o>=f.size){$('#dlh').textContent='起始偏移超出 flash 容量 '+sz(f.size);return}
+if(f&&l!==null&&o+l>f.size){$('#dlh').textContent='偏移加长度超过 flash 容量 '+sz(f.size);return}
+/* 带 OOB 的按页读：偏移与长度都得落在页边界上，文件长度按页连 OOB 算 */
+var ob=cecc();if(ob&&(o%f.page||(l!==null&&l%f.page))){$('#dlh').textContent='偏移与长度须按页 '+sz(f.page)+' 对齐';return}
+DLWHAT=!o&&l===null?'all':'';
+sink('/dump?off=0x'+o.toString(16)+(l===null?'':'&len=0x'+l.toString(16))+(ob?'&oob=1':''),'0x'+o.toString(16)+' 起的区段'+(ob?'（连 OOB）':''),ob&&l!==null?rawlen(l):l)}
+/* httpd_ 与 envver 是改名前的老名字：升级过的板子上还留着，一并列出来 */
+var ENVKEY=/^(bootcmd|bootdelay|bootmenu_|ethaddr|ipaddr|serverip|netmask|loadaddr|boot_|check_buttons|web_uboot_|envver|httpd_|ubi_)/;
+function getenv(){var b=$('#envb');b.disabled=true;ENVQ=1;get('/env',function(st,t){ENVQ=0;b.disabled=false;var r=null;try{r=JSON.parse(t)}catch(e){}
+if(st==503){$('#envt').innerHTML='<tr><td class=empty>设备正在写入，稍后再试</td></tr>';return}
+if(!r||!r.env){$('#envt').innerHTML='<tr><td class=empty>读取失败，刷新页面重试</td></tr>';return}
+ENV=r;envfill();bmfill()})}
+function envrows(){if(!ENV)return[];var q=$('#envq').value.trim().toLowerCase(),k=$('#envkey').checked;
+return ENV.env.filter(function(e){if(k&&!ENVKEY.test(e.k))return false;
+if(!q)return true;return e.k.toLowerCase().indexOf(q)>=0||String(e.v).toLowerCase().indexOf(q)>=0})}
+function envfill(){var t=$('#envt'),rows=envrows(),h='';
+if(!ENV)return;
+rows.forEach(function(e){h+='<tr><td>'+esc(e.k)+'</td><td class=envv>'+esc(e.v)+'</td></tr>'});
+t.innerHTML=h||'<tr><td class=empty>没有匹配的变量</td></tr>';
+$('#envh').textContent=rows.length+' / '+ENV.env.length+' 项'+(ENV.cut?' · 已截断，完整内容见串口':'')}
+/*
+ * bootmenu_<n>=<标题>=<命令>，标题取到第一个 = 为止（U-Boot 自己就是
+ * 这么切的）。标题里可能裹着 ANSI 颜色，串口上红的那几条是危险项，
+ * 这里照样标红。
+ *
+ * 序号列给的是串口菜单上按的那个键，不是变量名里的 n：U-Boot 的
+ * bootmenu 只有一位快捷键，1~9 之后接 a~z，0 留给 Exit，所以
+ * bootmenu_0 在屏幕上是「1.」、bootmenu_9 是「a.」。照变量名从 0
+ * 标起会跟用户眼前的菜单差一位。
+ */
+function bmkey(i){return i<9?String(i+1):i<35?String.fromCharCode(88+i):'?'}
+function bmfill(){var t=$('#bmenu'),m={},h='',d;
+if(!ENV){t.innerHTML='<tr><td>正在读取…</td></tr>';return}
+ENV.env.forEach(function(e){var g=/^bootmenu_(\d+)$/.exec(e.k);
+if(g)m[+g[1]]=e.v;if(e.k=='bootmenu_delay')d=e.v});
+Object.keys(m).map(Number).sort(function(a,b){return a-b})
+.forEach(function(i){var v=m[i],p=v.indexOf('='),
+ti=p<0?v:v.slice(0,p),cm=p<0?'':v.slice(p+1),
+hot=/\x1b\[[0-9;]*3[147]m/.test(ti);
+ti=ti.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'');
+h+='<tr><td class=n>'+bmkey(i)+'.</td><td'+(hot?' class=hot':'')+'>'+esc(ti)
++'</td><td class=cmd>'+esc(cm)+'</td></tr>'});
+t.innerHTML=h||'<tr><td class=empty>没有 bootmenu_* 条目</td></tr>';
+$('#bmh').textContent=h?'设备启动时的菜单，序号即串口上按的键'+(d?'；'+d+' 秒内无按键则执行 bootcmd':'')+'。红色条目会写入闪存'
+:'环境中没有引导菜单：串口不会停顿，直接执行 bootcmd'}
+function envcopy(b){copy(b,envrows().map(function(e){return e.k+'='+e.v}).join('\n'))}
+function askenvdef(){$('#atitle').textContent='环境变量';
+$('#abody').innerHTML='<div class=r><span>动作</span><span class=v>env default -a \u0026\u0026 saveenv</span></div>'+
+'<div class=w>自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值</div>'+
+'<div class=w>出厂 MAC、固件与用户配置不受影响；恢复后需重启生效</div>';
+var y=$('#yes');y.hidden=false;y.textContent='恢复默认';YES=envdef;$('#mask').setAttribute('data-on','')}
+/* 自己的位置：#envh 归 envfill() 管，紧接着的 getenv() 会把它写掉 */
+function envdef(){$('#envdh').textContent='正在恢复…';
+get('/envreset',function(st,t){if(st==200){CHK=null;$('#envdh').textContent=t&&t.indexOf('saved')>=0?'已恢复并保存，重启后生效':'已恢复，但保存失败（UBI 未挂载），改动仅存于内存';getenv()}
+else $('#envdh').textContent='恢复失败（'+st+'）'})}
+/*
+ * 「我为什么连不上」这个问题，页面能回答的就这些：地址是什么、地址是不是
+ * 设备发的、哪个口亮着。链路状态与速率在 U-Boot 的通用层拿不到，所以端口
+ * 那几行是直接读 PHY 寄存器来的；读不到的口不列。
+ */
+function netfill(){var t=$('#net'),n=(NET&&NET.net)||(INFO&&INFO.net),
+ports=(NET&&NET.ports)||(INFO&&INFO.ports)||[],h='',m;
+if(!n){t.innerHTML='<tr><td class=empty>读不到网络信息</td></tr>';return}
+m=n.mode||'server';
+h+='<tr><td>模式</td><td>'+(MODES[m]||m)+(n.ram?'<span class=tag>未保存</span>':'')+'</td></tr>';
+h+='<tr><td>地址</td><td class=mono>'+esc(n.ip)
++(n.mask&&n.mask!='0.0.0.0'?' / '+esc(n.mask):'')+'</td></tr>';
+if(n.gw&&n.gw!='0.0.0.0')h+='<tr><td>网关</td><td class=mono>'+esc(n.gw)+'</td></tr>';
+h+='<tr><td>网卡</td><td class=mono>'+esc(n.dev||'')+'</td></tr>';
+/* 发地址这本账只有在真的在发的时候才有意义 */
+$('#dhsum').hidden=m!='server';
+if(!$('#ndgw').disabled)$('#ndgw').checked=n.dgw!==0;
+$('#dhsum').textContent=n.ack?'已发出 '+n.ack+' 个地址'
++(n.client?'，最近一次分配给 '+n.client:'')
++'。当前打开本页面的主机用的就是设备发的地址。'
+:n.offer?'已发出 '+n.offer+' 次地址，均未被接受；'
++'当前主机用的是手动配置的 IP。'
+:'未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。';
+/* 端口那几个数是设备给的，先当数字看待再拼进 HTML */
+ports.forEach(function(p){var pn=p.p|0,sp=p.speed|0,fd=p.fd|0;
+h+='<tr><td><span class="dot s'+(p.link?0:1)+'"></span>端口 '+pn+'</td>'
++'<td'+(p.link?'':' class=s1')+'>'+(p.link?
+(sp?sp>=1000?(sp/1000)+' Gb/s':sp+' Mb/s':'已连接')
++(sp?fd?' 全双工':' 半双工':''):'未连接')+'</td></tr>'});
+t.innerHTML=h;
+$('#portn').hidden=!ports.length;
+/* 表单只在第一次照着设备填，之后是用户在编辑它，三秒一次的轮询别去动 */
+if(!NETINIT){NETINIT=1;$('#amode').value=m;
+if(!$('#nip').value)$('#nip').value=n.ip||'';
+if(n.mask&&n.mask!='0.0.0.0')$('#nmask').value=n.mask;
+amodesw()}
+else bootline()}
+/*
+ * 卷占用条：每段的宽度是那个卷的预留容量，按卷 ID 排。UBI 把 LEB 映射到
+ * 任意 PEB，还会因磨损均衡把它们搬走，所以这张图说的是「分掉了多少」，
+ * 不是「在哪儿」—— 注释写在图下面那行字里，免得有人当成物理布局。
+ *
+ * 斜纹的两个卷是写入固件时先删掉再重建的，它们的容量算在可写空间里；
+ * 这正是体检「可写空间」那一行的加法。
+ */
+var VCOL={fip:'#5e5ce6',fit:'#0a84ff',rootfs_data:'#30d158',
+ubootenv:'#8e8e93',ubootenv2:'#8e8e93',ri:'#ff9f0a',bosa:'#af52de'};
+var VPOOL=['#00b4a0','#a2845e','#ff453a','#64748b'];
+var VRECL={fit:1,rootfs_data:1};
+function ubibar(){var b=$('#vbar'),g=$('#vleg'),ub=INFO&&INFO.ubi,
+tot,vols,sum=0,room=0,h='',l='',av,rest;
+if(!ub||!ub.pebs||!ub.leb){b.hidden=true;g.hidden=true;$('#ubih').textContent='';return}
+tot=ub.leb*ub.pebs;
+vols=(ub.vols||[]).slice().sort(function(x,y){return (x.i|0)-(y.i|0)});
+vols.forEach(function(v,k){var c=VCOL[v.n]||VPOOL[k%VPOOL.length],
+r=VRECL[v.n]?' re':'',z=v.s|0;
+sum+=z;if(VRECL[v.n])room+=z;
+h+='<i class="'+r+'" style="flex:'+z+' 0 0;background:'+c
++'" title="'+esc(v.n)+' '+sz(z)+'"></i>';
+l+='<span><em class="'+r+'" style="background:'+c+'"></em>'+esc(v.n)+' '+sz(z)
++(VRECL[v.n]?' · 写入时腾出':'')+'</span>'});
+rest=tot-sum;if(rest<0)rest=0;
+/* 老设备的 /info 没有 avail，那就并成一段，别假装分得清 */
+av=ub.avail==null?null:(ub.avail|0)*ub.leb;
+if(av==null||av>rest){
+h+='<i class=free style="flex:'+rest+' 0 0" title="空闲与预留 '+sz(rest)+'"></i>';
+l+='<span><em class=free></em>空闲与 UBI 预留 '+sz(rest)+'</span>'}
+else{room+=av;
+h+='<i class=free style="flex:'+av+' 0 0" title="空闲 '+sz(av)+'"></i>'
++'<i class=rsv style="flex:'+(rest-av)+' 0 0" title="UBI 预留 '+sz(rest-av)+'"></i>';
+l+='<span><em class=free></em>空闲 '+sz(av)+'</span>'
++'<span><em style="background:var(--c3)"></em>UBI 预留 '+sz(rest-av)+'</span>'}
+b.innerHTML=h;g.innerHTML=l;b.hidden=false;g.hidden=false;
+$('#ubih').textContent='逻辑擦除块 '+sz(ub.leb)+' × '+ub.pebs
++'。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置'
+/* 体检「可写空间」那行取整到 MiB，这里照做，免得两处差 0.7 */
++(av==null?'':'。刷机可用 '+Math.floor(room/1048576)+' MiB：当前空闲 '
++sz(av)+'，加上写入时会腾出的 fit 与 rootfs_data')}
+function fill(){var d=$('#dev'),u=$('#ubi'),h='',i,v;banner();netfill();if(!INFO){d.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';u.innerHTML='';return}
+var rows=[['机型',INFO.model],['SoC',INFO.soc],['内存',INFO.ram?sz(INFO.ram):''],['闪存',INFO.flash?INFO.flash.name+' '+sz(INFO.flash.size)+' · 擦除块 '+sz(INFO.flash.erase)+' · 页 '+sz(INFO.flash.page)+(INFO.flash.oob?' · OOB '+sz(INFO.flash.oob):''):''],['分区',(INFO.parts||[]).map(function(p){return p.n+' 0x'+p.o.toString(16)+'–0x'+(p.o+p.s).toString(16)}).join(' · ')],['MAC',INFO.mac],['U-Boot',INFO.uboot]];
+rows.forEach(function(r){if(r[1])h+='<tr><td>'+r[0]+'</td><td class=mono>'+esc(r[1])+'</td></tr>'});d.innerHTML=h;
+if(INFO.uboot)$('#based').textContent=INFO.uboot;
+$('#logtab').hidden=!INFO.log;
+if(INFO.flash)$$('#upmax').forEach(function(e){e.textContent=sz(INFO.flash.size)});
+dlfill();oobmode();
+FV=INFO.fv||[];fvrows();wcfill();
+if(!INFO.ubi){u.innerHTML='<tr><td class=empty>UBI 未挂载</td></tr>';ubibar();return}
+ubibar();
+h='<tr><th class=n>ID</th><th>名称</th><th>类型</th><th class=n>大小</th><th class=n>已用</th></tr>';
+(INFO.ubi.vols||[]).slice().sort(function(a,b){return a.n<b.n?-1:a.n>b.n?1:0}).forEach(function(v){h+='<tr><td class=n>'+(v.i==null?'':v.i|0)+'</td><td>'+esc(v.n)+'</td><td>'+esc(v.t)+'</td><td class=n>'+sz(v.s)+'</td><td class=n>'+sz(v.u)+'</td></tr>'});u.innerHTML=h}
+function check(){var b=$('#chkb'),t=$('#chk');CHKQ=1;silent();b.disabled=true;b.textContent='检查中…';t.innerHTML='<tr><td colspan=2 class=empty>正在检查，读取闪存期间设备不响应…</td></tr>';get('/check',function(st,txt){CHKQ=0;b.disabled=false;b.textContent='重新检查';var r=null;try{r=JSON.parse(txt)}catch(e){}if(st==503){t.innerHTML='<tr><td colspan=2 class=empty>设备正在写入，稍后再试</td></tr>';return}if(!r||!r.items){t.innerHTML='<tr><td colspan=2 class=empty>读取失败，刷新页面重试</td></tr>';return}/* i.s 是设备给的，拼进 class 之前先当整数看待并夹在 0..2 */
+CHK=r.items;var h='',c=[0,0,0],g='';r.items.forEach(function(i){var s=Math.max(0,Math.min(2,i.s|0));c[s]++;if(i.g&&i.g!=g){g=i.g;h+='<tr><th class=g colspan=2>'+esc(g)+'</th></tr>'}h+='<tr><td><span class="dot s'+s+'"></span>'+esc(i.n)+'</td><td class="s'+s+'">'+esc(i.v)+'</td></tr>'});t.innerHTML=h;$('#chkh').textContent=c[2]?c[2]+' 项异常 · '+c[1]+' 项注意 · '+c[0]+' 项正常':c[1]?c[1]+' 项注意 · '+c[0]+' 项正常':'全部 '+c[0]+' 项正常'})}
+/*
+ * 跟随：/log?from=N 只回新字节，正文第一行是新的偏移。页面拿到的是解码
+ * 后的字符串、数不出字节数，所以偏移得由设备说。
+ */
+/* 关一次就换一代：2 秒窗里关了又开，旧链的响应回来时对不上代数，就此断掉 */
+function logfollow(){clearTimeout(LOGT);LOGT=null;LOGGEN++;
+var on=$('#logf').checked;$('#logb').disabled=on;
+if(!on)return;
+LOGN=0;logset('',1);logtick()}
+function logtick(){if(!$('#logf').checked)return;var g=LOGGEN;
+get('/log?from='+LOGN,function(st,t){if(g!=LOGGEN||!$('#logf').checked)return;
+var i=st==200&&t?t.indexOf('\n'):-1;
+if(i>0){var o=parseInt(t.slice(0,i),10);
+if(o>=LOGN){LOGN=o;
+var add=t.slice(i+1).replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,'');
+if(add){var l=$('#log');l.textContent+=add;l.scrollTop=l.scrollHeight}}}
+LOGT=setTimeout(logtick,2000)})}
+/*
+ * 全片扫描：设备一段一段读，一次答一段。中间页面是活的，所以进度条能走、
+ * 心跳还在，随时可以停。累计的数在这边加，设备那边不留状态。
+ */
+var SCAN=null;
+function scanrun(){var b=$('#scanb'),pg=$('#scanprog');
+if(SCAN){SCAN.stop=1;SCAN=null;b.textContent='重新扫描';
+pg.className='prog bad';$('.pwhat',pg).textContent='已停止';
+$('#scanh').textContent='已停止，结果仅覆盖已扫描的部分';return}
+SCAN={off:0,size:0,blk:0,bad:0,ecc:0,fail:0,badl:[],faill:[],
+      t0:Date.now(),rt:Date.now(),rn:0,rate:0,stop:0};
+b.textContent='停止';pg.hidden=false;pg.className='prog';
+$('.pbar',pg).className='pbar';$('.pbar',pg).style.width='0';
+$('.pwhat',pg).textContent='正在扫描';$('.pct',pg).textContent='';
+$('#scanh').textContent='';scanstep()}
+function scanstep(){var s=SCAN;if(!s||s.stop)return;silent();
+get('/scan?off=0x'+s.off.toString(16),function(st,t){
+/* 认自己这一轮：停掉后立刻重扫，旧响应不能往新的那份里加 */
+if(SCAN!==s||s.stop)return;
+var r=null;try{r=JSON.parse(t)}catch(e){}
+if(st!=200||!r||r.err!==undefined){
+SCAN=null;$('#scanb').textContent='重新扫描';
+var pg=$('#scanprog');pg.className='prog bad';
+$('.pwhat',pg).textContent=(r&&r.err)||('扫描没能进行（'+st+'）');
+return}
+s.size=r.size;s.blk=r.blk;s.off=r.off;
+s.bad+=r.bad;s.ecc+=r.ecc;s.fail+=r.fail;
+(r.badlist||[]).forEach(function(x){if(s.badl.length<32)s.badl.push(x)});
+(r.faillist||[]).forEach(function(x){if(s.faill.length<32)s.faill.push(x)});
+scanshow(s,r.done);
+if(r.done){SCAN=null;$('#scanb').textContent='重新扫描';return}
+scanstep()})}
+function hx(n){return '0x'+n.toString(16)}
+function scanshow(s,done){var pg=$('#scanprog'),p=s.size?s.off/s.size:0,
+now=Date.now(),dt=(now-s.rt)/1000,h='';
+if(dt>=1.5){s.rate=(s.off-s.rn)/dt;s.rt=now;s.rn=s.off}
+$('.pbar',pg).style.width=(p*100)+'%';
+$('.pct',pg).textContent=sz(s.off)+' / '+sz(s.size)+' · '
++(p*100).toFixed(0)+'%'
++(!done&&s.rate>0?' · '+spd(s.rate)+' · 剩余 '+dur((s.size-s.off)/s.rate):'');
+if(done){pg.className='prog'+(s.fail?' bad':' ok');
+$('.pwhat',pg).textContent=s.fail?'扫描完成，存在无法读出的页':'扫描完成'}
+h+='<tr><td>已扫描</td><td>'+sz(s.off)+(s.size?' / '+sz(s.size):'')
++'（擦除块 '+sz(s.blk||0)+'）</td></tr>';
+h+='<tr><td><span class="dot s'+(s.bad?1:0)+'"></span>坏块</td>'
++'<td class=s'+(s.bad?1:0)+'>'+(s.bad?s.bad+' 个：'+s.badl.map(hx).join('、')
++(s.bad>s.badl.length?' …':''):'无')+'</td></tr>';
+h+='<tr><td><span class="dot s'+(s.ecc?1:0)+'"></span>ECC 纠错</td>'
++'<td class=s'+(s.ecc?1:0)+'>'+(s.ecc?s.ecc+' 页在读取时被纠正。'
++'少量属正常；成片出现表明颗粒退化，应尽快备份'
+:'无')+'</td></tr>';
+h+='<tr><td><span class="dot s'+(s.fail?2:0)+'"></span>读失败</td>'
++'<td class=s'+(s.fail?2:0)+'>'+(s.fail?s.fail+' 页：'+s.faill.map(hx).join('、')
++(s.fail>s.faill.length?' …':'')+'。ECC 无法纠正，这些位置的数据已丢失'
+:'无')+'</td></tr>';
+$('#scan').innerHTML=h;
+$('#scanh').textContent=done?(s.fail?'扫描完成，'+s.fail+' 页无法读出'
+:s.bad||s.ecc?'扫描完成，见上表':'扫描完成，全片可读'):''}
+/*
+ * 日志是串口的原样拷贝：TTL 上是什么这里就是什么，英文界面也不去翻它。
+ * 只有「正在读取」「读取失败」这种页面自己的话才跟着语言走。
+ */
+function logset(t,raw){var l=$('#log');
+if(raw)l.setAttribute('data-raw','');else l.removeAttribute('data-raw');
+l.textContent=t;return l}
+function getlog(){var b=$('#logb'),l=$('#log');b.disabled=true;
+if(l.hasAttribute('data-ph')){l.removeAttribute('data-ph');logset('正在读取…',0)}get('/log',function(st,txt){b.disabled=$('#logf').checked;b.textContent='重新读取';if(st==200)logset(txt.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''),1);else logset('读取失败（'+st+'）',0);l.scrollTop=l.scrollHeight})}
+function copy(b,t){var ok=false;try{var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){}if(!ok&&navigator.clipboard)navigator.clipboard.writeText(t);var o=b.textContent;b.textContent='已复制';setTimeout(function(){b.textContent=o},1500)}
+function diag(b){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});else s.push(T('(未运行健康检查)'));copy(b,s.join('\n'))}
+/* 复制那份是给聊天窗口用的；这份是给附件用的，把日志和 env 也带上 */
+function diagtext(){var s=['Airoha Web U-Boot '+(INFO&&INFO.web||'')];
+s.push(T('导出于 ')+new Date().toLocaleString());s.push('');
+s.push(T('== 设备 =='));
+if(INFO){$$('#dev tr').forEach(function(r){s.push(r.cells[0].textContent+': '+r.cells[1].textContent)});
+if(INFO.ubi)(INFO.ubi.vols||[]).forEach(function(v){s.push('vol '+v.n+' '+v.t+' '+v.s+' used '+v.u)});else s.push('UBI: none')}
+else s.push(T('(/info 读取失败)'));
+s.push('');s.push(T('== 网络 =='));
+s.push($('#net').textContent.replace(/\s+/g,' ').trim()||T('(未读取)'));
+s.push('');s.push(T('== 快速检查 =='));
+if(CHK)CHK.forEach(function(i){s.push(['OK  ','WARN','FAIL'][i.s]+' '+i.n+': '+i.v)});
+else s.push(T('(未运行)'));
+s.push('');s.push(T('== 环境变量 =='));
+if(ENV)ENV.env.forEach(function(e){s.push(e.k+'='+e.v)});
+else s.push(T('(未读取)'));
+s.push('');s.push(T('== 全片扫描 =='));
+s.push($('#scan .empty')?T('(未扫描)')
+:$('#scan').textContent.replace(/\s+/g,' ').trim());
+s.push('');s.push(T('== 串口日志 =='));
+s.push($('#log').textContent);
+return s.join('\n')}
+/* 要等 /log 和 /env 回来才拼得全，所以按回调串起来 */
+function diagfile(b){var o=b.textContent;b.disabled=true;
+b.textContent='正在收集…';
+var fin=function(){b.disabled=false;b.textContent=o;
+var n=(INFO&&INFO.model||'device').replace(/[^A-Za-z0-9_.-]+/g,'-').toLowerCase();
+save(n+'-diag.txt',diagtext())};
+var step2=function(){if(ENV)return fin();
+get('/env',function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
+if(r&&r.env){ENV=r;envfill();bmfill()}fin()})};
+if($('#log').textContent.length>20)return step2();
+get('/log',function(st,t){if(st==200)logset(t.replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/\r/g,''),1);step2()})}
+/* 存文件全在浏览器里完成，设备不参与 */
+function save(name,text){try{
+var b=new Blob([text],{type:'text/plain;charset=utf-8'}),
+u=URL.createObjectURL(b),a=document.createElement('a');
+a.href=u;a.download=name;document.body.appendChild(a);a.click();
+document.body.removeChild(a);setTimeout(function(){URL.revokeObjectURL(u)},1000)}catch(e){}}
+/* 写入那几条已经由设备逐行报出来了，p7 只剩试跑走 */
+function plan(){return ['将固件载入内存并直接引导',
+'<b>不写入闪存</b>；引导失败断电即恢复原系统']}
+function ask(){var p=pane(),rows=files(p),W=[],E=[],h='',y=$('#yes');
+/* 设备详情里唯一能敲回车的是 IP 与掩码：回车就是「应用」，不是弹写入确认 */
+if(p.id=='p5'){applyaddr();return false}
+if(p.id=='p10'||p.id=='p11'||p.id=='p12')return false;
+YES=null;y.textContent='仍要写入';
+var tb0=$('[name=tryboot]',p);
+if(tb0&&tb0.checked){if(!rows.some(function(r){return r.k=='firmware'}))
+E.push('试跑需要选择一个恢复固件');
+else if(rows.length>1)E.push('试跑仅接收固件本身，其他文件不会被写入');
+else{W.push('固件仅载入内存，不写入闪存；引导失败断电即恢复原系统');
+/* 文件名不是凭据，但选错的人多半连名字都没换过 */
+if(!/recovery/i.test(rows[0].f.name))W.push('这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit 卷里，试运行不写闪存也就用不到它，内核多半起不来');}
+y.textContent='启动它'}
+$('#atitle').textContent=$('h1',p).textContent;
+if(p.id=='p4'&&rows.length){var o=hex($('[name=stockoff]',p).value),f=INFO&&INFO.flash,sm=cecc()?stfv():'',L=rows[0].f.size;
+/* 带 OOB 的文件比它在 flash 上占的长：按页连 OOB 折回去，而且得是整块 */
+if(sm=='oob'){if(L%rawlen(f.erase))E.push('带 OOB 的镜像长度应为 '+sz(rawlen(f.erase))+' 的整数倍（一个擦除块连 OOB）');L=flashlen(L);W.push('连 OOB 原样写入，只能写回备份它的这台机器')}
+if(sm=='dd'){var sb=sfbad(SF),sv=sfsaved();if(sb)E.push(esc(sb));else{W.push('按这组参数重算校验码：'+esc(sfdesc(SF)));
+if(!sv||sv.st!='ok')W.push('原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了');
+else if(!sfsame())W.push('这组参数与「原厂格式」里的不同，只用于这次写入');
+else if(sv.src!='dd')W.push('没有用 dd 备份核对过，坏块标记的位置未确认')}}
+if(o<0)E.push('写入偏移不是有效的十六进制数');else{if(f&&o%f.erase)E.push('写入偏移未按擦除块 '+sz(f.erase)+' 对齐');if(f&&o+L>f.size)E.push('偏移加镜像长度超过 flash 容量 '+sz(f.size));W.push('自 flash 偏移 0x'+(o<0?'?':o.toString(16))+' 起写入 '+sz(L)+(o?'':'，覆盖 bootloader 及其后全部内容'));W.push('写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启');var wp2=$('[name=wipe]',p),tail=f?f.size-o-L:0;if(f&&tail>0)W.push(wp2&&wp2.checked?'镜像之后剩余的 '+sz(tail)+' 将被擦成空白':'镜像之后剩余的 '+sz(tail)+' 保留原有内容不动');if(!o)W.push('写入后本页面不再可用，重新迁移需经串口')}}
+if(p.id=='p3'){var nm=$('[name=ubivol]',p).value.trim(),uf=rows.some(function(r){return r.k=='ubifile'});if(uf&&!nm)E.push('选择了卷内容但未填写卷名');if(nm&&!uf)E.push('填写了卷名但未选择卷内容');if(nm&&!/^[A-Za-z0-9_.-]{1,63}$/.test(nm))E.push('卷名仅限字母、数字与 _ - .');if(uf&&nm)W.push('卷 '+esc(nm)+' 不存在时按文件长度创建')}
+if(p.id=='p2'){var fmt=$('[name=format]',p).checked,hf=rows.some(function(r){return r.k=='fip'}),hb=rows.some(function(r){return r.k=='bl2'});if(fmt&&!hf)E.push('打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动');if(fmt&&!hb)E.push('打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救');if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!hf)E.push('闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件');if(INFO&&!INFO.ubi&&!fmt)E.push('闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件');if(fmt)W.push('重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置');
+/* 出厂卷没有第二份：没备份过就把话放在最前面，顺手给条路 */
+if(fmt){if(!INFO||!INFO.ubi){if(!bkall().all)W.unshift('原厂系统请先整片备份 · '
++'<a href="#" onclick="gobk();return false">整片下载</a>');
+if(cecc())W.push(sfok()?'原厂闪存格式已识别，重建 UBI 后自动保存':'原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响')}
+else{var bm=bkmissing();if(bm.length)W.unshift(esc(bm.join('、'))+' 未备份 · '
++'<a href="#" onclick="gobk();return false">去备份</a>')}}if(!rows.some(function(r){return r.k=='bl2'||r.k=='fip'}))W.push('未选择 BL2 或 U-Boot，本次只写入固件')}
+/*
+ * BL2 与 U-Boot 写的都是固定大小的地方，而两条写入脚本都是先擦后写：文件
+ * 超了会擦完才失败，留下半截引导器。设备回 200 之前也拦一道，这里是让人在
+ * 点下去之前就看见 —— 出厂卷早就有精确尺寸门，这两个一直没有。
+ */
+var bl2p=null,fipv=null,
+rebuild=$('[name=format]',p)&&$('[name=format]',p).checked;
+(INFO&&INFO.parts||[]).forEach(function(x){if(x.n=='bl2')bl2p=x});
+(INFO&&INFO.ubi&&INFO.ubi.vols||[]).forEach(function(x){if(x.n=='fip')fipv=x});
+/* 现存的卷按它自己的预留算；要重建、或压根还没有 fip，则按
+   ubi_write_fip 的创建尺寸 0x100000 —— 与设备侧同一个判据 */
+var fipcap=fipv&&!rebuild?fipv.s:1048576;
+rows.forEach(function(r){
+if(r.k=='bl2'&&bl2p&&r.f.size>bl2p.s-2048)
+E.push('BL2 文件 '+sz(r.f.size)+'，超过 bl2 分区自 0x800 起可写的 '
++sz(bl2p.s-2048));
+if(r.k=='fip'&&fipcap&&r.f.size>fipcap)
+E.push('U-Boot 文件 '+sz(r.f.size)+'，超过 fip 卷的 '+sz(fipcap))});
+if((p.id=='p1'||p.id=='p3')&&INFO&&!INFO.ubi)E.push('闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移');
+/* 写完不再自动重启，所以这不再是拦下的理由，只是别急着重启 */
+if((p.id=='p1'||p.id=='p3')&&INFO&&INFO.ubi&&!INFO.ubi.fip)W.push('闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件');
+if(p.id=='p1'||(p.id=='p2'&&rows.some(function(r){return r.k=='firmware'})))W.push('rootfs_data 将被清空');
+var utot=0;rows.forEach(function(r){utot+=r.f.size});
+/* p4 是流式的，没有上限；别的页要先整个进内存才写 */
+if(p.id!='p4'&&INFO&&INFO.uploadmax&&utot+4096>INFO.uploadmax)E.push('本次上传 '+sz(utot)+'，超过设备单次可接收的 '+sz(INFO.uploadmax)+'：内存不足，设备将拒绝');
+var dev=INFO&&INFO.model;
+if(dev&&rows.some(function(r){return MDK[r.k]}))h+='<div class=r><span>本机</span><span class=v>'+esc(dev)+'</span></div>';
+rows.forEach(function(r){var c=fcheck(r.k,r.f.name,dev);h+='<div class=r><span>'+esc(r.l)+'</span>'+(c?'<span class=vc><span class="v'+(c.c?' '+c.c:'')+'">':'<span class=v>')+esc(r.f.name)+' · '+sz(r.f.size)+'</span>'+(c?'<span class="md'+(c.c?' '+c.c:'')+'">'+c.t+'</span></span>':'')+'</div>'});
+if(!rows.length)h='<div class=r><span>未选择任何文件</span></div>';
+E.forEach(function(x){h+='<div class=e>'+x+'</div>'});W.forEach(function(x){h+='<div class=w>'+x+'</div>'});
+$('#abody').innerHTML=h;y.hidden=!rows.length||E.length>0;$('#mask').setAttribute('data-on','');return false}
+/*
+ * 文件名不是凭据，但选错的人多半连名字都没换过。扩展名先看，对了再从
+ * 文件名里取机型和本机比：immortalwrt-airoha-an7581-nokia_xg-040g-md-ubi-…
+ * 取出 XG-040G-MD。比较时两边只留字母数字，看本机 model 里有没有它。
+ * 只上色不拦：有人就是要给别的机型刷。
+ */
+var EXT={firmware:'.itb',bl2:'.bin',fip:'.fip',stock:'.bin'},MDK={firmware:1,bl2:1,fip:1};
+function fmodel(n){var m=/an75\d\d-[a-z0-9]+_([a-z0-9-]+?)-(?:ubi-|squashfs|initramfs|preloader|bl31)/i.exec(n);return m?m[1].toUpperCase():''}
+function mnorm(s){return String(s).toLowerCase().replace(/[^a-z0-9]/g,'')}
+function fcheck(k,n,dev){var x=EXT[k],m;if(!x)return null;
+if(n.toLowerCase().slice(-x.length)!=x)return{c:'bad',t:'应为 '+x+' 文件'};
+if(!MDK[k])return null;
+m=fmodel(n);if(!m)return{c:'bad',t:'文件名里没有机型'};
+if(!dev)return{c:'',t:esc(m)};
+if(mnorm(dev).indexOf(mnorm(m))>=0)return{c:'ok',t:esc(m)+' · 与本机一致'};
+return{c:'bad',t:esc(m)+' · 本机是 '+esc(String(dev).replace(/^\S+\s+/,''))}}
+function hide(){$('#mask').removeAttribute('data-on');YES=null}
+function go(){var f=YES;hide();if(f){f();return}send()}
+function send(){var p=pane(),rows=files(p),fd=new FormData(),x=new XMLHttpRequest(),prog=$('.prog',p),bar=$('.pbar',prog),btn=$('button[type=submit]',p),tot=0,i;
+$$('input[type=text]',p).forEach(function(t){if(t.value.trim())fd.append(t.name,t.value.trim())});
+$$('input[type=checkbox]',p).forEach(function(c){if(c.checked)fd.append(c.name,'1')});
+rows.forEach(function(r){fd.append(r.k,r.f,r.f.name);tot+=r.f.size});
+SENT={p:p,rows:rows,btxt:btn.textContent};
+WR={n:0,off:0,k:0,txt:'',rows:[],ver:null,secs:0,left:0,
+rt:Date.now(),rn:0,rate:0,fin:0};
+clearInterval(WRT);WRT=setInterval(wrclock,1000);
+RT=Date.now();RN=0;RATE=0;
+HBOFF=1;busy(1);btn.disabled=true;btn.textContent=p.id=='p4'?'写入中…':'上传中…';prog.hidden=false;prog.className='prog';bar.className='pbar';bar.style.width='0';
+x.upload.onprogress=function(e){if(!e.lengthComputable)return;var done=Math.min(e.loaded,tot),acc=0,cur=rows[0],ci=0;for(i=0;i<rows.length;i++){cur=rows[i];ci=i;if(done<acc+rows[i].f.size||i==rows.length-1)break;acc+=rows[i].f.size}
+bar.style.width=(done/tot*100)+'%';$('.pwhat',prog).textContent=(p.id=='p4'?'正在写入 ':'正在上传 ')+cur.l+(rows.length>1?'（'+(ci+1)+'/'+rows.length+'）':'')+' · '+sz(Math.min(done-acc,cur.f.size))+' / '+sz(cur.f.size);
+/* 速率按最近 1.5 秒算，瞬时值抖得没法看 */
+var now=Date.now(),dt=(now-RT)/1000;
+if(dt>=1.5){RATE=(done-RN)/dt;RT=now;RN=done}
+$('.pct',prog).textContent=sz(done)+' / '+sz(tot)+' · '+(done/tot*100).toFixed(0)+'%'+(RATE>0?' · '+spd(RATE)+' · 剩余 '+dur((tot-done)/RATE):'')};
+x.upload.onload=function(){bar.className='pbar ind';var wz=$('[name=wipe]',p),tb=$('[name=tryboot]',p),tbo=!!(tb&&tb.checked);$('.pwhat',prog).textContent=p.id=='p4'?(wz&&wz.checked?'传输完成，设备正在写入最后一块并擦净尾部…':'传输完成，设备正在写入最后一块…'):tbo?'已载入内存，即将启动':'上传完成，设备开始写入闪存';
+/* 刷回原厂报不出进度：那条 /stock 连着板子唯一的 tcp_stream，腾不出第二条
+   连接去问。别的页写入期间会轮询 /wr，这里给的只是接手之前的一个估计 */
+$('.pct',prog).textContent=(p.id=='p4'||tbo)?'':'预计 '+dur(Math.max(8,tot/WRSPD))};
+x.onload=function(){var r=x.responseText||'';
+/* 200 不一定是收下了：另一个上传还占着时，设备把这个 POST 当 GET 答，回的
+   是整张页面。只认各自的回复 —— /stock 是 ok 开头的一行，POST / 是 {"ok":1}。
+   后者得整句比对：页面自己的脚本里就有 "ok" 这几个字 */
+if(x.status==200&&(p.id=='p4'?/^ok /.test(r):r.trim()=='{"ok":1}')){done(r);return}
+if(x.status==200){fail('设备正忙：另一个上传还没结束，请稍后重试',409);return}
+/* 400 是没开始写就被挡下；500 是写到一半出的事，两件事 */
+fail((x.status>=500?'设备写入失败（':'设备拒绝了上传（')+x.status+'）：'+x.responseText,x.status)};
+x.onerror=function(){fail('连接中断，请检查网线后重试',0)};
+/* 刷回原厂走裸端点：镜像边收边写、不进内存，所以没有大小上限；
+   偏移在请求行里，设备收到第一个包就知道该写到哪 */
+if(p.id=='p4'&&rows.length){var so=hex($('[name=stockoff]',p).value);var wp=$('[name=wipe]',p);
+x.open('POST','/stock?off=0x'+(so<0?0:so).toString(16)+(wp&&wp.checked?'&wipe=1':'')+(cecc()?'&fmt='+stfv()+(stfv()=='dd'?'&p='+sfp(SF):''):''));x.send(rows[0].f);return}
+x.open('POST','/');x.send(fd)}
+function fail(m,st){var p=SENT.p,prog=$('.prog',p),btn=$('button[type=submit]',p);clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;if(WR)WR.fin=1;HBOFF=0;busy(0);prog.className='prog bad';$('.pbar',prog).className='pbar';$('.pbar',prog).style.width='100%';$('.pwhat',prog).textContent=m;$('.pct',prog).textContent='';btn.disabled=false;btn.textContent=SENT.btxt;
+/* 流式写到一半断了，闪存就是不一致的；这条提示不能随手一划就没 */
+if(p.id=='p4'&&(st===0||st>=500)){STUCKN=null;STUCK=st>=500?'<b>写入未完成，闪存已写入一部分。</b>在重新写入成功之前不要重启设备。':'<b>连接中断，写入可能未完成。</b>在重新写入成功之前不要重启设备。';banner()}}
+function done(resp){var p=SENT.p;
+/* 刷回原厂边收边写，拿到 200 时早写完了，去它自己的完成页 */
+if(p.id=='p4'){HBOFF=0;stdone(resp);return}
+if(WR&&WR.fin){HBOFF=0;return}
+/* 试跑不落闪存，一去不回，所以它仍然是先回复后动手那条路 */
+if($('[name=tryboot]',p)&&$('[name=tryboot]',p).checked){HBOFF=0;
+clearInterval(WRT);WRT=null;if(WR)WR.fin=1;
+$('#steps').innerHTML='<li>'+plan().join('</li><li>')+'</li>';
+$('#ban').setAttribute('hidden','');
+TRYB=1;busy(0);expect('boot');show('p7');return}
+/* 200 只是「收下了」；闪存这才开始动，进度得去问 */
+wrpoll()}
+/*
+ * 设备把写到哪了记成一小段文本，这里按 /log?from= 那套取新的部分。写一个卷
+ * 的那几秒它不应答 —— 那一步在环境变量的配方里，run_command 一进去就不回来，
+ * 网络栈也就没在跑。取不到不算事，下次再取；每一行都自带绝对值。
+ */
+function wrpoll(){if(!WR||WR.fin)return;
+get('/wr?from='+WR.off,function(st,t){if(!WR||WR.fin)return;
+var i=st==200&&t?t.indexOf('\n'):-1;
+if(i>0){var o=parseInt(t.slice(0,i),10);
+if(o>=WR.off){WR.off=o;WR.txt+=t.slice(i+1);wrline(WR.txt)}}
+if(!WR||WR.fin)return;
+/* 十来分钟还没有下文，那就不是在写了 */
+if(++WR.k>1200){fail('未收到设备回报，请查看「诊断」中的串口日志',500);return}
+WRP=setTimeout(wrpoll,700)})}
+/*
+ * 写入期间连接一直开着，设备边写边把状态一行行发过来，写完才关连接。所以这里
+ * 收到的不是一次性的回复，而是一条流：
+ *
+ *   s <文字> [字节]      步骤开始；带字节数时按上次实测速度倒计时
+ *   v <已完成> <总数>    回读校验的实时进度（那段循环是设备自己的，报得出）
+ *   r <名> <字节> <crc32>  一个部分写完了
+ *   c ok | c bad <说明>  回读校验的结论
+ *   t <字节> <秒>        本次实测写入速度，存下来给下次估算
+ *   done | f <说明>
+ *
+ * 写入本身报不出中间态 —— 那一步在环境变量的配方里，run_command 一进去就不
+ * 回来了；那是为了和串口 TFTP 刷固件走同一条脚本，值这个代价。
+ */
+function wrline(t){var i,l;if(!WR||WR.fin)return;
+while((i=t.indexOf('\n',WR.n))>=0){l=t.slice(WR.n,i).replace(/\r$/,'');WR.n=i+1;
+if(l)wrstep(l)}}
+function wrstep(l){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),
+k=l.charAt(0),a=l.slice(2).split(' '),n,d,tt,now,dt;
+if(k=='s'){n=+a[a.length-1];WR.left=0;
+if(n>0){a.pop();WR.left=Math.max(2,Math.round(n/WRSPD))}
+/* 回读校验一个部分一行 "s 回读校验 <名> <字节>"，记下正在校验哪个 */
+if(a[0]=='回读校验')WR.vf=a.slice(1).join(' ');
+bar.className='pbar ind';bar.style.width='100%';
+$('.pwhat',prog).textContent=a.join(' ')+'…';
+$('.pct',prog).textContent=WR.left?'预计 '+dur(WR.left):'';return}
+if(k=='v'){d=+a[0];tt=+a[1];now=Date.now();dt=(now-WR.rt)/1000;WR.left=0;
+bar.className='pbar';bar.style.width=(tt?d/tt*100:0)+'%';
+if(dt>=1.5){WR.rate=(d-WR.rn)/dt;WR.rt=now;WR.rn=d}
+$('.pct',prog).textContent=sz(d)+' / '+sz(tt)+' · '+(tt?(d/tt*100).toFixed(0):0)+'%'
++(WR.rate>0?' · '+spd(WR.rate)+' · 剩余 '+dur((tt-d)/WR.rate):'');return}
+if(k=='r'){WR.rows.push({n:a[0],s:+a[1]||0,c:a[2]||''});return}
+if(k=='c'){if(a[0]=='ok'){WR.ver='通过';return}
+/* 并进已有的；刷回原厂写了一半那条更要紧，它在就不动 */
+if(!STUCK||STUCKN){if(!STUCK)STUCKN=[];
+(WR.vf?[WR.vf]:WR.rows.map(function(r){return r.n})).forEach(function(n){if(STUCKN.indexOf(n)<0)STUCKN.push(n)});
+STUCK='<b>回读校验没通过，闪存里的内容与上传的不一致。</b>重新写入至成功之前不要重启设备。'}
+banner();fail('回读校验没通过：'+a.slice(1).join(' '),500);return}
+if(k=='t'){n=+a[0];d=+a[1];
+if(n>0&&d>0){WRSPD=n/d;try{localStorage.setItem('xgwrspd',String(Math.round(WRSPD)))}catch(e){}}
+WR.secs=d;return}
+if(k=='f'){fail(l.slice(2),500);return}
+if(l=='done')wrfin()}
+/* 写那一步只有估计，倒计时至少让人看出它在动 */
+function wrclock(){if(!WR||WR.fin||!WR.left||!SENT)return;
+WR.left--;$('.pct',$('.prog',SENT.p)).textContent=
+WR.left>0?'预计还需 '+dur(WR.left):'即将完成…'}
+/* 写完不再自动重启：设备停在恢复页等着，重不重启这一下由人来点 */
+function wrfin(){var p=SENT.p,prog=$('.prog',p),bar=$('.pbar',prog),
+btn=$('button[type=submit]',p),h='';
+if(!WR||WR.fin)return;
+WR.fin=1;clearInterval(WRT);WRT=null;clearTimeout(WRP);WRP=null;
+HBOFF=0;busy(0);
+/*
+ * 横幅要的是「把没写好的那部分重新写成功」：这次写的得盖住它，写别的不算
+ * —— fip 校验没过，接着刷个固件成功了，fip 照样是坏的。rhide() 重读 /info 时会重画
+ */
+if(STUCK&&STUCKN){STUCKN=STUCKN.filter(function(n){
+return !WR.rows.some(function(r){return r.n==n})});if(!STUCKN.length)STUCK=''}
+/*
+ * 体检读的是闪存，刚写完的闪存已经不是它读过的那一片了 —— 卷刚建出来、
+ * ri/bosa 刚写进去，再进「诊断」却还摆着写之前那份结果，看上去就像没写成。
+ * 作废掉，切过去时自然会重跑；关掉这个框时 rhide() 那边同样会重读 /info。
+ */
+CHK=null;
+prog.className='prog ok';bar.className='pbar';bar.style.width='100%';
+$('.pwhat',prog).textContent='写入完成';$('.pct',prog).textContent='';
+btn.disabled=false;btn.textContent=SENT.btxt;clear(p);
+WR.rows.forEach(function(r){h+='<div class=r><span>'+esc(r.n)+'</span><span class=v>'
++sz(r.s)+(r.c?' · crc32 '+esc(r.c):'')+'</span></div>'});
+if(WR.ver)h+='<div class=r><span>回读校验</span><span class=v>'+esc(WR.ver)+'</span></div>';
+if(WR.secs)h+='<div class=r><span>用时</span><span class=v>'+dur(WR.secs)+'</span></div>';
+if(!h)h='<div class=r><span>设备已写入完成</span></div>';
+h+='<div class=w>闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。</div>';
+if(INFO&&INFO.ubi&&!INFO.ubi.fip&&!WR.rows.some(function(r){return r.n=='U-Boot'}))
+h+='<div class=e>闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动</div>';
+$('#rbody').innerHTML=h;$('#rmask').setAttribute('data-on','')}
+function rhide(){$('#rmask').removeAttribute('data-on');info()}
+function rboot(){$('#rmask').removeAttribute('data-on');doreboot()}
+/* 设备回的是 "ok N bytes crc32 xxxxxxxx skipped M" */
+function stdone(t){STUCK='';var m=/ok (\d+) bytes crc32 ([0-9a-f]+) skipped (-?\d+)(?: wiped (\d+))?/.exec(t||''),h='',k,f=INFO&&INFO.flash;
+if(m){k=+m[3];
+h='<tr><td>写入</td><td>'+sz(+m[1])+'（'+m[1]+' 字节）</td></tr>'+
+'<tr><td>crc32</td><td class=mono>'+m[2]+'</td></tr>'+
+'<tr><td>坏块</td><td>'+(k?'跳过 '+k+' 块，镜像中对应内容未写入':'无')+'</td></tr>'+(m[4]===undefined?'':'<tr><td>擦净尾部</td><td>'+(f?sz(+m[4]*f.erase)+'（'+m[4]+' 块）':m[4]+' 块')+'</td></tr>')}
+else h='<tr><td>回报</td><td>'+esc((t||'').trim()||'（无）')+'</td></tr>';
+CHK=null;$('#stres').innerHTML=h;$('#ban').setAttribute('hidden','');hbstop();show('p13')}
+function clear(p){$$('input[type=file]',p).forEach(function(i){i.value='';var lab=i.parentNode,fn=$('.fn',lab),fs=$('.fs',lab);lab.classList.remove('has');if(fn){fn.classList.remove('has');fn.textContent=lab.classList.contains('drop')?'选择固件文件':'未选择'}if(fs)fs.parentNode.removeChild(fs)});$$('input[type=text]',p).forEach(function(t){if(t.name!='stockoff')t.value=''});refresh()}
+document.addEventListener('keydown',function(e){if(e.key=='Escape')hide()});
+/*
+ * 英文版：中文原文就是字典的键 —— 页面里那几百处文案一处都不用改，设备回报
+ * 的中文（/check、/wr、各种错误）也一样走这里。切过去时整棵树替换一遍，之后
+ * 由 MutationObserver 接手后插进来的节点。切回中文是按节点上存下的原文还原，
+ * 不做英译中：设备日志里全是英文，反查会把它们也一起换掉。
+ *
+ * I18N 整段匹配，I18P 按片段替换 —— 只有中间夹着数字、容量、卷名的句子才
+ * 需要后者，「无」这类短词放进去会在别的句子里乱咬。
+ */
+/* i18n-dict begin */
+var I18N={
+"清空设置":"Clear settings",
+"清空系统设置":"Clear system settings",
+"删掉 OpenWrt 的设置和装过的软件包，固件与出厂数据不动":"Removes OpenWrt's settings and installed packages; firmware and factory data stay",
+"清空":"Clear",
+"已清空":"Cleared",
+"正在清空…":"Clearing…",
+"删除":"Delete",
+"OpenWrt 的设置和软件包全部清空，下次启动为全新系统":"All OpenWrt settings and packages are erased; the next boot starts fresh",
+"闪存上没有 UBI，没有可清空的设置":"No UBI on the flash, so there are no settings to clear",
+"没有 rootfs_data 卷，下次启动就是全新系统":"There is no rootfs_data volume; the next boot starts fresh",
+"已清空。下次启动为全新系统":"Cleared. The next boot starts fresh",
+"下发网关":"Hand out a gateway",
+"下发":"Yes",
+"不下发":"No",
+"关掉后路由器不下发网关":"Off: the router hands out no gateway",
+"已打开。电脑重新插拔网线后生效":"On. Replug the computer's cable for it to take effect",
+"已关闭。电脑重新插拔网线后生效":"Off. Replug the computer's cable for it to take effect",
+"已打开，但未能保存到闪存。电脑重新插拔网线后生效":"On, but not saved to flash. Replug the computer's cable for it to take effect",
+"已关闭，但未能保存到闪存。电脑重新插拔网线后生效":"Off, but not saved to flash. Replug the computer's cable for it to take effect",
+"原厂系统请先整片备份 · ":"Stock firmware: back up the whole flash first · ",
+"去备份":"Back up now",
+"写入 固件…":"Writing firmware…",
+"回读校验 固件…":"Verifying firmware…",
+"文件名里没有机型":"No model in the file name",
+"应为 .itb 文件":"Expected a .itb file",
+"应为 .bin 文件":"Expected a .bin file",
+"应为 .fip 文件":"Expected a .fip file",
+"日常刷机":"Flash firmware",
+"引导升级":"Bootloader",
+"试跑固件":"Boot from RAM",
+"刷回原厂":"Restore stock",
+"按卷写入":"UBI volumes",
+"备份下载":"Backup",
+"设备详情":"Device info",
+"系统诊断":"Diagnostics",
+"环境变量":"Environment",
+"启动与重启":"Boot & reboot",
+"关于":"About",
+"切换深浅色":"Toggle light / dark",
+"连接中…":"Linking…",
+"将 sysupgrade 固件写入 fit 卷。rootfs_data 将被清空；系统可正常启动时请使用 sysupgrade。":"Writes a sysupgrade image into the fit volume. rootfs_data is erased. While the system still boots, use sysupgrade instead.",
+"固件":"Firmware",
+"选择固件文件":"Choose a firmware file",
+"选择文件…":"Choose file…",
+"设备停在恢复模式，不会自行引导。写入开始前闪存不会被修改；写完回读校验一遍，再由你决定是否重启。":"The device is held in recovery and will not boot on its own. Nothing is written to flash until the upload finishes; the image is then read back and verified, and rebooting is your call.",
+"想先不写闪存试一次，去「":"To try an image without touching flash, go to ",
+"上传并刷写":"Upload and flash",
+"写入 BL2 与 U-Boot FIP。用于从 tcboot / 原厂布局首次迁移，或升级 U-Boot。":"Writes BL2 and the U-Boot FIP. Use it for the first migration from a tcboot / stock layout, or to upgrade U-Boot.",
+"未选择":"None selected",
+"可选，同时写入":"Optional, written in the same pass",
+"首次迁移":"First migration",
+"重建 UBI":"Rebuild UBI",
+"擦除 ubi 分区并重新创建全部卷；出厂 MAC、U-Boot 环境与用户配置将丢失。":"Erases the ubi partition and recreates every volume. The factory MAC, the U-Boot environment and user settings are lost. ",
+"必须同时上传 BL2 与 U-Boot":"BL2 and U-Boot must both be uploaded",
+"重建 UBI 前先备份。":"Back up before rebuilding UBI. ",
+"请先在「":"Export everything from ",
+"」中导出。":" first.",
+"」。":".",
+"。":".",
+"重建从 0x20000 起擦，盖住原厂引导器至 0x80000。":"The rebuild erases from 0x20000 and covers the stock bootloader through 0x80000. ",
+"只写 U-Boot、不写 BL2，重启后原厂 BL2 找不到下一级，只能串口救。":"Writing U-Boot without BL2 leaves the stock BL2 unable to find its next stage; only a serial console can recover it.",
+"仅升级 U-Boot 时不需重建 UBI：只选择 U-Boot 文件，rootfs_data 保留。":"Upgrading U-Boot alone needs no rebuild: pick only the U-Boot file and rootfs_data survives.",
+"把恢复固件载入内存直接引导，":"Loads a recovery image into RAM and boots it. ",
+"闪存一个字节都不写":"Not one byte of flash is written",
+"。起不来断电即恢复原系统。":". If it does not come up, power-cycle and the old system is back.",
+"选择恢复固件":"Choose a recovery image",
+"要用 initramfs 恢复固件。":"Use an initramfs recovery image. ",
+"它的根文件系统随镜像一起进内存，不依赖闪存，所以 UBI 是空的、fit 卷没了也照样跑得起来。":"Its root filesystem travels into RAM with the image and needs no flash, so it runs even when UBI is empty or the fit volume is gone. ",
+"sysupgrade 固件不适合这里":"A sysupgrade image will not do here",
+"：它的根要由 fitblk 从闪存的 fit 卷里读（设备树的 rootdisk 指着那个卷），试跑时内核是新的、根还是闪存里那份旧的，多半起不来。":": its root is read by fitblk from the fit volume in flash (rootdisk in the device tree points there), so a trial run pairs a new kernel with the old root still in flash, and usually fails to boot.",
+"引导成功后本页面不再可用；要回到恢复页，断电重来即可。闪存没写过一个字节，原系统还在。":"Once it boots, this page is gone; power-cycle to get back to recovery. Flash was never written and the old system is intact.",
+"启动它":"Boot it",
+"将镜像写入 flash 指定偏移，边接收边写入、不在内存中暂存，因此没有单独的上传阶段。偏移为 0 时整片写入，当前引导程序与本页面将被覆盖；重新迁移至 OpenWrt 需经 USB-TTL 串口。":"Writes an image to a given flash offset. It is written as it arrives rather than buffered in RAM, so there is no separate upload stage. At offset 0 the whole chip is written, which overwrites the running bootloader and this page; migrating back to OpenWrt then needs a USB-TTL serial console.",
+"镜像":"Image",
+"写入偏移":"Write offset",
+"十六进制，按擦除块对齐":"Hexadecimal, aligned to an erase block",
+"0 为整片，亦可写入单个分区":"0 writes the whole chip; a single partition works too",
+"擦净尾部":"Erase the tail",
+"镜像之后":"The erase blocks after the image, ",
+"直至片尾":"all the way to the end of the chip",
+"的擦除块一并擦空；不擦则保留原有内容":", are erased as well. Leave it off to keep what is there",
+"镜像须来自本机备份（「":"The image must be a backup of this board (from ",
+"」导出），不超过 ":"), at most ",
+"页面不核对镜像、偏移是否适合本机，写错只能串口救":"This page does not check that the image and offset suit this board; a wrong write can only be undone over serial",
+"写入开始后网线和电源都不能断":"Once writing starts, keep the cable and the power connected",
+"，中断了就重传，成功前别重启。":"; if it is cut, resend, and do not reboot until it succeeds.",
+"刷写":"Flash it",
+"写入 UBI 卷":"Write UBI volume",
+"按卷名写入 UBI 卷，卷不存在时按文件长度创建。物理位置由 UBI 层管理，不涉及 bl2 分区。":"Writes a UBI volume by name, creating it at the file's size if it does not exist. UBI decides where it physically lands; the bl2 partition is not involved.",
+"出厂数据":"Factory data",
+"文件须来自本机备份，可同时写入":"The files must come from a backup of this board; several can go in one pass",
+"任意卷":"Any volume",
+"卷名错误将覆盖对应卷的内容":"A wrong name overwrites whatever that volume holds",
+"卷名":"Volume name",
+"如 fip、fit":"e.g. fip, fit",
+"仅限字母、数字与 _ - .":"Letters, digits and _ - . only",
+"内容":"Contents",
+"卷":"Volume",
+"卷内容":"Volume contents",
+"写完由你决定是否重启，所以可以连着写好几个卷。":"Rebooting is your call once a write finishes, so several volumes can be written back to back.",
+"读取闪存内容并下载。读取与传输同步进行，不限长度；传输期间设备可能暂停响应。":"Reads flash and downloads it. Reading and transferring run together with no length limit; the device may stop answering while it does.",
+"UBI 卷":"Volumes",
+"原始区段":"Raw range",
+"正在读取…":"Reading…",
+"绕过 UBI 按 flash 偏移读取，偏移与「刷回原厂」一致。":"Reads by flash offset, bypassing UBI. The offsets match the ones on Restore stock.",
+"起始偏移":"Start offset",
+"十六进制":"Hexadecimal",
+"0 为片首":"0 is the start of the chip",
+"长度":"Length",
+"留空到片尾":"empty = to the end",
+"留空读至片尾":"Leave empty to read to the end of the chip",
+"整片读取的是闪存本身，不经过分区表，原厂布局下的 romfile、config 一并包含。":"A whole-chip read takes the flash itself, not the partition table, so on a stock layout romfile and config come along.",
+"文件偏移等于 flash 偏移":"Offsets in the file equal flash offsets",
+"，坏块在文件中保留占位，格式与 ":". Bad blocks keep their place in the file, and the format matches a ",
+" 镜像一致：外部 ":" image: an ",
+" 可直接写入，此处导出的镜像亦可用于编程器。写回时坏块跳过而不压缩，其后内容位置不变。":" from elsewhere can be written straight back, and an image exported here also works in a programmer. On the way back bad blocks are skipped rather than squeezed out, so everything after them stays put.",
+"整片下载":"Download whole chip",
+"下载区段":"Download range",
+"已完成":"Finished",
+"crc32 基于实际传出的字节计算，可与本地文件核对":"The crc32 covers the bytes actually sent, so it can be checked against the file you got",
+"传输期间设备不应答：U-Boot 的 TCP 栈同时只有一条连接，而这条连接正被下载占着，所以本页面问不到「传了多少字节」。":"The device goes quiet during the transfer: U-Boot's TCP stack holds one connection at a time and the download owns it, so this page cannot ask how many bytes have gone out. ",
+"字节进度请看浏览器自己的下载栏":"Watch the browser's own download bar for that",
+"。传完这里会给出 crc32，可与本地文件核对。":". When it finishes, the crc32 appears here to check against the file.",
+"运行时从设备树、MTD 与 UBI 读取。":"Read at runtime from the device tree, MTD and UBI.",
+"硬件":"Hardware",
+"网络":"Network",
+"端口号为交换机内部顺序，与外壳丝印不一定对应；无响应的端口不列出。":"Port numbers follow the switch's internal order, which need not match the labels on the case. Ports that do not answer are left out.",
+"地址":"Address",
+"三种模式互斥，应用后需以新地址重新打开本页面":"The three modes are exclusive; after applying, reopen this page at the new address",
+"模式":"Mode",
+"DHCP 服务器 · 本机发地址":"DHCP server · this device hands out addresses",
+"静态地址":"Static address",
+"DHCP 客户端 · 向上级路由要":"DHCP client · ask the upstream router",
+"路由器 IP":"Router IP",
+"本机地址，末位固定为 1":"This device's address; the last octet is always 1",
+"子网掩码":"Subnet mask",
+"保存到闪存":"Save to flash",
+"不保存则只在本次开机有效":"Without this it only lasts until the next power-up",
+"应用":"Apply",
+"读取设备状态：关键位置检查、全片扫描，以及本次上电的控制台输出。":"Reads the device's state: a check of the critical spots, a whole-chip scan, and the console output since this power-up.",
+"快速检查":"Quick check",
+"全片扫描":"Full scan",
+"串口日志":"Serial log",
+"检查 BL2、坏块、UBI 各卷与 U-Boot MAC。读取闪存期间设备暂停响应，耗时数秒。":"Checks BL2, bad blocks, the UBI volumes and the U-Boot MAC. The device stops answering while it reads flash, for a few seconds.",
+"未执行检查":"Not checked yet",
+"点「开始检查」读取 BL2、坏块与各卷状态":"Press Run check to read BL2, the bad blocks and the state of each volume",
+"开始检查":"Run check",
+"复制诊断信息":"Copy diagnostics",
+"下载诊断包":"Download diagnostics",
+"未扫描":"Not scanned",
+"点「开始扫描」逐页读一遍整片闪存":"Press Start scan to read every page of the chip once",
+"逐页读取全片；只读，不改动闪存。「快速检查」只覆盖关键位置，颗粒退化需整片读取才能发现。分段执行，段间页面保持响应；整片耗时数分钟，其间设备响应变慢。":"Reads the whole chip page by page. Read-only; flash is not modified. Quick check only covers the critical spots, while a decaying NAND die shows up only in a full read. It runs in chunks and the page stays responsive between them; the whole chip takes minutes and the device answers more slowly meanwhile.",
+"开始扫描":"Start scan",
+"U-Boot 本次上电以来的控制台输出。":"U-Boot's console output since this power-up.",
+"未读取":"Not read yet",
+"日志缓冲已满，后续输出未记录。重启后重新开始记录。":"The log buffer is full and later output was not recorded. Recording restarts after a reboot.",
+"实时跟随":"Follow live",
+"读取日志":"Read log",
+"复制日志":"Copy log",
+"U-Boot 环境变量":"U-Boot environment",
+"当前生效的变量，只读。bootcmd 与引导菜单异常是无法启动的常见原因。":"The variables in effect, read-only. A broken bootcmd or boot menu is a common reason a device will not start.",
+"变量":"Variables",
+"引导菜单预览":"Boot menu preview",
+"恢复默认":"Restore defaults",
+"过滤名称或值":"Filter by name or value",
+"只看关键项":"Key variables only",
+"重新读取":"Read again",
+"复制全部":"Copy all",
+"设备启动时的菜单，由 bootmenu_* 变量构成。":"The menu shown at boot, built from the bootmenu_* variables.",
+"恢复为本版 U-Boot 的默认值":"Restore this U-Boot's own defaults",
+"清除自定义的 bootcmd、引导菜单与网络设置并保存":"Clears a customised bootcmd, boot menu and network settings, and saves",
+"出厂 MAC 位于 ri 卷，":"The factory MAC lives in the ri volume and is ",
+"不受影响":"left alone",
+"；固件与用户配置同样不受影响。恢复后需重启生效。UBI 无法挂载时保存失败，改动仅存于内存。":"; firmware and user settings are untouched as well. A reboot is needed for it to take effect. If UBI cannot be mounted the save fails and the change lives only in RAM.",
+"离开本页面的三种方式，均不改动闪存。":"Three ways to leave this page. None of them touches flash.",
+"重启后正常引导，":"After a reboot the device boots normally, and ",
+"引导成功就离开本页面了":"once it boots you have left this page",
+" —— 之后这个地址上是系统自己的页面。只有引导失败才回到恢复页，届时本页面自动刷新。":" — this address then belongs to the system's own page. Only a failed boot comes back to recovery, and this page reloads itself when it does.",
+"立即重启":"Reboot now",
+"其他启动方式":"Other ways to start",
+"直接启动系统":"Boot the system now",
+"执行 bootcmd，不经过冷启动；引导失败回到本页面":"Runs bootcmd without a cold start; a failed boot returns to this page",
+"启动系统":"Boot system",
+"下次开机进恢复页":"Stop in recovery next boot",
+"仅生效一次，进入后自动还原":"One shot; it clears itself once you get here",
+"设置":"Arm",
+"设置后下次开机停在本页面，再下次开机恢复正常引导。":"Once armed, the next power-up stops on this page and the one after that boots normally again.",
+"U-Boot 内置的 HTTP 恢复服务，页面不依赖任何外部资源。":"An HTTP recovery service built into U-Boot. The page loads nothing from the network.",
+"作者":"Author",
+"项目主页":"Project",
+"门户":"Portal",
+"问题反馈":"Issues",
+"基于":"Based on",
+"已交给设备启动":"Handed over to the device",
+"设备正在从内存引导该固件，闪存未改动。引导成功后本页面不再可用。":"The device is booting that image from RAM. Flash was not modified. Once it boots, this page is gone.",
+"起不来怎么办":"If it does not come up",
+"断电":"Power off",
+"再上电即回到原有系统，闪存一个字节都没写":"Power it back on and the old system is there; not one byte of flash was written",
+"等待":"Wait",
+"引导失败时设备自行回到本页面，届时自动刷新":"A failed boot brings the device back to this page, which then reloads itself",
+"本次动作":"What happens",
+"写入完成":"Write finished",
+"镜像已全部写入闪存，设备正在重启。本页面可以关闭。":"The whole image is in flash and the device is rebooting. You can close this page.",
+"设备回报":"Device reported",
+"crc32 由设备对收到的字节计算，与备份时记录的值一致即说明传输无误。":"The device computed the crc32 over the bytes it received; if it matches the one noted at backup time, the transfer was clean.",
+"重启约需 1–2 分钟。整片写入后本页面所属的 U-Boot 已被覆盖，设备将按镜像中的引导程序启动。":"The reboot takes one or two minutes. After a whole-chip write the U-Boot this page belongs to is gone, and the device starts from the bootloader inside the image.",
+"重新连接":"Reconnect",
+"确认写入":"Confirm write",
+"取消":"Cancel",
+"仍要写入":"Write anyway",
+"写入完毕":"Write complete",
+"留在恢复页":"Stay in recovery",
+"已连接":"Online",
+"设备忙…":"Busy…",
+"无响应…":"Quiet…",
+"已断开":"Offline",
+"闪存中没有可挂载的 UBI。":"There is no mountable UBI in flash. ",
+"首次迁移：在「引导升级」中同时上传 BL2、U-Boot 与固件，并启用「重建 UBI」。":"First migration: on Bootloader, upload BL2, U-Boot and the firmware together and turn on Rebuild UBI.",
+"UBI 没有挂载：闪存上的数据不是按本 U-Boot 的 ECC 格式写的。":"UBI is not attached: the data in flash was not written with this U-Boot's ECC layout. ",
+"UBI 没有挂载：有 UBI 没写过的数据，且没有 fip 卷。":"UBI is not attached: flash holds data UBI did not write, and there is no fip volume. ",
+"至少 ":"At least ",
+" 块，一块都没擦。":" blocks; none was erased. ",
+"要保留请先在「备份下载」整片备份；否则在「引导升级」重建 UBI，或":"To keep the data, back up the whole chip under Backup first; otherwise rebuild UBI on Bootloader, or ",
+"（擦掉这些块）。":" (erases those blocks).",
+"这样的块至少 ":"At least ",
+" 块，为保护数据一块都没擦。":" such blocks; none was erased, to keep the data. ",
+"要保留这些数据，先在「备份下载」中整片备份，或用原来的引导启动后备份；不要的话，在「引导升级」中启用「重建 UBI」，或者":"To keep that data, back up the whole chip under Backup first, or boot the previous bootloader and back it up there. If you do not need it, turn on Rebuild UBI on Bootloader, or ",
+"强制挂载":"Attach anyway",
+"（擦掉这些块，按原来的方式挂载）。":" (erase those blocks and attach as before).",
+"强制挂载 UBI":"Attach UBI anyway",
+"第一次写入时擦除 UBI 读不出的块：至少 ":"The first write erases the blocks UBI cannot read: at least ",
+" 块，可能更多":", possibly more",
+"这些块是按别的 ECC 格式写的，用原来的引导还能读出来；擦掉就找不回了":"These blocks were written with another ECC layout. The previous bootloader can still read them; once erased they are gone for good",
+"这些块是 UBI 之外的数据（原厂分区、出厂数据等），擦掉就找不回了":"These blocks hold data outside UBI (stock partitions, factory data and the like); once erased they are gone for good",
+"挂上后先重启一次：开机读环境那次被拒了，U-Boot 现在用的是默认环境变量":"Once attached, reboot first: loading the environment at boot was refused, so U-Boot is running on the default environment",
+"挂不上仍可在「引导升级」中重建 UBI":"If it does not attach, UBI can still be rebuilt on Bootloader",
+"UBI 没有挂载：闪存上有一部分数据不是按本 U-Boot 的 ECC 格式写的。":"UBI is not attached: part of the data in flash was not written with this U-Boot's ECC layout. ",
+"为保护数据一块都没擦。":"Nothing was erased, to keep the data. ",
+"要保留这些数据，先在「备份下载」中整片备份，或用原来的引导启动后备份；不要的话，在「引导升级」中启用「重建 UBI」。":"To keep that data, back up the whole chip under Backup first, or boot the previous bootloader and back it up there. If you do not need it, turn on Rebuild UBI on Bootloader. ",
+"强制挂载在这里挂不上：卷表也读不出来。":"Attaching anyway cannot work here: the volume table cannot be read either.",
+"连接中断，挂载结果未知。请稍后刷新页面查看":"The connection dropped; whether it attached is unknown. Reload the page shortly to see",
+"已挂载 UBI":"UBI attached",
+"结果":"Result",
+"已挂载，读不出的块在第一次写入时擦除":"Attached; the blocks it cannot read are erased by the first write",
+"开机时读环境变量那次被拒了，U-Boot 现在用的是默认环境变量；这时保存设置会盖掉闪存里原来那份":"Loading the environment at boot was refused, so U-Boot is running on the default one; saving a setting now would overwrite the one in flash",
+"请先重启，让 U-Boot 按闪存里的环境变量启动，再做别的操作":"Reboot first so U-Boot starts with the environment in flash, then carry on",
+"没有挂载：闪存上的数据不是按本 U-Boot 的 ECC 格式写的，为保护数据一块都没擦。可先备份，再重建 UBI，见页面顶部":"Not attached: the data in flash was not written with this U-Boot's ECC layout. Nothing was erased, to keep the data. Back it up first, then rebuild UBI; see the top of the page",
+"还没有整片备份 · ":"No whole-chip backup yet · ",
+"正在挂载，读取闪存期间设备不响应…":"Attaching; the device does not respond while it reads the flash…",
+"强制挂载也没有成功：闪存上没有可用的 UBI。请在「引导升级」中重建 UBI":"Attaching anyway did not work either: there is no usable UBI in flash. Rebuild UBI on Bootloader",
+"闪存中没有 U-Boot（fip 卷）。":"There is no U-Boot in flash (the fip volume). ",
+"当前 U-Boot 仅存于内存，掉电丢失。请在「引导升级」中上传 U-Boot 文件。":"The running U-Boot lives only in RAM and is lost on power-off. Upload a U-Boot file on Bootloader.",
+"设备正在重启":"The device is rebooting",
+"引导成功即进入系统，":"A successful boot lands in the system and ",
+"本页面不再可用":"this page is gone",
+"；引导失败才回到这里并自动刷新。":"; only a failed boot comes back here, and the page reloads itself.",
+"设备正在启动系统":"The device is booting the system",
+"闪存未改动。引导成功后":"Flash was not modified. Once it boots, ",
+"；引导失败则回到本页面。":"; a failed boot returns to this page.",
+"与设备的连接已断开":"The connection to the device is down",
+"设备无响应，请检查网线与电源。指示灯仍在流水说明它还活着，请稍候。":"The device is not answering. Check the cable and the power. If the LEDs are still chasing it is alive, so give it a moment.",
+"每 2 秒自动重试。":"Retrying every 2 seconds.",
+"正在重试…":"Retrying…",
+"闪存内容不受影响":"Flash is not affected",
+"闪存上没有可挂载的 UBI，当前 U-Boot 仅存于内存。":"There is no mountable UBI in flash and the running U-Boot lives only in RAM. ",
+"重启后回到原有系统，需重新经串口传入 U-Boot 才能再打开本页面。建议先在「引导升级」中完成写入":"After a reboot the old system is back, and U-Boot has to be sent over serial again before this page can be opened. Better to finish the write on Bootloader first",
+"闪存中没有 U-Boot（fip 卷），当前 U-Boot 仅存于内存。":"There is no U-Boot in flash (the fip volume) and the running one lives only in RAM. ",
+"重启后本页面将无法再打开":"After a reboot this page can no longer be opened",
+"重启":"Reboot",
+"动作":"Action",
+"DHCP 服务器":"DHCP server",
+"DHCP 客户端":"DHCP client",
+"设备的接口地址":"The device's interface address",
+"电脑直接插到本设备上时，插上就能拿到地址，不必手动配 IP。掩码固定 ":"With a computer plugged straight into this device, it gets an address on connect and needs no manual IP. The mask is fixed at ",
+"，电脑拿到的是本网段 ":", the computer gets ",
+"，不带 DNS。":" on this subnet, with no DNS. ",
+"接入已有网络前不要用这一档":"Do not use this mode on an existing network",
+"：它对任何请求都应答，会和该网络的路由器抢着发地址，被抢到的机器会断网。":": it answers every request and races that network's router to hand out addresses, knocking whichever machines it wins off the network.",
+"接入已有网络时用这一档：填一个该网段内的空闲地址，本机不再发地址，应用后即可从网内任何一台机器打开本页面。":"Use this mode on an existing network: give it a free address on that subnet. The device stops handing out addresses, and once applied this page opens from any machine on the network.",
+"地址由上级路由分配，本页面事先不知道是多少，需在上级路由的客户端列表中按 MAC 查找。本机不再发地址。未取得租约时退回当前地址。":"The upstream router assigns the address, which this page cannot know in advance — look it up by MAC in the router's client list. The device stops handing out addresses. Without a lease it falls back to the current address.",
+"主机需在同一网段":"Your computer must be on the same subnet",
+"填本网段内任一地址即可，如 192.168.1.1":"Any address on this subnet will do, e.g. 192.168.1.1",
+"DHCP 服务器 192.168.1.1 / 255.255.255.0（出厂默认）":"DHCP server 192.168.1.1 / 255.255.255.0 (factory default)",
+"。勾上「保存到闪存」才会把当前这一套写进去替换它；不勾就只管本次开机。":". Only Save to flash writes the current settings over it; without it they last until the next power-up.",
+"IP 不是一个合法的地址":"That is not a valid IP address",
+"子网掩码不是一个合法的地址":"That is not a valid subnet mask",
+"改网络模式":"Change network mode",
+"本机":"This device",
+"不再发地址":"stops handing out addresses",
+"，电脑需手动配置同网段的 IP":", so the computer needs a manual IP on the same subnet",
+"地址由上级路由分配，本页面无法预知。":"The upstream router assigns the address; this page cannot know it. ",
+"；未取得租约时退回当前地址":"; without a lease it falls back to the current address",
+"：下次开机就用这一套。地址填错时断电也无法恢复":": the next power-up uses these settings. If the address is wrong, a power-cycle will not undo it",
+"本机用的是设备发的地址":"Your computer is using an address this device handed out",
+"请改用上级路由那个网络里的机器":"use a machine on the upstream router's network instead",
+"正在获取地址":"Getting an address",
+"10 秒后自动跳转。":"Jumping there in 10 seconds.",
+"闪存内容不受影响；引导失败回到本页面":"Flash is not affected; a failed boot returns to this page",
+"未设置":"Not armed",
+"未保存":"Not saved",
+"已设置":"Armed",
+"已设置，但未能保存到闪存：断电后失效，请在「诊断」中确认 ubootenv 卷":"Armed, but it could not be saved to flash: it will not survive a power-off. Check the ubootenv volume under Diagnostics",
+"此前已设置，下次开机将停在本页面":"Already armed; the next power-up stops on this page",
+"已设置。下次开机停在本页面，再下次开机恢复正常引导":"Armed. The next power-up stops on this page, and the one after that boots normally again",
+"读取失败，刷新页面重试":"Read failed. Reload the page and try again",
+"UBI 未挂载":"UBI is not mounted",
+"首次迁移前闪存仍为原厂内容，建议此时用「原始区段」整片备份":"Before the first migration flash still holds the stock content — this is the moment to back up the whole chip from Raw range",
+"下载":"Download",
+"设备拒绝了本次备份":"The device refused this backup",
+"到片尾":"to the end",
+"未收到设备回报，本次备份可能未完成，请查看「诊断」中的串口日志":"No word back from the device — the backup may be incomplete. Check the serial log under Diagnostics",
+"传输完成":"Transfer complete",
+"无法读取闪存信息":"Cannot read the flash information",
+"起始偏移不是有效的十六进制数":"The start offset is not a valid hexadecimal number",
+"长度不是有效的十六进制数":"The length is not a valid hexadecimal number",
+"长度为 0":"The length is 0",
+"设备正在写入，稍后再试":"The device is writing. Try again shortly",
+"设备正忙：另一个上传还没结束，请稍后重试":"The device is busy with another upload. Try again once it is done",
+"没有匹配的变量":"No variable matches",
+"没有 bootmenu_* 条目":"No bootmenu_* entries",
+"环境中没有引导菜单：串口不会停顿，直接执行 bootcmd":"The environment has no boot menu: the console will not pause and bootcmd runs straight away",
+"自定义的 bootcmd、引导菜单与网络设置将恢复为本版 U-Boot 的默认值":"A customised bootcmd, boot menu and network settings go back to this U-Boot's defaults",
+"出厂 MAC、固件与用户配置不受影响；恢复后需重启生效":"The factory MAC, the firmware and user settings are untouched; a reboot is needed for it to take effect",
+"正在恢复…":"Restoring…",
+"已恢复并保存，重启后生效":"Restored and saved; it takes effect after a reboot",
+"已恢复，但保存失败（UBI 未挂载），改动仅存于内存":"Restored, but the save failed (UBI is not mounted), so the change lives only in RAM",
+"读不到网络信息":"Cannot read the network information",
+"网关":"Gateway",
+"网卡":"Interface",
+"未发出过地址；当前主机用的是手动配置的 IP，更换主机后需重新配置。":"No address has been handed out; your computer is on a manually configured IP, and another machine would need configuring too.",
+"未连接":"No link",
+"机型":"Model",
+"内存":"RAM",
+"闪存":"Flash",
+"分区":"Partitions",
+"名称":"Name",
+"类型":"Type",
+"大小":"Size",
+"已用":"Used",
+"检查中…":"Checking…",
+"正在检查，读取闪存期间设备不响应…":"Checking. The device does not answer while it reads flash…",
+"重新检查":"Check again",
+"重新扫描":"Scan again",
+"已停止":"Stopped",
+"已停止，结果仅覆盖已扫描的部分":"Stopped; the result only covers what was scanned",
+"停止":"Stop",
+"正在扫描":"Scanning",
+"扫描完成，存在无法读出的页":"Scan finished; some pages could not be read",
+"扫描完成":"Scan finished",
+"已扫描":"Scanned",
+"坏块":"Bad blocks",
+"无":"None",
+"ECC 纠错":"ECC corrections",
+"读失败":"Read failures",
+"扫描完成，见上表":"Scan finished; see the table above",
+"扫描完成，全片可读":"Scan finished; the whole chip reads",
+"已复制":"Copied",
+"(未运行健康检查)":"(no health check was run)",
+"导出于 ":"Exported ",
+"== 设备 ==":"== Device ==",
+"(/info 读取失败)":"(/info could not be read)",
+"== 网络 ==":"== Network ==",
+"(未读取)":"(not read)",
+"== 快速检查 ==":"== Quick check ==",
+"(未运行)":"(not run)",
+"== 环境变量 ==":"== Environment ==",
+"== 全片扫描 ==":"== Full scan ==",
+"(未扫描)":"(not scanned)",
+"== 串口日志 ==":"== Serial log ==",
+"正在收集…":"Collecting…",
+"将固件载入内存并直接引导":"Load the image into RAM and boot it",
+"不写入闪存":"Flash is not written",
+"；引导失败断电即恢复原系统":"; if it fails to boot, power-cycle and the old system is back",
+"试跑需要选择一个恢复固件":"A trial run needs a recovery image",
+"试跑仅接收固件本身，其他文件不会被写入":"A trial run takes the image alone; no other file is written",
+"固件仅载入内存，不写入闪存；引导失败断电即恢复原系统":"The image only goes into RAM, not flash; if it fails to boot, power-cycle and the old system is back",
+"这个文件名不像 initramfs 恢复固件。sysupgrade 固件的根文件系统在闪存的 fit 卷里，试运行不写闪存也就用不到它，内核多半起不来":"That file name does not look like an initramfs recovery image. A sysupgrade image keeps its root filesystem in the fit volume in flash, which a trial run never touches, so the kernel will most likely not come up",
+"写入偏移不是有效的十六进制数":"The write offset is not a valid hexadecimal number",
+"写入随上传同步进行，中断将使闪存处于不一致状态，须重传至成功后方可重启":"Writing runs alongside the upload; an interruption leaves flash inconsistent, so resend until it succeeds before rebooting",
+"写入后本页面不再可用，重新迁移需经串口":"After this write the page is gone, and migrating back needs a serial console",
+"选择了卷内容但未填写卷名":"Volume contents were picked but no volume name was given",
+"填写了卷名但未选择卷内容":"A volume name was given but no contents were picked",
+"卷名仅限字母、数字与 _ - .":"A volume name may only contain letters, digits and _ - .",
+"打开了「重建 UBI」却没有选择 U-Boot 文件：重建会抹掉 fip 卷，没有 U-Boot 设备将无法启动":"Rebuild UBI is on but no U-Boot file was picked: the rebuild wipes the fip volume, and without U-Boot the device will not start",
+"打开了「重建 UBI」却没有选择 BL2：重建从 0x20000 起擦，盖住了原厂引导器的后半截，只写 U-Boot 的话重启起不来，只能拆串口救":"Rebuild UBI is on but no BL2 was picked: the rebuild erases from 0x20000 on, which covers the back half of the stock bootloader. Writing U-Boot alone leaves a device that will not boot, and only a serial console gets you out of that",
+"闪存里没有 U-Boot（fip 卷），本次必须同时上传 U-Boot 文件":"There is no U-Boot in flash (the fip volume), so a U-Boot file has to go in this time",
+"闪存里没有可挂载的 UBI：请打开「重建 UBI」，并同时上传 BL2、U-Boot 与固件":"There is no mountable UBI in flash: turn on Rebuild UBI and upload BL2, U-Boot and the firmware together",
+"重建 UBI 将清除出厂 MAC、U-Boot 环境与用户配置":"Rebuilding UBI clears the factory MAC, the U-Boot environment and user settings",
+"未选择 BL2 或 U-Boot，本次只写入固件":"No BL2 or U-Boot was picked; only the firmware goes in this time",
+"闪存里没有可挂载的 UBI，请先在「引导升级」里完成首次迁移":"There is no mountable UBI in flash — finish the first migration on Bootloader first",
+"闪存里没有 U-Boot（fip 卷）：写完不会自动重启，但重启之前要先到「引导升级」里补上 U-Boot 文件":"There is no U-Boot in flash (the fip volume). The write will not reboot on its own, but add a U-Boot file on Bootloader before you do reboot",
+"rootfs_data 将被清空":"rootfs_data will be erased",
+"未选择任何文件":"No files selected",
+"写入中…":"Writing…",
+"上传中…":"Uploading…",
+"传输完成，设备正在写入最后一块并擦净尾部…":"Transfer complete; the device is writing the last block and erasing the tail…",
+"传输完成，设备正在写入最后一块…":"Transfer complete; the device is writing the last block…",
+"已载入内存，即将启动":"Loaded into RAM, about to boot",
+"上传完成，设备开始写入闪存":"Upload complete; the device has started writing flash",
+"连接中断，请检查网线后重试":"The connection dropped. Check the cable and try again",
+"写入未完成，闪存已写入一部分。":"The write did not finish and flash is partly written. ",
+"在重新写入成功之前不要重启设备。":"Do not reboot the device until a write succeeds.",
+"连接中断，写入可能未完成。":"The connection dropped and the write may be incomplete. ",
+"未收到设备回报，请查看「诊断」中的串口日志":"No word back from the device. Check the serial log under Diagnostics",
+"通过":"Passed",
+"回读校验没通过，闪存里的内容与上传的不一致。":"The read-back check failed: what is in flash differs from what was uploaded. ",
+"重新写入至成功之前不要重启设备。":"Do not reboot until a rewrite succeeds.",
+"即将完成…":"Almost done…",
+"回读校验":"Read-back check",
+"用时":"Took",
+"设备已写入完成":"The device finished writing",
+"闪存已写入。现在重启即以新内容启动；也可以留在本页面接着写别的。":"Flash is written. Reboot now to start from it, or stay on this page and write something else.",
+"闪存里仍然没有 U-Boot（fip 卷），此时重启将无法启动":"There is still no U-Boot in flash (the fip volume); a reboot now will not start",
+"写入":"Written",
+"回报":"Reply",
+"（无）":"(none)",
+"重建 UBI…":"Rebuilding UBI…",
+"写入 BL2…":"Writing BL2…",
+"写入 U-Boot…":"Writing U-Boot…",
+"写入 固件…":"Writing firmware…",
+"回读校验…":"Verifying…",
+"分区表":"Partition table",
+"可写空间":"Writable space",
+"引导":"Boot",
+"引导菜单":"Boot menu",
+"指示灯":"LEDs",
+"流水灯":"Chase LEDs",
+"环境":"Env volumes",
+"磨损":"Wear",
+"没有找到闪存设备":"No flash device found",
+"没有分区，只能按 flash 偏移读写":"No partitions; only raw flash-offset access works",
+"bl2 分区为空。断电后 BootROM 无法找到 BL2，请在「引导升级」页上传":"The bl2 partition is empty. After a power-off the BootROM cannot find BL2 — upload one on Bootloader",
+"未设置，设备不会自行引导。可在「环境变量」页恢复默认值":"Not set, so the device will not boot on its own. Restore the defaults on Environment",
+"与当前版本默认值一致":"Matches this version's default",
+"无条目":"No entries",
+"无法挂载，闪存上无可用的 UBI。首次迁移请在「引导升级」页启用「重建 UBI」，并同时上传 BL2、U-Boot 与固件":"Cannot be mounted; there is no usable UBI in flash. For a first migration, turn on Rebuild UBI on the Bootloader page and upload BL2, U-Boot and the firmware together",
+"已挂载但无法访问":"Mounted but not accessible",
+"UBI 已挂载但无法访问":"UBI is mounted but not accessible",
+"UBI 无法挂载，只能按 flash 偏移备份":"UBI cannot be mounted; only raw flash-offset backups are possible",
+"不存在。闪存中无 U-Boot，断电后无法启动，请在「引导升级」页上传 U-Boot 文件":"Missing. There is no U-Boot in flash, so the device will not start after a power-off — upload a U-Boot file on Bootloader",
+"不存在。闪存中无固件，请在「日常刷机」页上传":"Missing. There is no firmware in flash — upload one on Flash firmware",
+"无法读取镜像描述，仅能确认为 FIT 格式":"The image description cannot be read; only the FIT format could be confirmed",
+"镜像中无描述信息":"The image carries no description",
+"无法读取，卷不存在":"Cannot be read; the volume does not exist",
+"存在，无法读取内容":"Present, but the contents cannot be read",
+"不存在。U-Boot 环境无处保存，首次正常启动时自动创建":"Missing. The U-Boot environment has nowhere to live; it is created at the first normal boot",
+"已读取":"Read OK",
+"已读取，内容为空":"Read OK, but empty",
+"已读取，无有效 MAC":"Read OK, but no valid MAC in it",
+"ethaddr 不是有效地址":"ethaddr is not a valid address",
+"未启用 CONFIG_LED，救砖时指示灯不流水":"CONFIG_LED is off, so the LEDs will not chase during recovery",
+"另一个备份正在传输，请等待传输完成后重试":"Another backup is transferring. Wait for it to finish and try again",
+"正在写入闪存，这一项要等写完再改":"Flash is being written; this one has to wait until the write is done",
+"设备正在传输备份。请等待传输完成后再上传，或刷新页面放弃该次下载":"The device is transferring a backup. Wait for it to finish before uploading, or reload the page to abandon that download",
+"设备正在接收上传，请等待写入完成后再备份":"The device is receiving an upload. Wait for the write to finish before backing up",
+"设备正忙，等这次传输完成后再扫描":"The device is busy; scan again once this transfer is done",
+"卷名不合法":"Invalid volume name",
+"卷名缺失或过长":"The volume name is missing or too long",
+"没有 Content-Length":"No Content-Length",
+"读取失败，详见串口日志":"Read failed — see the serial log",
+"起始偏移超过闪存容量":"The start offset is past the flash size",
+"偏移加长度超过闪存容量":"Offset plus length is past the flash size",
+"内存不足，无法分配读取窗口":"Not enough memory for a read window",
+};
+var I18P={
+"没有挂载：至少 ":"Not attached: at least ",
+" 块是按别的 ECC 格式写的，为保护数据一块都没擦。可先备份，再重建 UBI 或强制挂载，见页面顶部":" blocks were written with another ECC layout. Nothing was erased, to keep the data. Back it up first, then rebuild UBI or attach anyway; see the top of the page",
+" 块是 UBI 没写过的数据，又没有 fip 卷，为保护数据一块都没擦。可先备份，再重建 UBI 或强制挂载，见页面顶部":" blocks hold data UBI did not write, and there is no fip volume. Nothing was erased, to keep the data. Back it up first, then rebuild UBI or attach anyway; see the top of the page",
+" 未备份 · ":" not backed up · ",
+"与本机一致":"matches this device",
+"本机是 ":"this device is ",
+"。宽度为各卷的预留容量，按卷 ID 排列；UBI 卷在闪存中并不连续，此图不表示物理位置":". Widths are each volume's reserved size, ordered by volume ID. UBI volumes are not contiguous in flash, so this is not a physical layout",
+" 个，其中 bl2 分区所在块已损坏，BootROM 可能无法读取 BL2：":" bad, including the block the bl2 partition sits in — the BootROM may fail to read BL2: ",
+" MiB；写入固件时会先删掉 fit 与 rootfs_data，再腾出 ":" MiB; writing firmware deletes fit and rootfs_data first, freeing another ",
+"。闪存已写入一部分，此时重启将无法启动。请重新写入至成功，其间不要断电":". Flash is partly written and a reboot now will not start. Write again until it succeeds, and keep the power on",
+" 个块读取失败，该部分以 0xff 填充，详见「诊断」中的串口日志":" block(s) could not be read and were filled with 0xff — see the serial log under Diagnostics",
+"U-Boot 设备树未在 /options/u-boot 声明 ":"The U-Boot device tree does not declare ",
+"设备正在传输备份。请等待传输完成后再上传，或刷新页面放弃该次下载":"The device is transferring a backup. Wait for it to finish before uploading, or reload the page to abandon that download",
+"获取成功后设备位于新地址，请在上级路由的客户端列表中按 ":"Once it has one, the device is at a new address — look it up in the upstream router's client list by ",
+"，加上写入时会腾出的 fit 与 rootfs_data":", plus the fit and rootfs_data freed on write",
+" 不同。重建 UBI 后常见，将备份的出厂卷写回即可":" in the factory data. Common after a UBI rebuild — just write the backed-up factory volume back",
+" 处无 BL2 镜像头，可能为原厂或第三方引导程序":" holds no BL2 image header — it may be a stock or third-party bootloader",
+" 不同。两份环境内容不一致，启动时使用较新的一份":" — the two copies differ, and the newer one is used at boot",
+"环境中无 ethaddr，本次启动使用随机地址 ":"No ethaddr in the environment; this boot uses the random address ",
+"，超过 bl2 分区自 0x800 起可写的 ":", more than the bl2 partition can take from 0x800 on: ",
+"请在上级路由的客户端列表中按 MAC 查找：":"Look it up by MAC in the upstream router's client list: ",
+"。当前打开本页面的主机用的就是设备发的地址。":". The machine viewing this page is on one of them.",
+"少量属正常；成片出现表明颗粒退化，应尽快备份":"A few are normal; a cluster of them means the die is decaying, so back up soon",
+"，覆盖 bootloader 及其后全部内容":", overwriting the bootloader and everything after it",
+"，接近 SLC 颗粒常见寿命，需留意坏块增长":", near the usual life of an SLC die — watch for new bad blocks",
+"本页面连接的是旧地址，不会自动恢复。请以 ":"This page is still on the old address and will not recover by itself. Reopen it at ",
+"环境中没有这一项，当前 U-Boot 为 ":"Not in the environment; the running U-Boot is ",
+"。引导菜单为旧版本，下次正常启动时自动刷新":". The boot menu is from an older version and refreshes at the next normal boot",
+" 个块读取失败，该部分以 0xff 填充":" block(s) could not be read and were filled with 0xff",
+"。ECC 无法纠正，这些位置的数据已丢失":". ECC could not fix them, so the data there is lost",
+"。不一定装得下一份固件；可先删掉不用的卷":". That may not fit a firmware image; delete volumes you do not need",
+"另一个备份正在传输，请等待传输完成后重试":"Another backup is transferring. Wait for it to finish and try again",
+"设备正在接收上传，请等待写入完成后再备份":"The device is receiving an upload. Wait for the write to finish before backing up",
+"偏移加镜像长度超过 flash 容量 ":"Offset plus image length is past the flash size, ",
+"写入 U-Boot 失败，详见串口日志":"Writing U-Boot failed — see the serial log",
+"没有分区，只能按 flash 偏移读写":"No partitions; only raw flash-offset access works",
+"不保存：只管本次开机，下次开机回到 ":"Not saved: this lasts until the next power-up, which goes back to ",
+"设备启动时的菜单，序号即串口上按的键":"The menu shown at boot; the number is the key pressed on the serial console",
+"本页面将断开，需以 http://":"This page will drop; reopen it at http://",
+"偏移加长度超过 flash 容量 ":"Offset plus length is past the flash size, ",
+" 秒内无按键则执行 bootcmd":" s without a keypress runs bootcmd",
+"），请重新上传 U-Boot 文件":"). Upload the U-Boot file again",
+"），卷内数据校验未通过，内容已损坏":"), and the volume's checksum failed — the contents are corrupt",
+"没有 Content-Length":"No Content-Length",
+"：本机这个地址马上就没人续租了，":": nothing will renew your computer's address any more, so ",
+" 查找。未取得租约时退回原地址。":". Without a lease it falls back to the old address.",
+"起始偏移超出 flash 容量 ":"The start offset is past the flash size, ",
+"当前主机用的是手动配置的 IP。":"your computer is on a manually configured IP.",
+"与当前版本默认值不同，已被修改：":"Differs from this version's default; modified: ",
+"。下次正常启动时自动刷新引导菜单":". The boot menu refreshes at the next normal boot",
+"写入 BL2 失败，详见串口日志":"Writing BL2 failed — see the serial log",
+"挂载 UBI 失败，详见串口日志":"Mounting UBI failed — see the serial log",
+"重建 UBI 失败，详见串口日志":"Rebuilding UBI failed — see the serial log",
+"内存不足以分配接收环，至少需要 ":"Not enough memory for the receive ring; at least ",
+"正在写入闪存，这一项要等写完再改":"Flash is being written; this one has to wait until the write is done",
+" 字节。固件不完整，请重新上传":" bytes. The firmware is incomplete — upload it again",
+"本机开始发地址：电脑将拿到 ":"This device starts handing out addresses; the computer will get ",
+" · 已截断，完整内容见串口":" · truncated; the full list is on the serial console",
+"卷内不是 FIT 镜像（头 ":"The volume does not hold a FIT image (header ",
+"，与当前 U-Boot 一致":", matches the running U-Boot",
+" 读回来的内容与上传的不一致":" read back differently from what was uploaded",
+"自 flash 偏移 0x":"Writes from flash offset 0x",
+" 块，镜像中对应内容未写入":" block(s); the matching parts of the image were not written",
+" 个，已由 UBI 避开：":" bad, all avoided by UBI: ",
+"，当前 U-Boot 为 ":", the running U-Boot is ",
+"写入固件失败，详见串口日志":"Writing the firmware failed — see the serial log",
+"整片写入失败，详见串口日志":"The whole-chip write failed — see the serial log",
+"内存不足，无法分配读取窗口":"Not enough memory for a read window",
+" 不存在时按文件长度创建":" will be created at the file's size if it does not exist",
+"，超过设备单次可接收的 ":", more than the device can take in one go: ",
+" 字节，超过它们覆盖的 ":" bytes, more than the ",
+"（本次读取已纠正位翻转）":" (bit flips were corrected on this read)",
+" 次地址，均未被接受；":" offer(s), none accepted; ",
+"空闲与 UBI 预留 ":"Free and UBI reserve ",
+"，超过 fip 卷的 ":", more than the fip volume's ",
+"：内存不足，设备将拒绝":" — not enough RAM, so it will be refused",
+" 字节没有划进任何分区":" bytes not covered by any partition",
+"bl2 分区读取失败（":"Reading the bl2 partition failed (",
+" 项，当前版本默认为 ":" entries; this version defaults to ",
+"卷内不是 FIP（头 ":"The volume does not hold a FIP (header ",
+" 个灯，一个也没有找到":" LEDs and not one was found",
+" 卷失败，详见串口日志":" volume failed — see the serial log",
+" 字节将超出闪存容量 ":" bytes would run past the flash size of ",
+"读取失败，详见串口日志":"Read failed - see the serial log",
+"偏移加长度超过闪存容量":"Offset plus length is past the flash size",
+"设备拒绝了本次备份：":"The device refused this backup: ",
+"。红色条目会写入闪存":". Red entries write to flash",
+" MiB：当前空闲 ":" MiB — free now ",
+" 页在读取时被纠正。":" page(s) were corrected on read. ",
+"写入偏移未按擦除块 ":"The write offset is not aligned to the erase block, ",
+"U-Boot 文件 ":"The U-Boot file is ",
+" 处有 BL2 镜像":" holds a BL2 image",
+"，救砖时指示灯不流水":" under /options/u-boot, so the LEDs will not chase during recovery",
+"起始偏移超过闪存容量":"The start offset is past the flash size",
+"需手动把本机配成 ":"set it manually to an address in ",
+"，最近一次分配给 ":", most recently to ",
+" 保留原有内容不动":" after the image keeps what is already there",
+" 的分区，无法检查":" among the partitions, so it cannot be checked",
+"），请重新上传固件":"). Upload the firmware again",
+"，与出厂数据中的 ":", differs from ",
+"DHCP 服务器":"DHCP server",
+"DHCP 客户端":"DHCP client",
+"正在读取并传送 ":"Reading and sending ",
+" · 写入时腾出":" · freed on write",
+"镜像之后剩余的 ":"The ",
+"回读校验没通过：":"The read-back check failed: ",
+"设备拒绝了上传（":"The device refused the upload (",
+"声明的大小合计 ":"declared sizes total ",
+" MiB 未划分":" MiB is unpartitioned",
+" 个逻辑擦除块）":" logical erase blocks)",
+" 字节，无法读取":" bytes and cannot be read",
+" 字节，卷内仅 ":" bytes but the volume holds only ",
+" 字节，校验通过":" bytes, checksum OK",
+"，与出厂数据一致":", matches the factory data",
+"已读取，MAC ":"Read OK, MAC ",
+"（闪存尚未改动）":" (flash was not modified)",
+"没有找到闪存设备":"No flash device found",
+" 个文件 · ":" file(s) · ",
+"设备没有接受：":"The device did not accept it: ",
+"下次开机回到 ":"The next power-up goes back to ",
+"UBI 预留 ":"UBI reserve ",
+" · 擦除块 ":" · erase block ",
+" 项异常 · ":" fail · ",
+" 项注意 · ":" warn · ",
+"扫描没能进行（":"The scan could not run (",
+" 将被擦成空白":" after the image will be erased blank",
+"BL2 文件 ":"The BL2 file is ",
+"设备写入失败（":"The device failed to write (",
+" 个卷，坏块 ":" volumes, ",
+" 个逻辑擦除块":" free logical erase blocks",
+"擦写次数最大 ":"Erase count max ",
+"FIT 镜像，":"FIT image, ",
+"存在，CRC ":"Present, CRC ",
+" 个没有找到）":" not found)",
+" 未按擦除块 ":" is not aligned to the erase block ",
+"卷名缺失或过长":"The volume name is missing or too long",
+"（出厂默认）":" (factory default)",
+" · 电脑 ":" · computer ",
+"/ 重新打开":"/",
+" 的一个地址":"",
+"设备已移至 ":"The device moved to ",
+" 重新打开。":".",
+" 块读取失败":" unreadable block(s)",
+"空闲与预留 ":"Free and reserve ",
+"逻辑擦除块 ":"Logical erase block ",
+"。刷机可用 ":". Available for flashing: ",
+" · 剩余 ":" · left ",
+" 页无法读出":" page(s) could not be read",
+"连续覆盖整片":"contiguous over the whole chip",
+" 个，空闲 ":" bad blocks, ",
+"。当前空闲 ":". Free now ",
+"，实际写入 ":", wrote ",
+"请求头超过 ":"The request header is longer than ",
+"下次开机：":"Next power-up: ",
+"设置失败（":"Arming failed (",
+"读至片尾，":"Reads to the end of the chip, ",
+"传输完成；":"Transfer complete; ",
+" 起的区段":" onwards",
+"恢复失败（":"Restore failed (",
+" · 页 ":" · page ",
+"（擦除块 ":" (erase block ",
+"扫描完成，":"Scan finished; ",
+"读取失败（":"Read failed (",
+" 起写入 ":" onwards: ",
+"本次上传 ":"This upload is ",
+"正在写入 ":"Writing ",
+"正在上传 ":"Uploading ",
+"预计还需 ":"About ",
+"回读校验 ":"Verifying ",
+"没有名为 ":"There is nothing named ",
+" 个分区，":" partitions; ",
+" 之间有 ":" has ",
+"连续覆盖 ":"contiguous over ",
+"片上其余 ":"the chip's other ",
+"，擦除块 ":", erase block ",
+"，OOB ":", OOB ",
+"刷机可用 ":"Available for flashing: ",
+"闪存中为 ":"Flash holds ",
+"镜像声明 ":"The image declares ",
+"存在，与 ":"Present, matches ",
+" 声明了 ":" declares ",
+"（声明了 ":" (declares ",
+" 个，有 ":", ",
+"写入偏移 ":"The write offset ",
+"卷名不合法":"Invalid volume name",
+"长度为 0":"The length is 0",
+"静态地址":"Static address",
+"已发出 ":"Handed out ",
+" 个地址":" address(es)",
+" 全双工":" full duplex",
+" 半双工":" half duplex",
+" 项正常":" ok",
+" 字节）":" bytes)",
+"：有重叠":" they span: they overlap",
+"擦除块 ":"erase block ",
+" 失败（":" failed (",
+"读不回 ":"could not read back ",
+"已选 ":"Selected ",
+"设备 ":"Device ",
+"端口 ":"Port ",
+"空闲 ":"Free ",
+"全部 ":"All ",
+" 个：":": ",
+" 页：":" page(s): ",
+" 对齐":"",
+"预计 ":"About ",
+"跳过 ":"Skipped ",
+" 块）":" block(s))",
+"写入 ":"Writing ",
+" 的卷":" among the volumes",
+"，页 ":", page ",
+"平均 ":"average ",
+"卷内 ":"The volume holds ",
+" 一致":"",
+"，与 ":", differs from ",
+" 的 ":"'s ",
+"擦除 ":"Erasing ",
+" 字节":" bytes",
+" 卷":" volume",
+" 项":" entries",
+"卷 ":"Volume ",
+" 块":" block(s)",
+"页 ":"page ",
+"自 ":"From ",
+"）：":"): ",
+"；":"; ",
+"、":", ",
+"（":" (",
+"）":")",
+"，":", ",
+"这颗闪存自己做 ECC，整片备份不带 OOB":"This flash does its own ECC; its whole-chip backup carries no OOB",
+"偏移与长度须按页对齐":"Offset and length must be page-aligned",
+"这颗闪存自己做 ECC，不用选镜像格式":"This flash does its own ECC; no image format applies",
+"原厂闪存格式缺失或与这颗闪存不符":"The stock flash format is missing or does not fit this chip",
+"内存不足":"Out of memory",
+"带 OOB 的镜像 ":"The image with OOB is ",
+"，不是整数个 ":", not a whole number of ",
+" 字节的页":"-byte pages",
+};
+/* i18n-dict end */
+var LANG='zh',I18RE=null,I18R=null,I18ON=0,
+I18A=['title','aria-label','placeholder','data-l'],
+CJK=/[\u4e00-\u9fff]/;
+function i18re(){var k=[],x;for(x in I18P)k.push(x);
+k.sort(function(a,b){return b.length-a.length});
+I18RE=k.length?new RegExp(k.map(function(s){
+return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}).join('|'),'g'):null}
+/* 诊断导出的那几行不进 DOM，只能显式过一道 */
+function T(s){return LANG=='en'?i18s(s):s}
+function i18s(s){var e=I18N[s];if(e!==undefined)return e;
+return I18RE?s.replace(I18RE,function(m){return I18P[m]}):s}
+function i18text(n){var s=n.data,r;if(!s||!CJK.test(s))return;
+r=i18s(s);if(r!=s){if(n.zh0===undefined)n.zh0=s;n.data=r}}
+function i18attr(e,a){var s=e.getAttribute&&e.getAttribute(a),r;
+if(!s||!CJK.test(s))return;
+r=i18s(s);if(r!=s){if(e['zh0_'+a]===undefined)e['zh0_'+a]=s;e.setAttribute(a,r)}}
+/* script 与 style 的正文也是文本节点，注释里全是中文，别去动它 */
+function i18skip(n){var t=n.tagName;
+return t=='SCRIPT'||t=='STYLE'||n.hasAttribute('data-raw')}
+function i18on(n){var c;
+if(n.nodeType==3){i18text(n);return}
+if(n.nodeType!=1||i18skip(n))return;
+I18A.forEach(function(a){if(n.hasAttribute(a))i18attr(n,a)});
+for(c=n.firstChild;c;c=c.nextSibling)i18on(c)}
+/*
+ * 还原以节点上存的原文为准。但有几处是把当时的文字先存进变量、过后再写回去的
+ * （复制按钮、提交按钮的原标题），那份文字在英文下存的就是英文，写回来的是个
+ * 新节点、身上没有原文。对这种整段相等的再按英文反查一次 —— 只认整段，不碰
+ * 片段，设备日志里的英文单词才不会被换掉。
+ */
+function i18rev(){I18R={};for(var k in I18N)I18R[I18N[k]]=k}
+function i18off(n){var c,b;
+if(n.nodeType==3){if(n.zh0!==undefined){n.data=n.zh0;n.zh0=undefined}
+else if(I18R&&(b=I18R[n.data])!==undefined)n.data=b;
+return}
+if(n.nodeType!=1||i18skip(n))return;
+I18A.forEach(function(a){var k='zh0_'+a;
+if(n[k]!==undefined){n.setAttribute(a,n[k]);n[k]=undefined}});
+for(c=n.firstChild;c;c=c.nextSibling)i18off(c)}
+/* 插进来的是文本节点时 i18on 看不到它的父元素，data-raw 得往上找 */
+function i18inraw(n){for(n=n.parentNode;n&&n.nodeType==1;n=n.parentNode)
+if(i18skip(n))return true;return false}
+var I18OB=window.MutationObserver?new MutationObserver(function(rs){
+if(!I18ON)return;var i,j,r;
+for(i=0;i<rs.length;i++){r=rs[i];
+if(r.type=='characterData'){if(!i18inraw(r.target))i18text(r.target)}
+else if(r.type=='attributes')i18attr(r.target,r.attributeName);
+else if(!i18inraw(r.addedNodes[0]||r.target))
+for(j=0;j<r.addedNodes.length;j++)i18on(r.addedNodes[j])}}):null;
+function setlang(l){
+$$('.lg button').forEach(function(b){
+b.setAttribute('aria-checked',b.getAttribute('data-g')==l?'true':'false')});
+if(l==LANG)return;LANG=l;
+try{localStorage.setItem('xglang',l)}catch(e){}
+document.documentElement.setAttribute('lang',l);
+if(l=='en'){if(!I18RE)i18re();I18ON=1;i18on(document.body);
+if(I18OB)I18OB.observe(document.body,{childList:true,subtree:true,
+characterData:true,attributes:true,attributeFilter:I18A})}
+else{I18ON=0;if(I18OB)I18OB.disconnect();if(!I18R)i18rev();i18off(document.body)}}
+/* 没选过就照浏览器的语言挑一次；点过之后以点的为准 */
+try{if((localStorage.getItem('xglang')||(/^zh/i.test(navigator.language||'')?'zh':'en'))=='en')setlang('en')}catch(e){}
+bind();info();hbstart();
+</script>
+<!--#if PNAND-->
+<script data-pn>
+/*
+ * 并口 NAND 的那一半，只编进带并口 NAND 驱动的 U-Boot。字典在这里补进主脚本的
+ * I18N / I18P；主脚本末尾可能已经按浏览器语言切到了英文，补完重翻一遍。
+ */
+var I18N_PN={
+"原厂格式":"Stock format",
+"这台连 OOB 一起原样读出":"This board reads raw, OOB included",
+"，每页 ":": each page is ",
+" 字节，不做 ECC 校验。原厂当初写下的校验码随文件保留，所以原样写回后原厂读得懂；":" bytes, with no ECC check. The check bytes the stock firmware wrote stay in the file, so the stock firmware reads it after a raw write-back; ",
+"只能写回本机":"it only goes back to this unit",
+"。偏移与长度按 flash 计，须按页对齐。":". Offset and length count flash bytes and must be page-aligned.",
+"原厂系统里 ":"An image ",
+"用 dd 备份核对":"Verify against a dd backup",
+"「用 dd 备份核对」可选：选一份原厂系统里 dd 出来的整片备份，确认坏块标记的位置，并找出原厂挪动过的块。":"“Verify against a dd backup” is optional: pick a whole-chip backup dd'd on the stock system to confirm where the bad-block marker sits and find the blocks the stock firmware moved.",
+"dd 备份":"dd backup",
+"镜像格式":"Image format",
+"选择文件后按大小自动判断":"Picked from the file size once a file is chosen",
+"状态":"State",
+"格式":"Format",
+"依据":"Basis",
+"保存":"Save",
+"已识别":"Detected",
+"未识别：闪存已不是原厂内容":"Not detected: flash no longer holds the stock content",
+"本机型的已知格式":"The known format for this model",
+"内置于本 U-Boot":"Built into this U-Boot",
+"已存入环境变量":"Stored in the environment",
+"重建 UBI 后自动保存":"Saved automatically once UBI is rebuilt",
+"连 OOB 原样写回":"Written back raw, OOB included",
+"，只能写回备份它的这台机器。":"; it only goes back to the unit it was backed up from.",
+"没有用 dd 备份核对过，坏块标记的位置未确认。":"Not verified against a dd backup, so the bad-block marker position is unconfirmed.",
+"原厂闪存格式未识别":"The stock flash format is not known",
+"先选择 dd 备份":"Choose a dd backup first",
+"正在读取样本页…":"Reading sample pages…",
+"设备没有给出样本页":"The device gave no sample pages",
+"文件太小，没有覆盖到任何一页样本":"The file is too short to cover any sample page",
+"读取文件失败":"Could not read the file",
+"正在比对…":"Comparing…",
+"设备没有给出比对结果":"The device gave no result",
+"连 OOB 原样写入，只能写回备份它的这台机器":"Written raw, OOB included; it only goes back to the unit it was backed up from",
+"原厂闪存格式已识别，重建 UBI 后自动保存":"The stock flash format is detected and will be saved once UBI is rebuilt",
+" 出来的镜像不带 OOB，写回时要按原厂闪存格式重算校验码。":"'d from the stock system has no OOB, so its check bytes have to be recomputed in the stock flash format on the way back. ",
+"自动识别只能在首次迁移前做":"Detection only works before the first migration",
+"，那时闪存还是原厂内容；参数也可以手动填写。":", while flash still holds the stock content. The parameters can also be filled in by hand.",
+"参数":"Parameters",
+"自动识别的结果填在这里，也可以手动改":"Detection fills these in; they can also be changed by hand",
+"自动识别":"Detect",
+"用这组参数试读":"Test-read with these",
+"存放":"Stored",
+"带 OOB":"With OOB",
+"由「备份下载 → 整片下载」导出的文件":"A file from Backup → Download whole chip",
+"不带 OOB":"Without OOB",
+"原厂系统里 dd 出来的文件":"A file dd'd from the stock system",
+"重算校验码的参数":"Parameters for the check bytes",
+"默认取「备份下载 → 原厂格式」里的":"Taken from Backup → Stock format unless changed",
+"ECC 强度":"ECC strength",
+"每 512 字节能纠正的位数":"Bits it can correct per 512 bytes",
+"每扇区 spare":"Spare per sector",
+"跟在每 512 字节后面的字节数":"Bytes that follow each 512 bytes of data",
+"数据取反":"Data inversion",
+"校验前是否先把数据按位取反":"Whether the data is bit-inverted before the check bytes are computed",
+"关":"Off",
+"开":"On",
+"FDM 字节数":"FDM bytes",
+"spare 里存放用户数据的字节数":"Bytes of the spare that hold user data",
+"参与校验的 FDM":"FDM covered by ECC",
+"FDM 里被校验码覆盖的字节数":"FDM bytes the check bytes cover",
+"坏块标记交换":"Bad-block marker swap",
+"页内一个数据字节与 OOB 第一个字节对调":"One data byte in the page trades places with the first OOB byte",
+"已手动设置":"Set by hand",
+"未识别：所有参数都读不通，原厂可能没用 SoC 的 ECC。可以手动填写，或改用带 OOB 的整片备份":"Not detected: no parameters read the stock pages, so the stock firmware may not use the SoC's ECC. Fill them in by hand, or use a whole-chip backup with OOB",
+"未识别：闪存已不是原厂内容，可以手动填写":"Not detected: flash no longer holds the stock content. The parameters can be filled in by hand",
+"手动填写":"Filled in by hand",
+"已存入环境变量 web_uboot_stock_nand":"Stored in the environment as web_uboot_stock_nand",
+"正在自动识别…":"Detecting…",
+"设备没有给出识别结果":"The device gave no detection result",
+"识别完成，参数已填入":"Detected; the parameters are filled in",
+"所有参数都读不通原厂写的页":"No parameters read the pages the stock firmware wrote",
+"闪存已不是原厂内容，无法自动识别":"Flash no longer holds the stock content, so nothing can be detected",
+"正在试读…":"Test-reading…",
+"设备没有给出试读结果":"The device gave no test-read result",
+"已记下，重建 UBI 后自动保存":"Noted; saved automatically once UBI is rebuilt",
+"参数不成立，先改好上面的参数":"The parameters do not add up. Fix them above first",
+"参与校验的 FDM 字节数不能多于 FDM 字节数":"FDM covered by ECC cannot exceed the FDM bytes",
+"按上面这组参数重算校验码后写入。":"The check bytes are recomputed with the parameters above before writing. ",
+"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。":"The stock format was never detected and these parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is written.",
+"这组参数与「原厂格式」里的不同，只用于这次写入。":"These differ from the ones under Stock format and are used for this write only.",
+"已用 dd 备份核对过。":"Verified against a dd backup.",
+"原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了":"The stock format was never detected and these parameters were filled in by hand: if they are wrong, the stock firmware cannot read what is written",
+"这组参数与「原厂格式」里的不同，只用于这次写入":"These differ from the ones under Stock format and are used for this write only",
+"没有用 dd 备份核对过，坏块标记的位置未确认":"Not verified against a dd backup, so the bad-block marker position is unconfirmed",
+"全部对不上：这不是本机的 dd 备份，或者这组参数不对":"Nothing matches: this is not a dd backup of this unit, or the parameters are wrong",
+"原厂闪存格式未识别：以后用 dd 备份刷回原厂要手动填参数；带 OOB 的整片备份不受影响":"The stock flash format is not known: restoring stock from a dd backup will need the parameters filled in by hand. A whole-chip backup with OOB is not affected",
+"已迁移的机器上，「保存」会立即写入 U-Boot 环境；首次迁移前只记在内存里，重建 UBI 后自动写入。":"On a migrated board, Save writes to the U-Boot environment right away. Before the first migration it is only kept in RAM and written once UBI is rebuilt.",
+};
+var I18P_PN={
+" · 数据取反关":" · data inversion off",
+" · 数据取反开":" · data inversion on",
+" 字节，其中 ":" bytes, ",
+" 字节参与校验":" of them covered by ECC",
+" · 坏块标记交换关":" · bad-block marker swap off",
+" · 坏块标记交换开":" · bad-block marker swap on",
+"与 dd 备份比对 ":"Matches the dd backup on ",
+" 页一致":" pages",
+"抽样 ":"All ",
+" 页全部读通":" sampled pages read",
+"正在计算 ":"Computing crc32 of ",
+" 页的 crc32…":" pages…",
+"一致，可以用这份 dd 备份刷回原厂":"Matches: this dd backup can restore stock",
+"（文件比闪存小，只核对了它覆盖的部分）":" (the file is shorter than flash; only the part it covers was checked)",
+" 个块对不上：":" blocks do not match: ",
+"。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对":". The stock firmware moved them elsewhere (bad-block remapping), so after a write-back they sit in the wrong place",
+"偏移与长度须按页 ":"Offset and length must be aligned to the page, ",
+"（连 OOB）":" (with OOB)",
+"带 OOB 的镜像长度应为 ":"An image with OOB must be a multiple of ",
+" 的整数倍（一个擦除块连 OOB）":" (one erase block with its OOB)",
+" 组参数都能读通原厂写的页，需用 dd 备份核对区分":" sets of parameters read the stock pages; verify against a dd backup to tell them apart",
+"（纠正了 ":" (",
+" 个位翻转）":" bit flips corrected)",
+" 页读通：参数多半不对":" pages read: the parameters are most likely wrong",
+" 页全部读不通":" pages: none read",
+"：闪存已不是原厂内容，试读说明不了什么":". Flash no longer holds the stock content, so a test read proves nothing",
+" 字节超过每个扇区能分到的 OOB ":" bytes is more than the OOB each sector gets, ",
+" 的校验码 ":" check bytes of ",
+" 字节加上 FDM ":" bytes plus FDM of ",
+" 字节，超过 spare ":" bytes exceed the spare of ",
+"按这组参数重算校验码：":"Check bytes recomputed with these parameters: ",
+};
+(function(){var k;for(k in I18N_PN)I18N[k]=I18N_PN[k];for(k in I18P_PN)I18P[k]=I18P_PN[k];
+if(I18RE)i18re();if(I18R)i18rev();
+/* 已按缺了这部分的字典翻过的节点，片段替换可能已经改掉一半：先还原成中文再整页重翻 */
+if(I18ON){i18off(document.body);i18on(document.body)}})();
+/*
+ * 并口 NAND（/info 的 flash.cecc）：ECC 由 SoC 按设定计算，原厂与本 U-Boot 的
+ * 设定不同，只读写数据的整片备份在原厂内容上读出来是空洞、写回去原厂读不懂。
+ * 所以这种闪存的整片备份连 OOB 原样读写；原厂系统 dd 出来的只有数据，要按识别
+ * 出的原厂格式（/info 的 sfmt）重算校验码。SPI NAND 由芯片自己算，这些都不出现。
+ */
+function cecc(){var f=INFO&&INFO.flash;return !!(f&&f.cecc&&f.oob)}
+/* flash 上 n 字节在带 OOB 的文件里有多长，反过来也一样 */
+function rawlen(n){var f=INFO.flash;return n/f.page*(f.page+f.oob)}
+function flashlen(n){var f=INFO.flash;return n/(f.page+f.oob)*f.page}
+function oobmode(){var c=cecc(),f=INFO&&INFO.flash;
+$$('[data-oob]').forEach(function(e){e.hidden=(e.getAttribute('data-oob')=='1')!=c});
+$('#sftab').hidden=!c;
+if(c)$$('.oobpg').forEach(function(e){e.textContent=f.page+' + '+f.oob});
+if(!c&&$('#s103').hasAttribute('data-on'))seg($('[data-s=s101]'));
+if(c){sfinit();sffill();sfform()}stfmtnote()}
+/*
+ * 原厂格式的参数。SF 是两处参数框共用的那一份：「原厂格式」里改、「刷回原厂」
+ * 里改都改它，所以两边永远一致。设备报来的（自动识别、dd 核对、保存过的）
+ * 只在第一次、以及设备那边换了一份的时候覆盖它；用户改过的不被轮询冲掉。
+ * spare 是每个 512 字节扇区后面跟的字节数，校验码与 FDM 都在里面。
+ */
+var SF=null,SFSEEN='';
+var SFDEF={ecc:8,spare:28,inv:1,fdm:8,fecc:8,swap:0};
+function sfkey(s){return [s.ecc,s.spare,s.inv,s.fdm,s.fecc,s.swap==null?'':s.swap].join('.')}
+function sfinit(){var s=INFO&&INFO.sfmt,k,x;
+if(s&&s.ecc){k=sfkey(s);if(k!=SFSEEN){SFSEEN=k;SF={};for(x in SFDEF)SF[x]=s[x]==null?SFDEF[x]:s[x]}}
+if(!SF){SF={};for(x in SFDEF)SF[x]=SFDEF[x]}}
+function sfsaved(){var s=INFO&&INFO.sfmt;return s&&s.ecc?s:null}
+/* 坏块标记交换没核对过（null）时不算差别：参数框里只是先填了个「关」 */
+function sfsame(){var s=sfsaved(),x;if(!s)return false;
+for(x in SFDEF)if(!(x=='swap'&&s.swap==null)&&s[x]!=SF[x])return false;return true}
+function sfok(){var s=INFO&&INFO.sfmt;return !!(s&&s.st=='ok')}
+function sfdesc(s){return 'ECC'+s.ecc+' · spare '+s.spare+' · 数据取反'+(s.inv?'开':'关')+' · FDM '+s.fdm+' 字节，其中 '+s.fecc+' 字节参与校验'
++(s.swap==null?'':' · 坏块标记交换'+(s.swap?'开':'关'))}
+/* 校验码 13 位一档，按字节取整；和 FDM 一起得装进 spare，spare 又不能超过 OOB 均摊到每个扇区的量 */
+function sfbad(s){var f=INFO.flash,room=f.oob/(f.page/512),par=Math.ceil(s.ecc*13/8);
+if(s.spare>room)return 'spare '+s.spare+' 字节超过每个扇区能分到的 OOB '+room+' 字节';
+if(s.fecc>s.fdm)return '参与校验的 FDM 字节数不能多于 FDM 字节数';
+if(s.fdm+par>s.spare)return 'ECC'+s.ecc+' 的校验码 '+par+' 字节加上 FDM '+s.fdm+' 字节，超过 spare '+s.spare+' 字节';
+return ''}
+function sfopt(v,list,cur){return list.map(function(x){return '<option value="'+x[0]+'"'+(x[0]==cur?' selected':'')+'>'+x[1]+'</option>'}).join('')}
+function sfrange(a,b,st,unit){var r=[],i;for(i=a;i<=b;i+=st)r.push([i,unit?i+unit:String(i)]);return r}
+/* 两个参数框同一个样子，只是 id 前缀不同 */
+function sfform(){['sfp1','sfp2'].forEach(function(id){var b=$('#'+id),h='';if(!b)return;
+[['ecc','ECC 强度','每 512 字节能纠正的位数',sfrange(4,16,2).map(function(x){return [x[0],'ECC'+x[0]]})],
+['spare','每扇区 spare','跟在每 512 字节后面的字节数',[[16,'16 字节'],[26,'26 字节'],[27,'27 字节'],[28,'28 字节']]],
+['inv','数据取反','校验前是否先把数据按位取反',[[0,'关'],[1,'开']]],
+['fdm','FDM 字节数','spare 里存放用户数据的字节数',sfrange(0,8,1,' 字节')],
+['fecc','参与校验的 FDM','FDM 里被校验码覆盖的字节数',sfrange(0,8,1,' 字节')],
+['swap','坏块标记交换','页内一个数据字节与 OOB 第一个字节对调',[[0,'关'],[1,'开']]]].forEach(function(r){
+h+='<div class=fr><span class=fl>'+r[1]+'<small>'+r[2]+'</small></span><span class=fc><select data-k="'+r[0]+'" onchange="sfset(this)">'+sfopt(0,r[3],SF[r[0]])+'</select></span></div>'});
+b.innerHTML=h});sfcheckv()}
+function sfset(e){var k=e.getAttribute('data-k');SF[k]=+e.value;
+$$('select[data-k='+k+']').forEach(function(x){x.value=e.value});sfcheckv();stfmtnote()}
+/* 参数不成立就把话说在参数框底下，按钮也跟着灰掉 */
+function sfcheckv(){var m=sfbad(SF),n=$('#sfv1');
+$$('.fsv').forEach(function(e){e.textContent=sfdesc(SF)});if(m)sfopen('bad '+m);
+n.hidden=!m;n.className='note bad';n.innerHTML=m?'<b>'+esc(m)+'</b>':'';
+$('#sft').disabled=!!m||!!SFRUN;$('#sfs').disabled=!!m||!!SFRUN||sfsame()&&!!sfsaved().saved}
+/* 自动识别、dd 核对、试读、保存共用按钮那一行说结果：一个在跑，其余都等着，免得两句话互相盖掉 */
+var SFRUN=0;
+function sfbusy(on){SFRUN=on;$('#sfa').disabled=$('#sfb').disabled=!!on;sfcheckv()}
+/* 结果那一行带颜色：ok 绿、warn 橙、bad 红 */
+function sfst(id,cls,t){var e=$(id);e.className='st wrap'+(cls?' '+cls:'');e.textContent=t}
+/*
+ * 参数框默认收起。识别不出、参数不成立时替用户打开一次；每种情形只开
+ * 一次（记下开过的，两种情形同时在也不来回弹），用户再收起就不跟他抢。
+ */
+var SFOPEN={};
+function sfopen(k){if(SFOPEN[k])return;SFOPEN[k]=1;$$('.fold').forEach(function(d){d.open=true})}
+function sffill(){var t=$('#sfmt'),s=INFO&&INFO.sfmt,h='',c,v;if(!t||!cecc())return;
+if(!s)s={st:'na'};
+if(s.st!='ok')sfopen(s.st);
+c=s.st=='ok'?0:s.st=='none'?2:1;
+v=s.st=='ok'?(s.src=='manual'?'已手动设置':'已识别')
+:s.st=='amb'?(s.k|0)+' 组参数都能读通原厂写的页，需用 dd 备份核对区分'
+:s.st=='none'?'未识别：所有参数都读不通，原厂可能没用 SoC 的 ECC。可以手动填写，或改用带 OOB 的整片备份'
+:'未识别：闪存已不是原厂内容，可以手动填写';
+h+='<tr><td>状态</td><td class=s'+c+'><span class="dot s'+c+'"></span>'+esc(v)+'</td></tr>';
+if(s.ecc)h+='<tr><td>参数</td><td class=mono>'+esc(sfdesc(s))+'</td></tr>'
++'<tr><td>依据</td><td>'+esc(s.src=='board'?'本机型的已知格式':s.src=='dd'?'与 dd 备份比对 '+s.n+' 页一致':s.src=='manual'?'手动填写':'抽样 '+s.n+' 页全部读通')+'</td></tr>'
++'<tr><td>存放</td><td'+(s.saved||s.src=='board'?'':' class=s1')+'>'+esc(s.src=='board'?'内置于本 U-Boot':s.saved?'已存入环境变量 web_uboot_stock_nand':INFO.ubi?'未保存':'重建 UBI 后自动保存')+'</td></tr>';
+t.innerHTML=h}
+function sfgo(){nav($('.nav[data-p=p10]'));seg($('[data-s=s103]'));return false}
+function sfp(s){return [s.ecc,s.spare,s.inv,s.fdm,s.fecc,s.swap].join(',')}
+/* 设备那边换了一份 sfmt（识别、核对、保存）：收下，参数框跟着它走 */
+function sftake(x){if(!x)return;INFO.sfmt=x;SFSEEN='';SF=null;sfinit();sffill();sfform();stfmtnote()}
+function sfauto(){sfbusy(1);sfst('#sfh','','正在自动识别…');
+get('/sfmt?probe=1',function(st,t){var r=null;sfbusy(0);try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.st){sfst('#sfh','bad','设备没有给出识别结果');return}
+if(r.st=='ok'){sftake(r.sfmt);sfst('#sfh','ok','识别完成，参数已填入')}
+else if(r.st=='amb')sfst('#sfh','warn',(r.k|0)+' 组参数都能读通原厂写的页，需用 dd 备份核对区分')
+else if(r.st=='none')sfst('#sfh','bad','所有参数都读不通原厂写的页')
+else sfst('#sfh','warn','闪存已不是原厂内容，无法自动识别')})}
+function sftry(){sfbusy(1);sfst('#sfh','','正在试读…');
+get('/sfmt?try='+sfp(SF),function(st,t){var r=null;sfbusy(0);try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.n){sfst('#sfh','bad','设备没有给出试读结果');return}
+if(r.ok==r.n)sfst('#sfh','ok',r.n+' 页全部读通'+(r.fix?'（纠正了 '+r.fix+' 个位翻转）':''));
+else if(r.ok)sfst('#sfh','warn',r.ok+' / '+r.n+' 页读通：参数多半不对');
+else sfst('#sfh','bad',r.n+' 页全部读不通'+(INFO.sfmt&&INFO.sfmt.st=='na'?'：闪存已不是原厂内容，试读说明不了什么':''))})}
+function sfsave(){sfbusy(1);
+get('/sfmt?save='+sfp(SF),function(st,t){var r=null;sfbusy(0);try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.sfmt){sfst('#sfh','bad','设备没有接受：'+((t||'').trim()||st));return}
+sftake(r.sfmt);sfst('#sfh',r.sfmt.saved?'ok':'warn',r.sfmt.saved?'已存入环境变量':'已记下，重建 UBI 后自动保存')})}
+/* 刷回原厂那一页：选哪种文件、用哪组参数，说明跟着走；no-stock 构建里这些元素都不在 */
+function stfv(){var r=$('[name=stfmt]:checked');return r?r.value:'oob'}
+function stfmtset(u){var r=$('[name=stfmt]:checked');if(u&&r)r.dataset.t=1;stfmtnote()}
+function stfmtnote(){var n=$('#stfn'),w=$('#stpw'),dd,s=sfsaved();if(!n||!w||!cecc())return;
+dd=stfv()=='dd';w.hidden=!dd;
+if(!dd){n.className='note ok';n.innerHTML='<b>连 OOB 原样写回</b>，只能写回备份它的这台机器。';return}
+var m=sfbad(SF);
+if(m){n.className='note bad';n.innerHTML='<b>'+esc(m)+'</b>';return}
+n.className='note'+(s&&s.st=='ok'&&sfsame()&&s.src=='dd'?' ok':'');
+n.innerHTML='<b>按上面这组参数重算校验码后写入。</b>'
++(!s||s.st!='ok'?'原厂格式没有识别过，这组参数是手动填写的：填错了写进去原厂读不了。'
+:!sfsame()?'这组参数与「原厂格式」里的不同，只用于这次写入。'
+:s.src!='dd'?'没有用 dd 备份核对过，坏块标记的位置未确认。':'已用 dd 备份核对过。')}
+/* 两种整片文件大小不同：带 OOB 的每页多出 oob 字节。用户亲手选过就不再猜 */
+function stguess(f){var F=INFO&&INFO.flash,rb,v='',r;if(!cecc())return;
+r=$('[name=stfmt]:checked');if(r&&r.dataset.t)return;
+rb=rawlen(F.erase);
+if(f.size==rawlen(F.size))v='oob';else if(f.size==F.size)v='dd';
+else if(f.size%rb==0&&f.size%F.erase)v='oob';else if(f.size%F.erase==0&&f.size%rb)v='dd';
+if(v)$$('[name=stfmt]').forEach(function(x){x.checked=x.value==v});
+stfmtnote()}
+/*
+ * 用 dd 备份核对：设备挑出读得通的样本页，这边从文件同一偏移各取一页算 crc32
+ * 交回去，设备拿按这组参数解出的内容比（坏块标记交换与否两种排法都比）。
+ * 只读不写；文件不上传，只传几十个 crc32。
+ */
+var CRCT=null;
+function crc32(u){var t=CRCT,c,i,j;if(!t){t=CRCT=[];for(i=0;i<256;i++){c=i;for(j=0;j<8;j++)c=c&1?0xedb88320^(c>>>1):c>>>1;t[i]=c>>>0}}
+c=-1;for(i=0;i<u.length;i++)c=t[(c^u[i])&255]^(c>>>8);return (c^-1)>>>0}
+/* 每次先清空，同一份文件再选一次也会触发 change */
+function sfddpick(){var i=$('#sfdd');i.value='';i.click()}
+function sfcheck(){var i=$('#sfdd'),f=i&&i.files&&i.files[0],F=INFO&&INFO.flash;
+if(!f){sfst('#sfh','warn','先选择 dd 备份');return}
+if(sfbad(SF)){sfst('#sfh','bad','参数不成立，先改好上面的参数');return}
+sfbusy(1);sfst('#sfh','','正在读取样本页…');
+get('/sfmt',function(st,t){var r=null,pg,out=[],k=0;try{r=JSON.parse(t)}catch(e){}
+if(!r||!r.pages){sfbusy(0);sfst('#sfh','bad','设备没有给出样本页');return}
+pg=r.pages.filter(function(o){return o+F.page<=f.size});
+if(!pg.length){sfbusy(0);sfst('#sfh','bad','文件太小，没有覆盖到任何一页样本');return}
+sfst('#sfh','','正在计算 '+pg.length+' 页的 crc32…');
+(function nx(){if(k>=pg.length){sfsend(out,pg.length<r.pages.length);return}
+var rd=new FileReader(),o=pg[k];
+rd.onload=function(){out.push(o.toString(16)+':'+crc32(new Uint8Array(rd.result)).toString(16));k++;nx()};
+rd.onerror=function(){sfbusy(0);sfst('#sfh','bad','读取文件失败')};
+rd.readAsArrayBuffer(f.slice(o,o+F.page))})()})}
+/*
+ * 设备只收 320 字节以内的请求行，所以 crc32 分批送，一批 8 页；比完了由这边汇总。
+ * 全部对上才让设备记下「与 dd 备份比对一致」，坏块标记交换也就定了。
+ */
+function sfsend(list,part){var F=INFO.flash,n=list.length,s0=0,s1=0,bad=[],i=0;
+sfst('#sfh','','正在比对…');
+(function nx(){if(i>=n){fin();return}
+var sl=list.slice(i,i+8);i+=8;
+get('/sfmt?p='+sfp(SF)+'&chk='+sl.join(','),function(st,t){var r=null;try{r=JSON.parse(t)}catch(e){}
+if(!r||r.n==null){sfbusy(0);sfst('#sfh','bad','设备没有给出比对结果');return}
+s0+=r.s0|0;s1+=r.s1|0;(r.bad||[]).forEach(function(o){bad.push(o)});nx()})})();
+function fin(){var bl=[],m,x;
+bad.forEach(function(o){var k=o-o%F.erase;if(bl.indexOf(k)<0)bl.push(k)});
+if(!bad.length&&(s0==n||s1==n)){x={};for(m in SF)x[m]=SF[m];x.swap=s0==n?0:1;
+get('/sfmt?dd='+sfp(x)+'&n='+n,function(st,t){var r=null;sfbusy(0);try{r=JSON.parse(t)}catch(e){}
+if(r&&r.sfmt)sftake(r.sfmt);
+sfst('#sfh','ok','一致，可以用这份 dd 备份刷回原厂'+(part?'（文件比闪存小，只核对了它覆盖的部分）':''))});return}
+sfbusy(0);
+m=bl.map(function(o){return '0x'+o.toString(16)}).join('、');
+if(bad.length<n)sfst('#sfh','warn',bl.length+' 个块对不上：'+m+'。原厂把它们挪到了别处（坏块重映射），写回后这几块的位置不对');
+else sfst('#sfh','bad','全部对不上：这不是本机的 dd 备份，或者这组参数不对')}}
+</script>
+<!--#endif-->
+</body></html>

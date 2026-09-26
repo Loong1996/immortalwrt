@@ -1,0 +1,119 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] mtd: ubi: leave background work for the first write
+
+U-Boot has no background thread, so it runs UBI's pending work the
+moment it is queued: right after attaching -- erasing every PEB on the
+erase list: power-cut leftovers, but also data UBI cannot read -- and
+whenever a read finds bit-flips, which schedules a scrub that copies the
+PEB elsewhere and erases it.  Looking at a flash was enough to change it,
+before the user had backed it up, or asked for anything at all: a U-Boot
+loaded into RAM on a board written with another ECC layout reads nothing
+without an error and set about moving and erasing all of it.
+
+Leave the work queued, as Linux does until its thread gets to it.  The
+first write that needs it runs it: produce_free_peb() when no PEB is
+free, ubi_wl_flush() before and after every volume update (ubi write,
+saveenv).  Whatever is still queued at detach is dropped and found again
+by the next attach, or by Linux.  Attaching and reading now write nothing,
+and ubi_do_worker(), U-Boot's stand-in for the thread, has no callers left.
+---
+diff --git a/drivers/mtd/ubi/build.c b/drivers/mtd/ubi/build.c
+--- a/drivers/mtd/ubi/build.c
++++ b/drivers/mtd/ubi/build.c
+@@ -1053,8 +1053,6 @@ int ubi_attach_mtd_dev(struct mtd_info *mtd, int ubi_num,
+ 	ubi->thread_enabled = 1;
+ #ifndef __UBOOT__
+ 	wake_up_process(ubi->bgt_thread);
+-#else
+-	ubi_do_worker(ubi);
+ #endif
+ 
+ 	spin_unlock(&ubi->wl_lock);
+diff --git a/drivers/mtd/ubi/ubi.h b/drivers/mtd/ubi/ubi.h
+--- a/drivers/mtd/ubi/ubi.h
++++ b/drivers/mtd/ubi/ubi.h
+@@ -1130,7 +1130,4 @@ static inline int idx2vol_id(const struct ubi_device *ubi, int idx)
+ 		return idx;
+ }
+ 
+-#ifdef __UBOOT__
+-void ubi_do_worker(struct ubi_device *ubi);
+-#endif
+ #endif /* !__UBI_UBI_H__ */
+diff --git a/drivers/mtd/ubi/wl.c b/drivers/mtd/ubi/wl.c
+--- a/drivers/mtd/ubi/wl.c
++++ b/drivers/mtd/ubi/wl.c
+@@ -525,33 +525,6 @@ repeat:
+ 	spin_unlock(&ubi->wl_lock);
+ }
+ 
+-#ifdef __UBOOT__
+-void ubi_do_worker(struct ubi_device *ubi)
+-{
+-	int err;
+-
+-	if (list_empty(&ubi->works) || ubi->ro_mode ||
+-	    !ubi->thread_enabled || ubi_dbg_is_bgt_disabled(ubi))
+-		return;
+-
+-	spin_lock(&ubi->wl_lock);
+-	while (!list_empty(&ubi->works)) {
+-		/*
+-		 * call do_work, which executes exactly one work form the queue,
+-		 * including removeing it from the work queue.
+-		 */
+-		spin_unlock(&ubi->wl_lock);
+-		err = do_work(ubi);
+-		spin_lock(&ubi->wl_lock);
+-		if (err) {
+-			ubi_err(ubi, "%s: work failed with error code %d",
+-				ubi->bgt_name, err);
+-		}
+-	}
+-	spin_unlock(&ubi->wl_lock);
+-}
+-#endif
+-
+ /**
+  * __schedule_ubi_work - schedule a work.
+  * @ubi: UBI device description object
+@@ -622,11 +595,17 @@ static int schedule_erase(struct ubi_device *ubi, struct ubi_wl_entry *e,
+ 	wl_wrk->lnum = lnum;
+ 	wl_wrk->torture = torture;
+ 
++	/*
++	 * U-Boot has no background thread to hand this to, and used to do it
++	 * here and now -- so attaching, or reading a PEB with bit-flips, erased
++	 * and moved PEBs on flash nobody had asked to write.  Left queued, it
++	 * is done by the first write that needs it: produce_free_peb() when
++	 * there is no free PEB, ubi_wl_flush() before and after every volume
++	 * update.  Whatever is still queued at detach is dropped, and found
++	 * again by the next attach -- or by Linux, which does it anyway.
++	 */
+ 	schedule_ubi_work(ubi, wl_wrk);
+ 
+-#ifdef __UBOOT__
+-	ubi_do_worker(ubi);
+-#endif
+ 	return 0;
+ }
+ 
+@@ -1026,17 +1005,11 @@ static int ensure_wear_leveling(struct ubi_device *ubi, int nested)
+ 
+ 	wrk->anchor = 0;
+ 	wrk->func = &wear_leveling_worker;
++	/* Queued for the first write, like an erase (see schedule_erase()). */
+ 	if (nested)
+ 		__schedule_ubi_work(ubi, wrk);
+-#ifndef __UBOOT__
+ 	else
+ 		schedule_ubi_work(ubi, wrk);
+-#else
+-	else {
+-		schedule_ubi_work(ubi, wrk);
+-		ubi_do_worker(ubi);
+-	}
+-#endif
+ 	return err;
+ 
+ out_cancel:

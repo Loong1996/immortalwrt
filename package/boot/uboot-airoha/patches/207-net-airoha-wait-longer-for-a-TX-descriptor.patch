@@ -1,0 +1,35 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] net: airoha: wait longer for a TX descriptor to complete
+
+airoha_eth_send() hands the descriptor to the QDMA by moving the CPU
+index, then polls its DONE bit for 100 us and returns -EAGAIN if it is not
+set -- leaving q->head where it was.  The next send then rewrites the same
+descriptor and moves the CPU index to the same place again, while the QDMA
+may still be reading the first one: a timeout does not drop one frame, it
+mangles two.  The web recovery server sends TCP segments in bursts of up
+to 16, which is where this would show.
+
+Poll for up to 10 ms instead.  A descriptor that is done still returns on
+the first look, so the normal path is unchanged.
+---
+diff --git a/drivers/net/airoha_eth.c b/drivers/net/airoha_eth.c
+--- a/drivers/net/airoha_eth.c
++++ b/drivers/net/airoha_eth.c
+@@ -1132,7 +1132,16 @@
+ 	airoha_qdma_rmw(qdma, REG_TX_CPU_IDX(qid), TX_RING_CPU_IDX_MASK,
+ 			FIELD_PREP(TX_RING_CPU_IDX_MASK, index));
+ 
+-	for (i = 0; i < 100; i++) {
++	/*
++	 * The CPU index above has already handed the descriptor over, so
++	 * giving up on it early is worse than waiting: head stays put, the
++	 * next send rewrites a descriptor the QDMA may still be reading, and
++	 * two frames come out mangled.  Whether DONE means fetched or sent
++	 * is not documented; if sent, 100 us is less than one full frame
++	 * takes at 100 Mbit/s.  10 ms covers one at 10 Mbit/s with room to
++	 * spare, and a descriptor that is done still returns at once.
++	 */
++	for (i = 0; i < 10000; i++) {
+ 		dma_unmap_unaligned(virt_to_phys(desc), sizeof(*desc),
+ 				    DMA_FROM_DEVICE);
+ 		if (desc->ctrl & QDMA_DESC_DONE_MASK)

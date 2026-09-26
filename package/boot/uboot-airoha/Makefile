@@ -11,10 +11,20 @@ include $(INCLUDE_DIR)/u-boot.mk
 include $(INCLUDE_DIR)/package.mk
 include $(INCLUDE_DIR)/host-build.mk
 
+# How large a U-Boot can be (files/fip/check-bl33.sh).  BL33_LZMA_MAX is
+# BL2's: the LZMA image goes into a 0x58000 buffer that also holds ~16 KiB
+# of decoder state.  Boards whose BL2 was built from the same ATF with a
+# wider buffer say so; the SPI NAND BL2s already in the field have this one.
+# BL33_MAX is U-Boot's own, as BL2 does not bound what it unpacks: U-Boot
+# runs in place at TEXT_BASE until it relocates, with its stack, global data
+# and 16 KiB early malloc pool below TEXT_BASE + 2 MiB.  64 KiB is left
+# for those.
 define U-Boot/Default
   BUILD_TARGET:=airoha
   LZMA_COMPRESS:=1
   HIDDEN:=1
+  BL33_MAX:=0x1f0000
+  BL33_LZMA_MAX:=0x54000
 endef
 
 define U-Boot/an7581_gemtek_w1700k
@@ -102,11 +112,26 @@ define Build/Configure
 	sed -i 's/CONFIG_TOOLS_LIBCRYPTO=y/# CONFIG_TOOLS_LIBCRYPTO is not set/' $(PKG_BUILD_DIR)/.config
 endef
 
+# A board with web recovery (CONFIG_CMD_HTTPD) must name its LED chase with
+# httpd-chase-leds in /options/u-boot, or the panel stays dark while it waits.
+# The built control DTB is checked, so where the DTS lives does not matter.
 define Build/Compile
 	$(call Build/Compile/U-Boot)
+	if grep -q '^CONFIG_CMD_HTTPD=y' $(PKG_BUILD_DIR)/.config; then \
+		[ -f $(PKG_BUILD_DIR)/dts/dt.dtb ] || { \
+			echo "$(BUILD_VARIANT): dts/dt.dtb not found" >&2; exit 1; }; \
+		grep -qa 'httpd-chase-leds' $(PKG_BUILD_DIR)/dts/dt.dtb || { \
+			echo "$(BUILD_VARIANT): CONFIG_CMD_HTTPD=y but its U-Boot DTS" \
+			     "declares no httpd-chase-leds in /options/u-boot" >&2; \
+			exit 1; }; \
+	fi
 	$(if $(LZMA_COMPRESS), $(STAGING_DIR_HOST)/bin/lzma e \
 		$(PKG_BUILD_DIR)/u-boot.bin \
 		$(PKG_BUILD_DIR)/u-boot.lzma)
+	$(if $(and $(BL2_IMAGE),$(LZMA_COMPRESS)), \
+		$(SHELL) ./files/fip/check-bl33.sh $(BUILD_VARIANT) \
+			$(PKG_BUILD_DIR)/u-boot.bin $(PKG_BUILD_DIR)/u-boot.lzma \
+			$(BL33_MAX) $(BL33_LZMA_MAX))
 endef
 
 # don't stage files to bindir, let target/linux/airoha/image/*.mk do that
