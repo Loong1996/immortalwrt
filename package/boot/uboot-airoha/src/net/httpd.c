@@ -109,7 +109,7 @@ DECLARE_GLOBAL_DATA_PTR;
 #define HTTPD_PORT		80
 
 /* Version of the recovery page itself, shown in the sidebar and on the console. */
-#define WEB_VERSION		"1.0.1"
+#define WEB_VERSION		"1.1.0"
 
 #define AUTHOR			"Loong"
 #define AUTHOR_HOST		"github.com/Loong1996"

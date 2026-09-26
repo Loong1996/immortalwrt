@@ -34,7 +34,7 @@ import sys
 from jsmin import minify
 
 MACROS = {
-    "WEB_VERSION": "1.0.1",
+    "WEB_VERSION": "1.1.0",
     "AUTHOR": "Loong",
     "AUTHOR_HOST": "github.com/Loong1996",
     "AUTHOR_URL": "https://github.com/Loong1996",
@@ -89,7 +89,7 @@ CHECK = [
     ["闪存", 0, "spi-nand0，256 MiB，擦除块 128 KiB，页 2048 B", "闪存"],
     ["坏块", 0, "无", "闪存"],
     ["BL2", 0, "0x800 处有 BL2 镜像", "引导"],
-    ["web_uboot_envver", 0, "10，与当前 U-Boot 一致", "引导"],
+    ["web_uboot_envver", 0, "13，与当前 U-Boot 一致", "引导"],
     ["bootcmd", 0, "与当前版本默认值一致", "引导"],
     ["引导菜单", 0, "9 项", "引导"],
     ["UBI", 0, "7 个卷，坏块 0 个，空闲 0 个逻辑擦除块", "UBI"],
@@ -144,7 +144,7 @@ ENV = [
     ("bootcmd", "run _firstboot ; run boot_ubi ; run web_uboot_boot_forever"),
     ("bootdelay", "3"),
     ("bootmenu_0", "启动 ImmortalWrt.=run boot_ubi"),
-    ("bootmenu_8", "网页恢复（Airoha Web U-Boot 1.0.1）.=httpd"),
+    ("bootmenu_8", "网页恢复（Airoha Web U-Boot 1.1.0）.=httpd"),
     ("bootmenu_delay", "3"),
     ("check_buttons", "if button reset ; then echo recovery ; httpd ; fi"),
     ("ethaddr", "90:03:2e:12:34:56"),
@@ -167,7 +167,7 @@ ENV = [
                              "ubi write $loadaddr fit $filesize"),
     ("vendor", "nokia"),
     ("web_uboot_boot_forever", "while true ; do httpd ; sleep 1 ; done"),
-    ("web_uboot_envver", "10"),
+    ("web_uboot_envver", "13"),
     ("web_uboot_format_ubi", "ubi detach ; mtd erase ubi && ubi part ubi"),
     ("web_uboot_write_bl2", "mtd erase bl2 && mtd write bl2 $loadaddr 0x800 $filesize"),
     ("web_uboot_write_fip", "if ubi check fip ; then ubi write $loadaddr fip "
