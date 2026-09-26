@@ -1,0 +1,149 @@
+#
+# 出厂 MAC 放在 ri 卷里的机型（XG-040G-MD / TF）用它；ZN504XG-D 的出厂 MAC
+# 在 factory 卷里（原厂 reservearea 分区的原样拷贝，与 pbs05/ponwrt 相同）；
+# HG5382A 也在 factory 卷里（pbs05/fiberhome-factory 从原厂数据拼出的
+# 1 MiB 镜像，与 pbs05/ponwrt 相同）；都没有的机型用它保住一个固定的随机 MAC。
+#
+# ubi 变体的 ri 卷（存放原厂 MAC）不是镜像的一部分，需刷机时从原厂 ri 分区
+# 转存。所以该变体的 dts 里去掉了 nvmem-cells —— 一旦声明，卷缺失时
+# airoha_eth 会永久停在 deferred probe，整机无网络。
+#
+# 这里在用户态复刻 nvmem 的行为：每次启动读一次 ri 卷，读到有效 MAC 就应用；
+# 读不到就用一个生成一次并持久化的 MAC。因此用户任何时候补上 ri 卷，重启即
+# 生效，不需要重刷固件。
+#
+# 本钩子排在 80_mount_root、82_config_generate 之后（overlay 已挂载），而
+# netifd 是 START=20，还远未启动，此时改 MAC 是安全的。用户若在
+# /etc/config/network 里显式设了 macaddr，netifd 会在之后覆盖，优先级更高。
+#
+
+AIROHA_MAC_FILE=/etc/airoha-ubi-mac
+# 0.4.0 之前叫这个名字，升级上来的机器沿用里面已经用了一阵的 MAC
+AIROHA_MAC_FILE_OLD=/etc/xg-040g-md-mac
+
+# 等价于内核的 is_valid_ether_addr()：非全零、且不是组播地址
+airoha_ubi_mac_valid() {
+	case "$1" in
+		??:??:??:??:??:??) ;;
+		*) return 1 ;;
+	esac
+	[ "$1" = "00:00:00:00:00:00" ] && return 1
+	[ $(( 0x${1%%:*} & 1 )) -eq 0 ]
+}
+
+# 按卷名找 UBI 卷的字符设备名（如 ubi0_3），找不到返回 1
+airoha_ubi_vol() {
+	local v name
+
+	for v in /sys/class/ubi/ubi*_*; do
+		[ -r "$v/name" ] || continue
+		read -r name < "$v/name"
+		[ "$name" = "$1" ] || continue
+		[ -c "/dev/${v##*/}" ] || return 1
+		echo "${v##*/}"
+		return 0
+	done
+	return 1
+}
+
+# 卷 $1 偏移 $2 处的 6 字节二进制 MAC
+airoha_ubi_mac_bin() {
+	local vol mac
+
+	vol=$(airoha_ubi_vol "$1") || return 1
+
+	mac=$(dd if="/dev/$vol" bs=1 skip="$2" count=6 2>/dev/null | \
+		hexdump -v -e '1/1 ":%02x"' | cut -c2-)
+	airoha_ubi_mac_valid "$mac" || return 1
+
+	echo "$mac"
+}
+
+# 偏移与共用 dtsi 中 macaddr@3e 的 reg = <0x3e 0x6> 一致
+airoha_ubi_mac_from_ri() {
+	airoha_ubi_mac_bin ri 62
+}
+
+# ZN504XG-D：reservearea 在 0x141024 处以 12 个十六进制 ASCII 字符存基础 MAC
+# （如 FCD5863FCE00），与 pbs05/ponwrt 的 macaddr_factory 是同一处
+airoha_ubi_mac_from_factory() {
+	local vol hex mac
+
+	vol=$(airoha_ubi_vol factory) || return 1
+
+	hex=$(dd if="/dev/$vol" bs=1 skip=$((0x141024)) count=12 2>/dev/null)
+	case "$hex" in
+		*[!0-9A-Fa-f]*|"") return 1 ;;
+	esac
+	[ ${#hex} -eq 12 ] || return 1
+	mac=$(echo "$hex" | tr 'A-F' 'a-f' | sed 's/../&:/g; s/:$//')
+	airoha_ubi_mac_valid "$mac" || return 1
+
+	echo "$mac"
+}
+
+airoha_ubi_set_mac() {
+	local mac src netdev flags
+
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+		nokia,xg-040g-md-ubi|nokia,xg-040g-mf-ubi|nokia,xg-040g-tf-ubi) ;;
+		# 出厂 MAC 在 factory 卷；卷缺了或是空的，走下面持久化的随机 MAC：
+		# 不然 airoha_eth 每次启动都自己随机一个，网口 MAC 一开机就变。
+		fiberhome,hg5382a|znxt,zn504xg-d) ;;
+		*) return ;;
+	esac
+
+	# failsafe 下 netifd 不会运行，接口是 preinit 拉起来给人进救援用的，
+	# 这里绝不能去动它们，否则救援网络就断了。
+	[ "$FAILSAFE" = "true" ] && return
+
+	case "$(cat /tmp/sysinfo/board_name 2>/dev/null)" in
+	fiberhome,hg5382a)
+		# pbs05/fiberhome-factory 生成的 1 MiB 布局，与 pbs05/ponwrt 的
+		# fiberhome_base_mac（mac-address@2000）是同一处
+		mac=$(airoha_ubi_mac_bin factory $((0x2000)))
+		src="factory volume"
+		;;
+	znxt,zn504xg-d)
+		mac=$(airoha_ubi_mac_from_factory)
+		src="factory volume"
+		;;
+	*)
+		mac=$(airoha_ubi_mac_from_ri)
+		src="ri volume"
+		;;
+	esac
+
+	if [ -z "$mac" ]; then
+		src="no factory MAC, random"
+		[ -r "$AIROHA_MAC_FILE" ] || [ ! -r "$AIROHA_MAC_FILE_OLD" ] || \
+			mv "$AIROHA_MAC_FILE_OLD" "$AIROHA_MAC_FILE" 2>/dev/null
+		[ -r "$AIROHA_MAC_FILE" ] && read -r mac < "$AIROHA_MAC_FILE"
+		if ! airoha_ubi_mac_valid "$mac"; then
+			mac=$(dd if=/dev/urandom bs=1 count=6 2>/dev/null | \
+				hexdump -v -e '1/1 ":%02x"' | cut -c2-)
+			# 置本地管理位、清组播位
+			mac="$(printf '%02x' $(( (0x${mac%%:*} & 0xfe) | 0x02 ))):${mac#*:}"
+			airoha_ubi_mac_valid "$mac" || return
+			echo "$mac" > "$AIROHA_MAC_FILE" 2>/dev/null
+		fi
+	fi
+
+	# eth0 是 gdm1（DSA conduit），lan1 是 gdm4（2.5G 口），lan2~4 是交换机
+	# 用户口。DSA 用户口的 MAC 是建口时从 conduit 继承的，此后再改 conduit
+	# 不会传播过去，因此要逐个设置。
+	for netdev in eth0 lan1 lan2 lan3 lan4; do
+		[ -e "/sys/class/net/$netdev" ] || continue
+		[ "$(cat "/sys/class/net/$netdev/address" 2>/dev/null)" = "$mac" ] && continue
+		# preinit 已经把接口拉起来了（失效保护网络），改完要恢复原状态
+		flags=$(cat "/sys/class/net/$netdev/flags" 2>/dev/null)
+		ip link set dev "$netdev" down 2>/dev/null
+		ip link set dev "$netdev" address "$mac" 2>/dev/null
+		[ $(( ${flags:-0} & 1 )) -eq 1 ] && ip link set dev "$netdev" up 2>/dev/null
+	done
+
+	# 此阶段 logd 尚未启动，logger 无处可写，直接打到控制台便于排查
+	echo "- MAC $mac from $src -"
+}
+
+boot_hook_add preinit_main airoha_ubi_set_mac

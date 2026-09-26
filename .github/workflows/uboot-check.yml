@@ -253,7 +253,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: []
+        include:
+          - label: XG-040G-MD (AN7581)
+            config: an7581_nokia_xg-040g-md
 
     steps:
       - name: Checkout(检出)
