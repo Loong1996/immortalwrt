@@ -258,6 +258,8 @@ jobs:
             config: an7581_nokia_xg-040g-md
           - label: XG-040G-MF (AN7583)
             config: an7583_nokia_xg-040g-mf
+          - label: XG-040G-TF (AN7581)
+            config: an7581_nokia_xg-040g-tf
 
     steps:
       - name: Checkout(检出)

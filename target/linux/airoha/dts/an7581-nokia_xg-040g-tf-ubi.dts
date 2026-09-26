@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-2.0-only OR MIT
+
+#include "an7581-nokia_xg-040g-md-common.dtsi"
+#include "an758x-nokia_xg-040g-ubi-parts.dtsi"
+
+/*
+ * 板上外设与 XG-040G-MD 相同。区别在芯片：efuse 里烧了根密钥（BL2 打印
+ * "Secure key exist"），BootROM 只运行带 Trusted Boot FW Certificate 的
+ * BL2，所以镜像用签名的 preloader，见 image/an7581.mk。
+ */
+
+/ {
+	model = "Nokia XG-040G-TF (UBI)";
+	compatible = "nokia,xg-040g-tf-ubi", "airoha,an7581",
+		     "airoha,en7581";
+};
+
+/*
+ * 与 an7581-nokia_xg-040g-md-ubi.dts 相同：ri 卷不是镜像的一部分，缺卷时
+ * nvmem 会让网卡永久停在 deferred probe，所以 MAC 改由
+ * base-files/lib/preinit/90_airoha_ubi_mac 在用户态读取。
+ */
+&gdm1 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
+
+&gdm4 {
+	/delete-property/ nvmem-cell-names;
+	/delete-property/ nvmem-cells;
+};
+
+/*
+ * The panel and port LEDs are blue, not green as on the MD; only the optical
+ * signal LED stays red.  Overridden by path because the shared dtsi labels
+ * just the power LED, and its label keeps the MD's colour in the name.
+ */
+&{/leds/led-0} {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&{/leds/led-1} {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&{/leds/led-3} {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&{/leds/led-4} {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&{/leds/led-5} {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&en8811 {
+	leds {
+		led-0 {
+			color = <LED_COLOR_ID_BLUE>;
+		};
+	};
+};
+
+&gsw_phy2_led0 {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&gsw_phy3_led0 {
+	color = <LED_COLOR_ID_BLUE>;
+};
+
+&gsw_phy4_led0 {
+	color = <LED_COLOR_ID_BLUE>;
+};

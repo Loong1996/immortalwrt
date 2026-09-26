@@ -1,0 +1,9 @@
+soc=an7581
+profile=nokia_xg-040g-tf-ubi
+dts=airoha/an7581-nokia-xg-040g-tf
+fdt=airoha/an7581-nokia-xg-040g-tf.dtb
+led=blue:power
+bundle=an7581_web_defconfig
+policy=factory
+factory_vols=ri:0x40000 bosa:0x40000
+factory_mac=ri:0x3e
