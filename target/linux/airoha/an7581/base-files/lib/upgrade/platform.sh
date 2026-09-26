@@ -21,7 +21,8 @@ platform_check_image() {
 		;;
 	nokia,xg-040g-md-ubi|\
 	nokia,xg-040g-tf-ubi|\
-	quantum,q1000k-ubi)
+	quantum,q1000k-ubi|\
+	znxt,zn504xg-d)
 		fit_check_image "$1"
 		return $?
 		;;
@@ -37,7 +38,8 @@ platform_do_upgrade() {
 		gemtek,w1700k-ubi|\
 		nokia,xg-040g-md-ubi|\
 		nokia,xg-040g-tf-ubi|\
-		quantum,q1000k-ubi)
+		quantum,q1000k-ubi|\
+		znxt,zn504xg-d)
 			fit_do_upgrade "$1"
 			;;
 		*)

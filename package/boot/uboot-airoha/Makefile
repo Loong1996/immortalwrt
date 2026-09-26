@@ -60,6 +60,14 @@ define U-Boot/an7581_nokia_xg-040g-tf
   BL2_IMAGE:=an7581-bl2.bin
   BL31_IMAGE:=an7581-bl31.bin
 endef
+define U-Boot/an7581_znxt_zn504xg-d
+  NAME:=ZNXT ZN504XG-D
+  UBOOT_CONFIG:=an7581_znxt_zn504xg-d
+  BUILD_DEVICES:=znxt_zn504xg-d-ubi
+  BUILD_SUBTARGET:=an7581
+  BL2_IMAGE:=an7581-bl2.bin
+  BL31_IMAGE:=an7581-bl31.bin
+endef
 define U-Boot/an7581_rfb
   NAME:=AN7581 Reference Board
   UBOOT_CONFIG:=an7581_evb
@@ -104,6 +112,7 @@ UBOOT_TARGETS := \
 	an7581_nokia_valyrian \
 	an7581_nokia_xg-040g-md \
 	an7581_nokia_xg-040g-tf \
+	an7581_znxt_zn504xg-d \
 	an7581_rfb \
 	an7583_nokia_xg-040g-mf \
 	an7583_rfb \
