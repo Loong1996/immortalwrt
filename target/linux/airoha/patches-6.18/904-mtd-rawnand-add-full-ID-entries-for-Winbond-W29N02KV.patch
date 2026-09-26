@@ -1,0 +1,29 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] mtd: rawnand: add full-ID entries for Winbond W29N02KV
+
+The W29N02KV is not ONFI, and its 4th ID byte (0x95) decodes to a 64-byte
+OOB through nand_decode_ext_id(), while the part has 128.  The EN7581
+parallel NAND driver sizes its spare-per-sector and BCH strength from the
+OOB size, so the wrong value gives a page layout (spare 16) that cannot
+read what U-Boot wrote (spare 28): UBI does not attach and there is no
+rootfs.  List both revisions by full ID, with the same geometry and ECC
+U-Boot and BL2 use (FiberHome HG5382A has the SIAF): ECC4 for the SIAF,
+as it asks for and as pbs05/uboot-an758x writes it; the driver keeps the
+declared strength.  pbs05's own kernel lacks this entry and reads the SIAF
+at spare 16, which is why it does not boot there.
+
+--- a/drivers/mtd/nand/raw/nand_ids.c
++++ b/drivers/mtd/nand/raw/nand_ids.c
+@@ -64,6 +64,12 @@
+ 	{"TH58NVG3S0HBAI4 8G 3.3V 8-bit",
+ 		{ .id = {0x98, 0xd3, 0x91, 0x26, 0x76} },
+ 		  SZ_4K, SZ_1K, SZ_256K, 0, 5, 256, NAND_ECC_INFO(8, SZ_512)},
++	{"W29N02KVSIAE 2G 3.3V 8-bit",
++		{ .id = {0xef, 0xda, 0x10, 0x95, 0x07} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128, NAND_ECC_INFO(8, SZ_512) },
++	{"W29N02KVSIAF 2G 3.3V 8-bit",
++		{ .id = {0xef, 0xda, 0x10, 0x95, 0x06} },
++		  SZ_2K, SZ_256, SZ_128K, 0, 5, 128, NAND_ECC_INFO(4, SZ_512) },
+ 
+ 	LEGACY_ID_NAND("NAND 4MiB 5V 8-bit",   0x6B, 4, SZ_8K, SP_OPTIONS),
+ 	LEGACY_ID_NAND("NAND 4MiB 3,3V 8-bit", 0xE3, 4, SZ_8K, SP_OPTIONS),

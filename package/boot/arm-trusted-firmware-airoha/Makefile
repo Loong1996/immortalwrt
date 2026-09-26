@@ -34,6 +34,19 @@ define Trusted-Firmware-A/an7581-bl2
   BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d-ubi
 endef
 
+# Parallel NAND boards boot from the NFI in raw NAND mode, which the SPI
+# NAND BL2 above cannot read.  Same sources, patches/100-101, with
+# TCSUPPORT_PARALLEL_NAND in place of TCSUPPORT_EMMC (see TFA_MAKE_FLAGS);
+# BL31 is shared.
+define Trusted-Firmware-A/an7581-pnand-bl2
+  $(call Trusted-Firmware-A/bl2/Default)
+  NAME:=Airoha an7581 parallel NAND bl2
+  BUILD_SUBTARGET:=an7581
+  SOC:=EN7581
+  PNAND:=1
+  BUILD_DEVICES:=fiberhome_hg5382a-ubi
+endef
+
 define Trusted-Firmware-A/an7583-bl2
   $(call Trusted-Firmware-A/bl2/Default)
   BUILD_SUBTARGET:=an7583
@@ -52,7 +65,7 @@ define Trusted-Firmware-A/an7581-bl31
   $(call Trusted-Firmware-A/bl31/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d-ubi
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi znxt_zn504xg-d-ubi fiberhome_hg5382a-ubi
 endef
 
 define Trusted-Firmware-A/an7583-bl31
@@ -64,7 +77,7 @@ define Trusted-Firmware-A/an7583-bl31
 endef
 
 TFA_TARGETS:= \
-	an7581-bl2 an7581-bl31 \
+	an7581-bl2 an7581-pnand-bl2 an7581-bl31 \
 	an7583-bl2 an7583-bl31
 
 TFA_MAKE_FLAGS= \
@@ -74,7 +87,8 @@ TFA_MAKE_FLAGS= \
 	TCSUPPORT_OPENWRT=1 TCSUPPORT_ATF_UNOPEN=0 \
 	TCSUPPORT_CPU_$(SOC)=1 TCSUPPORT_CPU_EN7523=1 \
 	TCSUPPORT_CPU_ARMV8=1 TCSUPPORT_UBOOT_64BIT=1 \
-	TCSUPPORT_EMMC=1 TCSUPPORT_UBOOT=1 TCSUPPORT_BL2_OPTIMIZATION=1 \
+	$(if $(PNAND),TCSUPPORT_PARALLEL_NAND=1,TCSUPPORT_EMMC=1) \
+	TCSUPPORT_UBOOT=1 TCSUPPORT_BL2_OPTIMIZATION=1 \
 	TOOLS_DIR=$(STAGING_DIR_HOST)/bin
 
 BL2_GCC_NAME:=arm-gnu-toolchain

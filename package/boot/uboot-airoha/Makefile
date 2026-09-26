@@ -27,6 +27,19 @@ define U-Boot/Default
   BL33_LZMA_MAX:=0x54000
 endef
 
+define U-Boot/an7581_fiberhome_hg5382a
+  NAME:=FiberHome HG5382A
+  UBOOT_CONFIG:=an7581_fiberhome_hg5382a
+  BUILD_DEVICES:=fiberhome_hg5382a-ubi
+  BUILD_SUBTARGET:=an7581
+  BL2_IMAGE:=an7581-pnand-bl2.bin
+  BL31_IMAGE:=an7581-bl31.bin
+  # The pnand BL2 reads BL33 into a 0x80000 buffer (ATF patch 102).  The
+  # FIP must also fit the 0x7f800 BL2 takes over XMODEM, next to BL31,
+  # hence 0x70000 rather than 0x7c000.
+  BL33_LZMA_MAX:=0x70000
+endef
+
 define U-Boot/an7581_gemtek_w1700k
   NAME:=Gemtek W1700K (UBI)
   UBOOT_CONFIG:=an7581_w1700k
@@ -60,6 +73,7 @@ define U-Boot/an7581_nokia_xg-040g-tf
   BL2_IMAGE:=an7581-bl2.bin
   BL31_IMAGE:=an7581-bl31.bin
 endef
+
 define U-Boot/an7581_znxt_zn504xg-d
   NAME:=ZNXT ZN504XG-D
   UBOOT_CONFIG:=an7581_znxt_zn504xg-d
@@ -68,6 +82,7 @@ define U-Boot/an7581_znxt_zn504xg-d
   BL2_IMAGE:=an7581-bl2.bin
   BL31_IMAGE:=an7581-bl31.bin
 endef
+
 define U-Boot/an7581_rfb
   NAME:=AN7581 Reference Board
   UBOOT_CONFIG:=an7581_evb
@@ -108,6 +123,7 @@ define U-Boot/en7523_rfb
 endef
 
 UBOOT_TARGETS := \
+	an7581_fiberhome_hg5382a \
 	an7581_gemtek_w1700k \
 	an7581_nokia_valyrian \
 	an7581_nokia_xg-040g-md \
