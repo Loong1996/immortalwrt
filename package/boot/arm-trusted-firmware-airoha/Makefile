@@ -1,7 +1,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_VERSION:=2.10
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_HASH:=88215a62291b9ba87da8e50b077741103cdc08fb6c9e1ebd34dfaace746d3201
 
 PKG_MAINTAINER:=Christian Marangi <ansuelsmth@gmail.com>
@@ -18,6 +18,7 @@ define Trusted-Firmware-A/Default
   BUILD_TARGET:=airoha
   PLAT:=en7523
   HIDDEN:=y
+  PNAND:=
 endef
 
 define Trusted-Firmware-A/bl2/Default
@@ -30,7 +31,7 @@ define Trusted-Firmware-A/an7581-bl2
   $(call Trusted-Firmware-A/bl2/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi
 endef
 
 define Trusted-Firmware-A/an7583-bl2
@@ -51,7 +52,7 @@ define Trusted-Firmware-A/an7581-bl31
   $(call Trusted-Firmware-A/bl31/Default)
   BUILD_SUBTARGET:=an7581
   SOC:=EN7581
-  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi
+  BUILD_DEVICES:=airoha_an7581-evb airoha_an7581-evb-emmc-eagle airoha_an7581-evb-emmc-kite nokia_valyrian nokia_xg-040g-md-ubi nokia_xg-040g-tf-ubi
 endef
 
 define Trusted-Firmware-A/an7583-bl31
@@ -143,13 +144,22 @@ define Build/Prepare
 		$(TAR) -C $(PKG_BUILD_DIR) -xf $(DL_DIR)/$(FILE)
 	)
 
-	$(call Build/Prepare/Default,)
+	$(PKG_UNPACK)
+	# What Build/Prepare/Default does after unpacking, less the patches:
+	# version.date keeps PKG_SOURCE_DATE_EPOCH (and so BL2/BL31's build
+	# timestamp) on the TF-A release, not on this package's git history.
+	-find $(PKG_BUILD_DIR) -mindepth 1 -type f -not -name '.*' -not -name 'version.date' -printf '%T@\n' 2>/dev/null |\
+		cut -d. -f1 | sort -n | tail -n1 > $(PKG_BUILD_DIR)/version.date
 
 	$(eval $(call Download,mbedtls))
 	$(TAR) -C $(PKG_BUILD_DIR) -xf $(DL_DIR)/$(FILE)
 
 	$(eval $(call Download,atf-airoha))
 	$(TAR) -C $(PKG_BUILD_DIR) --strip-components=1 -xf $(DL_DIR)/$(FILE)
+
+	# After atf-airoha, not in Build/Prepare/Default: patches/ is against
+	# plat/ecnt, which only exists once that tree is laid over TF-A.
+	$(Build/Patch)
 endef
 
 define Build/Compile/bl2
@@ -182,7 +192,32 @@ define Package/trusted-firmware-a/bl2/install
 		$(PKG_BUILD_DIR)/bl22.lzma \
 		$(PKG_BUILD_DIR)/bl23.lzma \
 		$(PKG_BUILD_DIR)/flash_table.lzma \
-		$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-bl2.bin
+		$(STAGING_DIR_IMAGE)/$(VARIANT).bin
+
+	# Boards with a fused root-of-trust key (XG-040G-TF) only run a BL2
+	# that carries a Trusted Boot FW Certificate, and that BL2 in turn
+	# authenticates BL31 and U-Boot.  The fuses hold the hash of the SDK's
+	# default rot_key_4096.pem, shipped in the source.  The key and the
+	# signing script are staged for the image recipes, which sign the
+	# BL31 + U-Boot FIP (Build/an7581-bl31-uboot-signed).
+	# Should a newer TF-A drop the key, only those boards fail (their
+	# recipes find no certificate or key); the rest keep building.  Stale
+	# files are removed so they can never pair with a different BL2.
+	rm -f $(STAGING_DIR_IMAGE)/$(VARIANT).tb-fw-cert \
+		$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-rot-key.pem
+	$(INSTALL_DIR) $(STAGING_DIR_HOST)/bin
+	$(INSTALL_BIN) ./scripts/airoha_tbbr_cert.py $(STAGING_DIR_HOST)/bin/
+	if [ -f $(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem ]; then \
+		$(PYTHON) ./scripts/airoha_tbbr_cert.py tb-fw \
+			$(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem \
+			$(STAGING_DIR_IMAGE)/$(VARIANT).bin \
+			$(STAGING_DIR_IMAGE)/$(VARIANT).tb-fw-cert && \
+		$(CP) $(PKG_BUILD_DIR)/plat/ecnt/key/rot_key_4096.pem \
+			$(STAGING_DIR_IMAGE)/$(BUILD_SUBTARGET)-rot-key.pem; \
+	else \
+		echo "WARNING: plat/ecnt/key/rot_key_4096.pem not found," \
+			"no $(VARIANT).tb-fw-cert for signed preloaders" >&2; \
+	fi
 endef
 
 define Package/trusted-firmware-a/bl31/install
