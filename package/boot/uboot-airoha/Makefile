@@ -107,6 +107,15 @@ UBOOT_CUSTOMIZE_CONFIG := \
 	--enable SERIAL_RX_BUFFER \
 	--set-val SERIAL_RX_BUFFER_SIZE 256
 
+# src/ is copied and patches apply first. The web-recovery boards
+# then get their defconfig and env from files/web-uboot/, so the version
+# string and the shared menu live in one place. Other boards are untouched.
+define Build/Prepare
+	$(call Build/Prepare/Default)
+	python3 ./files/web-uboot/assemble.py \
+		--tree $(PKG_BUILD_DIR) --dest $(PKG_BUILD_DIR)
+endef
+
 define Build/Configure
 	$(call Build/Configure/U-Boot)
 	sed -i 's/CONFIG_TOOLS_LIBCRYPTO=y/# CONFIG_TOOLS_LIBCRYPTO is not set/' $(PKG_BUILD_DIR)/.config

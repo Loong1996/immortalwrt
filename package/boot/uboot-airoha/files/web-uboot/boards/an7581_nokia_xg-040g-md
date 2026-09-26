@@ -1,0 +1,11 @@
+# Replace-bootloader board. Includes an7581_web, which pulls in the
+# recovery page plus EN8811, stock restore and MMC off.
+soc=an7581
+profile=nokia_xg-040g-md-ubi
+dts=airoha/an7581-nokia-xg-040g-md
+fdt=airoha/an7581-nokia-xg-040g-md.dtb
+led=green:power
+bundle=an7581_web_defconfig
+policy=factory
+factory_vols=ri:0x40000 bosa:0x40000
+factory_mac=ri:0x3e
