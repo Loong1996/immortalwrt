@@ -22,6 +22,30 @@ define Device/Default
 	pad-rootfs | append-metadata
 endef
 
+# UBI image for a board whose bootloader we replace: recovery.itb,
+# sysupgrade.itb, and preloader + FIP artifacts. The artifact rules
+# stay on the device, because AN7581/AN7583 and the signed TF boot
+# differ. A chainloader board keeps its own image rules; this would
+# hand it a preloader it cannot flash.
+define Device/airoha-ubi
+  DEVICE_VARIANT := (UBI)
+  BLOCKSIZE := 128k
+  PAGESIZE := 2048
+  UBINIZE_OPTS := -E 5
+  UBOOTENV_IN_UBI := 1
+  KERNEL_IN_UBI := 1
+  KERNEL := kernel-bin | gzip
+  KERNEL_INITRAMFS := kernel-bin | lzma | \
+	fit lzma $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb with-initrd | pad-to 128k
+  KERNEL_INITRAMFS_SUFFIX := -recovery.itb
+  IMAGES := sysupgrade.itb
+  IMAGE/sysupgrade.itb := append-kernel | \
+	fit gzip $$(KDIR)/image-$$(firstword $$(DEVICE_DTS)).dtb external-static-with-rootfs | \
+	append-metadata
+  DEVICE_PACKAGES += fitblk
+  ARTIFACTS := bl31-uboot.fip preloader.bin
+endef
+
 include $(SUBTARGET).mk
 
 define Image/Build

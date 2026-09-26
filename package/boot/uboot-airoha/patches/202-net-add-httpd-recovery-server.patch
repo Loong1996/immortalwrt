@@ -1,0 +1,199 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] net: add the web recovery server (Airoha Web U-Boot)
+
+The board's documented recovery path is TFTP plus the bootmenu: it needs a
+serial console and a TFTP server on the other machine.  Next to a bricked
+router there is usually just a cable and a browser.
+
+This serves a recovery page on port 80, takes images over
+multipart/form-data, and hands each one to the board's existing environment
+scripts (or a built-in equivalent when the saved environment predates
+them).  One sidebar entry per task:
+
+  - routine flash: the sysupgrade firmware into fit;
+  - try-boot: an initramfs recovery image booted straight from memory with
+    bootm, writing nothing at all -- the one page here that leaves the flash
+    untouched, so a firmware can be tried before it is committed;
+  - bootloader: BL2 and/or the U-Boot FIP, optionally with the firmware and
+    a rebuild of the ubi partition for a first migration.  A routine FIP
+    update writes fip in place and leaves rootfs_data alone;
+  - back to stock (CONFIG_CMD_HTTPD_STOCK_RESTORE, per board): an image
+    written to the bare flash at an erase-block offset, offset 0 being the
+    whole chip;
+  - UBI volumes: the per-unit factory data volumes named in
+    CONFIG_HTTPD_FACTORY_VOLS, checked for exact size, or any volume by
+    name -- created for the file if it does not exist.  A write never
+    reboots on its own, so several can be restored in one sitting;
+  - device details: model, SoC, RAM, flash geometry, partitions, MAC,
+    U-Boot version and the UBI volume table, all read at request time
+    (GET /info).  The page carries no board name, so one copy of it serves
+    every board that enables it;
+  - about.
+
+Everything that can be checked before the upload is answered -- factory
+volume sizes, the raw-write offset and bound, the volume name -- is checked
+then, so a refused upload is refused while the browser is still listening.
+
+Built on U-Boot's own TCP stack, modelled on net/fastboot_tcp.c.  tcboot,
+the third-party bootloader for this device, embeds uIP 0.9 for the same job
+because the U-Boot it forked from had no TCP; that costs ~4000 lines and a
+second IP stack competing for the NIC.  Here tftpboot / dhcp / bootmenu keep
+working untouched, and CONFIG_CMD_HTTPD defaults to n.
+
+Notable points:
+
+  - rx() receives a stream offset, so the upload lands directly at $loadaddr
+    and a 235 MB image needs no second copy in RAM.  Parts are flashed where
+    they landed, aligned down to 64 bytes first -- the bytes stepped on
+    belong to that part's own multipart header, never to the previous part's
+    payload.
+
+  - Requests are classified in on_rcv_nxt_update() rather than rx(), because
+    the first segment can be shorter than the request line.
+
+  - The network is one value with three settings -- hand out addresses,
+    take a fixed one, ask a router for one -- rather than an address mode
+    plus an independent DHCP-server switch.  Two independent things make
+    four combinations for three meanings, and the fourth ("ask a router for
+    an address while also being a router") is simply wrong; expressing it as
+    one value makes it unrepresentable instead of something code has to
+    reach in and correct.  The default is the first: without a DHCP server
+    the user has to configure a static address before the page is reachable
+    at all, which is exactly the kind of step that makes a rescue flow fail.
+
+  - "Apply" and "save" are separate, and the separation is structural.  What
+    survives a power cycle is web_uboot_netmode / _ipaddr / _netmask, read
+    once at boot; an unsaved change writes ipaddr and netmask, which are
+    runtime state.  So no saveenv from anywhere else can promote a
+    deliberately temporary address to a permanent one, and pulling the power
+    stays the way out of a wrong one.
+
+  - Every environment variable this feature introduces is prefixed
+    web_uboot_, so a glance at the environment says which ones came from
+    here.  The one exception is ubi_write_production, which is the board's
+    own script: the page and a serial TFTP upgrade have to write a firmware
+    the same way, so it is used rather than duplicated.
+
+  - The panel LEDs chase for as long as the board is working -- waiting for
+    an upload, writing, reading back.  A solid panel is indistinguishable
+    from a hung board.  Writing a volume is synchronous, so that stretch is
+    driven by the cyclic framework instead of the netloop timeout handler:
+    the SPI-NAND layer calls schedule() once per written page.
+
+  - The page is kept as files/httpd/page.html next to this package and
+    spliced into src/net/httpd.c by files/httpd/gen.py, one string literal per
+    source line.  Edit the HTML and rerun the script.  The C file itself
+    is copied from src/ before this patch applies.
+
+diff --git a/include/net-legacy.h b/include/net-legacy.h
+--- a/include/net-legacy.h
++++ b/include/net-legacy.h
+@@ -303,9 +303,12 @@ extern int		net_restart_wrap;	/* Tried all network devices */
+ enum proto_t {
+ 	BOOTP, RARP, ARP, TFTPGET, DHCP, DHCP6, PING, PING6, DNS, NFS, CDP,
+ 	NETCONS, SNTP, TFTPSRV, TFTPPUT, LINKLOCAL, FASTBOOT_UDP, FASTBOOT_TCP,
+-	WOL, UDP, NCSI, WGET, RS
++	WOL, UDP, NCSI, WGET, RS, HTTPD
+ };
+ 
++/* net/httpd.c */
++void httpd_start_server(void);
++
+ /* Indicates whether the file name was specified on the command line */
+ extern bool	net_boot_file_name_explicit;
+ 
+diff --git a/net/Kconfig b/net/Kconfig
+--- a/net/Kconfig
++++ b/net/Kconfig
+@@ -212,6 +212,57 @@ config PROT_TCP
+ 	  Enable a generic tcp framework that allows defining a custom
+ 	  handler for tcp protocol.
+ 
++config CMD_HTTPD
++	bool "httpd - web recovery server"
++	depends on PROT_TCP && CMD_UBI && CMD_MTD
++	help
++	  Start a web recovery server on port 80: one page from which a
++	  browser can flash the firmware, the bootloader, UBI volumes and --
++	  where a board opts in below -- a factory image.  Built on U-Boot's
++	  own TCP stack; no third-party IP stack is required.
++
++	  Nothing board-specific is compiled into the page.  What it shows
++	  about the board is read at request time from the device tree, MTD
++	  and UBI.
++
++config HTTPD_FACTORY_VOLS
++	string "httpd - per-unit factory data volumes"
++	depends on CMD_HTTPD
++	default ""
++	help
++	  UBI volumes holding per-unit factory data that the page offers to
++	  restore from a backup, as space-separated "name:size" pairs with
++	  the size in hex, e.g. "ri:0x40000 bosa:0x40000".  A file is only
++	  written when its length matches the size exactly.  Leave empty on
++	  a board that has no such volumes.
++
++config HTTPD_FACTORY_MAC
++	string "httpd - where the factory MAC lives"
++	depends on CMD_HTTPD
++	default ""
++	help
++	  The UBI volume and hex offset holding the factory MAC address, as
++	  "volume:offset", e.g. "ri:0x3e".  The health check reads it and
++	  reports whether it is a valid address and whether it is the one in
++	  use.  Leave empty on a board whose MAC does not come from a volume.
++
++config CMD_HTTPD_STOCK_RESTORE
++	bool "httpd - raw flash write (back to stock)"
++	depends on CMD_HTTPD
++	default y
++	help
++	  Add a "back to stock" page able to write an image to the bare
++	  flash device at an erase-block offset -- offset 0 with a full dump
++	  puts the factory firmware back and removes this U-Boot with it.
++
++	  The page checks only that the write fits the chip.  It cannot
++	  tell one model's dump from another's, and a wrong image leaves
++	  nothing bootable -- on the one path meant for a board that is
++	  already broken.  But the image comes from whoever is standing at
++	  the board, and on a board that will not boot there is nobody
++	  else to ask, so that call is theirs to make and the page is on
++	  by default.  Say n to leave it and its raw write out of a build.
++
+ config PROT_TCP_SACK
+ 	bool "TCP SACK support"
+ 	depends on PROT_TCP
+diff --git a/net/Makefile b/net/Makefile
+--- a/net/Makefile
++++ b/net/Makefile
+@@ -25,6 +25,7 @@ obj-$(CONFIG_CMD_SNTP) += sntp.o
+ obj-$(CONFIG_CMD_TFTPBOOT) += tftp.o
+ obj-$(CONFIG_$(PHASE_)UDP_FUNCTION_FASTBOOT)  += fastboot_udp.o
+ obj-$(CONFIG_$(PHASE_)TCP_FUNCTION_FASTBOOT)  += fastboot_tcp.o
++obj-$(CONFIG_CMD_HTTPD) += httpd.o
+ obj-$(CONFIG_CMD_WOL)  += wol.o
+ obj-$(CONFIG_PROT_UDP) += udp.o
+ obj-$(CONFIG_PROT_TCP) += tcp.o
+diff --git a/net/net.c b/net/net.c
+--- a/net/net.c
++++ b/net/net.c
+@@ -508,6 +508,11 @@ restart:
+ 			fastboot_tcp_start_server();
+ 			break;
+ #endif
++#if defined(CONFIG_CMD_HTTPD)
++		case HTTPD:
++			httpd_start_server();
++			break;
++#endif
+ #if defined(CONFIG_CMD_DHCP)
+ 		case DHCP:
+ 			bootp_reset();
+@@ -1510,6 +1515,7 @@ common:
+ 	case FASTBOOT_UDP:
+ 	case FASTBOOT_TCP:
+ 	case TFTPSRV:
++	case HTTPD:
+ 		if (IS_ENABLED(CONFIG_IPV6) && use_ip6) {
+ 			if (!memcmp(&net_link_local_ip6, &net_null_addr_ip6,
+ 				    sizeof(struct in6_addr))) {

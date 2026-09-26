@@ -1,0 +1,129 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] mtd: ubi: one line for ECC failures, not one per try
+
+Parallel NAND written with another ECC layout fails every page, and UBI
+logged each failing read UBI_IO_RETRIES + 1 times: three warnings for the
+retries, an error for the last.  An attach reads two headers of every
+PEB, so that was hundreds of lines per attach, at 115200 baud seconds of
+console, saying what one line and a count say as well.
+
+The retries stay -- another read still helps a page on the edge of what
+the ECC corrects -- but an ECC failure is logged once, when the last try
+fails.  During the attach scan not even that: scan_all() counts the PEBs
+whose headers failed ECC and says so once when the scan is done.  Other
+read errors are logged as before.
+---
+diff --git a/drivers/mtd/ubi/attach.c b/drivers/mtd/ubi/attach.c
+--- a/drivers/mtd/ubi/attach.c
++++ b/drivers/mtd/ubi/attach.c
+@@ -1334,6 +1334,7 @@ static int scan_all(struct ubi_device *ubi, struct ubi_attach_info *ai,
+ 		    int start)
+ {
+ 	int err, pnum, bad, keep[UBI_REFUSED_KEEP], nkeep = 0;
++	int eccerrs, eccpebs = 0;
+ 	struct rb_node *rb1, *rb2;
+ 	struct ubi_ainf_volume *av;
+ 	struct ubi_ainf_peb *aeb;
+@@ -1348,14 +1349,22 @@ static int scan_all(struct ubi_device *ubi, struct ubi_attach_info *ai,
+ 	if (!vidh)
+ 		goto out_ech;
+ 
++	/*
++	 * Flash in another ECC layout fails every header read: counted here
++	 * and said once below, not logged read by read (see ubi_io_read()).
++	 */
++	ubi_io_quiet = true;
+ 	for (pnum = start; pnum < ubi->peb_count; pnum++) {
+ 		cond_resched();
+ 
+ 		dbg_gen("process PEB %d", pnum);
+ 		bad = ai->maybe_bad_peb_count;
++		eccerrs = ubi_io_eccerrs;
+ 		err = scan_peb(ubi, ai, pnum, NULL, NULL);
+ 		if (err < 0)
+ 			goto out_vidh;
++		if (ubi_io_eccerrs != eccerrs)
++			eccpebs++;
+ 
+ 		if (ai->maybe_bad_peb_count > bad && nkeep < UBI_REFUSED_KEEP)
+ 			keep[nkeep++] = pnum;
+@@ -1374,7 +1383,11 @@ static int scan_all(struct ubi_device *ubi, struct ubi_attach_info *ai,
+ 		}
+ 	}
+ 
++	ubi_io_quiet = false;
++
+ 	ubi_msg(ubi, "scanning is finished");
++	if (eccpebs)
++		ubi_warn(ubi, "%d PEBs failed ECC in their headers", eccpebs);
+ 
+ 	/* Calculate mean erase counter */
+ 	if (ai->ec_count)
+@@ -1419,6 +1432,7 @@ static int scan_all(struct ubi_device *ubi, struct ubi_attach_info *ai,
+ out_vidh:
+ 	ubi_free_vid_hdr(ubi, vidh);
+ out_ech:
++	ubi_io_quiet = false;
+ 	kfree(ech);
+ 	return err;
+ }
+diff --git a/drivers/mtd/ubi/io.c b/drivers/mtd/ubi/io.c
+--- a/drivers/mtd/ubi/io.c
++++ b/drivers/mtd/ubi/io.c
+@@ -97,6 +97,15 @@ static int self_check_vid_hdr(const struct ubi_device *ubi, int pnum,
+ static int self_check_write(struct ubi_device *ubi, const void *buf, int pnum,
+ 			    int offset, int len);
+ 
++/*
++ * Uncorrectable ECC errors ubi_io_read() has met, and whether to log them:
++ * the attach scan reads two headers of every PEB, and flash written with
++ * another ECC layout fails all of them.  scan_all() counts the PEBs instead
++ * and says so once.
++ */
++int ubi_io_eccerrs;
++bool ubi_io_quiet;
++
+ /**
+  * ubi_io_read - read data from a physical eraseblock.
+  * @ubi: UBI device description object
+@@ -179,15 +188,24 @@ retry:
+ 			return UBI_IO_BITFLIPS;
+ 		}
+ 
++		/*
++		 * Another try still helps a page on the edge of what the ECC
++		 * corrects, but an ECC failure is not worth a line a try: the
++		 * last one says it, or is counted (ubi_io_quiet).
++		 */
+ 		if (retries++ < UBI_IO_RETRIES) {
+-			ubi_warn(ubi, "error %d%s while reading %d bytes from PEB %d:%d, read only %zd bytes, retry",
+-				 err, errstr, len, pnum, offset, read);
++			if (!mtd_is_eccerr(err))
++				ubi_warn(ubi, "error %d%s while reading %d bytes from PEB %d:%d, read only %zd bytes, retry",
++					 err, errstr, len, pnum, offset, read);
+ 			yield();
+ 			goto retry;
+ 		}
+ 
+-		ubi_err(ubi, "error %d%s while reading %d bytes from PEB %d:%d, read %zd bytes",
+-			err, errstr, len, pnum, offset, read);
++		if (mtd_is_eccerr(err))
++			ubi_io_eccerrs++;
++		if (!mtd_is_eccerr(err) || !ubi_io_quiet)
++			ubi_err(ubi, "error %d%s while reading %d bytes from PEB %d:%d, read %zd bytes",
++				err, errstr, len, pnum, offset, read);
+ 		dump_stack();
+ 
+ 		/*
+diff --git a/drivers/mtd/ubi/ubi.h b/drivers/mtd/ubi/ubi.h
+--- a/drivers/mtd/ubi/ubi.h
++++ b/drivers/mtd/ubi/ubi.h
+@@ -892,6 +892,8 @@ void ubi_refill_pools(struct ubi_device *ubi);
+ int ubi_ensure_anchor_pebs(struct ubi_device *ubi);
+ 
+ /* io.c */
++extern int ubi_io_eccerrs;
++extern bool ubi_io_quiet;
+ int ubi_io_read(const struct ubi_device *ubi, void *buf, int pnum, int offset,
+ 		int len);
+ int ubi_io_write(struct ubi_device *ubi, const void *buf, int pnum, int offset,

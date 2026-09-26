@@ -1,0 +1,367 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] mtd: ubi: do not wipe foreign data when attaching
+
+A PEB with neither an EC nor a VID header, and not erased, goes on the
+erase list -- the power cut during an erase that such a PEB usually is --
+and U-Boot erases that list at once in ubi_wl_init().  On a stock board
+the "ubi" partition starts at 0x20000 and covers the vendor's raw
+partitions: ZN504XG-D's reservearea (MACs, optical calibration, unique
+per unit), the tail of Nokia's vendor loader.  The first "ubi part" --
+the environment load, before any script runs -- wiped all of them, before
+the user could reach the backup page, and before the "no fip volume, do
+not write" guard had a say.
+
+Count such PEBs.  More than two, and the UBI found carries no "fip"
+volume, means data UBI never wrote under a layout that is not ours:
+refuse to attach and erase nothing.  Recovery then comes up with no UBI,
+the user backs the flash up, and "rebuild UBI" erases the partition before
+attaching.  An image written over the start of the flash with the rest
+left as it was (tcboot-to-ubi-uboot.bin) carries a fip volume, and its
+leftovers are still wiped on the first attach, as before.
+
+On parallel NAND the controller computes the ECC, and flash written with
+another ECC layout -- the stock loader's, or this project's own before it
+changed strength -- does not decode.  Those PEBs fail ECC in both headers,
+and UBI takes them for power-cut leftovers and erases them on attach even
+where a fip volume lets the rest through: data the right layout still
+reads, gone for good.  More than a few of them is not wear.  So:
+
+ - sample the start of 16 PEBs before scanning; if three in four of those
+   not erased fail to decode, refuse at once;
+ - while scanning, count PEBs failing ECC in both headers, and refuse the
+   moment they reach a twentieth of the device (at least 8), the share UBI
+   already allows for corrupted PEBs -- before the volume table is read,
+   which may rewrite a copy, and without scanning, and logging, the rest.
+
+Every refusal erases nothing and is recorded in ubi_refused_why and
+ubi_refused_pebs for the recovery page.  A refusal by the sample is final:
+the volume table is in the other layout too, so no attach can get further.
+The others can be forced: "ubi_force=1" in the environment skips every
+check here for one attach, and is taken out of the environment as it is
+read, so that no later saveenv makes it stick.  The PEBs that stopped a
+scan are remembered, and the next attach reads those few again first:
+still failing, it refuses at once instead of scanning up to the limit
+once more; erased since (a rebuild erases first), it scans as usual.
+---
+diff --git a/drivers/mtd/ubi/attach.c b/drivers/mtd/ubi/attach.c
+--- a/drivers/mtd/ubi/attach.c
++++ b/drivers/mtd/ubi/attach.c
+@@ -79,6 +79,7 @@
+ #include <u-boot/crc.h>
+ #else
+ #include <div64.h>
++#include <env.h>
+ #include <linux/bug.h>
+ #include <linux/err.h>
+ #include <linux/printk.h>
+@@ -936,6 +937,15 @@
+ 			ai->maybe_bad_peb_count += 1;
+ 		fallthrough;
+ 	case UBI_IO_BAD_HDR:
++		/*
++		 * Neither header, and not erased: data UBI never wrote, or
++		 * written with another ECC layout than this one reads.  A
++		 * power cut during erase, or a bad block not yet marked,
++		 * leaves one such PEB; a partition laid over somebody else's
++		 * data leaves many (see late_analysis()).
++		 */
++		if (ec_err)
++			ai->foreign_peb_count += 1;
+ 		if (ec_err)
+ 			/*
+ 			 * Both headers are corrupted. There is a possibility
+@@ -1215,6 +1225,101 @@
+ 	kfree(ai);
+ }
+ 
++/*
++ * Why the last attach was refused, for the recovery page to say: nothing
++ * was erased, and the user may attach anyway.
++ */
++int ubi_refused_why;
++int ubi_refused_pebs;
++
++/*
++ * "setenv ubi_force 1" overrides every refusal below, for one attach: it is
++ * taken out of the environment as it is read, so that no saveenv after it
++ * -- _init_env saves twice -- can make it stick and turn them all off.
++ */
++static bool ubi_force_once;
++
++static bool ubi_forced(void)
++{
++	return ubi_force_once;
++}
++
++static int ubi_refuse(struct ubi_device *ubi, int why, int pebs)
++{
++	ubi_refused_why = why;
++	ubi_refused_pebs = pebs;
++	ubi_err(ubi, "nothing erased; back the flash up, or rebuild UBI%s",
++		why == UBI_REFUSED_ECC_ALL ? "" :
++		", or attach anyway and erase those PEBs: setenv ubi_force 1; ubi part ubi");
++
++	return -EINVAL;
++}
++
++/*
++ * The PEBs that stopped the last scan, remembered so that the next attach --
++ * the recovery page asks on every look, and each saveenv attaches too --
++ * reads those few again instead of scanning up to the limit and logging it
++ * all once more.  Still failing, it is still the same flash: refuse again.
++ * Erased or readable now (a rebuild erases the partition first), forget it
++ * and scan.
++ */
++#define UBI_REFUSED_KEEP	8
++
++static struct mtd_info *refused_mtd;
++static int refused_pnum[UBI_REFUSED_KEEP], refused_n;
++static int refused_last_why, refused_last_pebs;
++
++static bool peb_fails_ecc(struct ubi_device *ubi, int pnum, void *buf)
++{
++	size_t read;
++	int err;
++
++	err = mtd_read(ubi->mtd, (loff_t)pnum * ubi->peb_size,
++		       UBI_EC_HDR_SIZE, &read, buf);
++
++	return mtd_is_eccerr(err) &&
++	       !ubi_check_pattern(buf, 0xFF, UBI_EC_HDR_SIZE);
++}
++
++static int refused_again(struct ubi_device *ubi)
++{
++	void *buf;
++	int i;
++
++	if (ubi->mtd != refused_mtd || !refused_n)
++		return 0;
++	buf = kmalloc(UBI_EC_HDR_SIZE, GFP_KERNEL);
++	if (!buf)
++		return 0;
++	for (i = 0; i < refused_n; i++)
++		if (!peb_fails_ecc(ubi, refused_pnum[i], buf))
++			break;
++	kfree(buf);
++	if (i < refused_n) {
++		refused_mtd = NULL;
++		return 0;
++	}
++
++	ubi_err(ubi, "the %d PEBs checked from the last refusal still fail ECC; refusing to attach again",
++		refused_n);
++
++	return ubi_refuse(ubi, refused_last_why, refused_last_pebs);
++}
++
++/*
++ * PEBs whose two headers both fail ECC -- not erased, those read back as
++ * 0xFF -- go on the erase list.  A power cut during an erase or a bad block
++ * not yet marked leaves one or two.  Many are data written with another ECC
++ * layout (see foreign_layout()), which that layout still reads and which is
++ * gone for good once erased.  The limit is the share UBI already allows for
++ * corrupted PEBs, a twentieth of the device, and at least 8.  Reached, the
++ * scan stops there: the rest would only be console lines.
++ */
++static int ubi_ecc_limit(const struct ubi_device *ubi)
++{
++	return max(ubi->peb_count / 20, 8);
++}
++
+ /**
+  * scan_all - scan entire MTD device.
+  * @ubi: UBI device description object
+@@ -1228,7 +1333,7 @@
+ static int scan_all(struct ubi_device *ubi, struct ubi_attach_info *ai,
+ 		    int start)
+ {
+-	int err, pnum;
++	int err, pnum, bad, keep[UBI_REFUSED_KEEP], nkeep = 0;
+ 	struct rb_node *rb1, *rb2;
+ 	struct ubi_ainf_volume *av;
+ 	struct ubi_ainf_peb *aeb;
+@@ -1247,9 +1352,26 @@
+ 		cond_resched();
+ 
+ 		dbg_gen("process PEB %d", pnum);
++		bad = ai->maybe_bad_peb_count;
+ 		err = scan_peb(ubi, ai, pnum, NULL, NULL);
+ 		if (err < 0)
+ 			goto out_vidh;
++
++		if (ai->maybe_bad_peb_count > bad && nkeep < UBI_REFUSED_KEEP)
++			keep[nkeep++] = pnum;
++		if (ai->maybe_bad_peb_count >= ubi_ecc_limit(ubi) &&
++		    !ubi_forced()) {
++			ubi_err(ubi, "%d PEBs up to PEB %d fail ECC in both headers: written with another ECC layout? refusing to attach",
++				ai->maybe_bad_peb_count, pnum);
++			refused_mtd = ubi->mtd;
++			memcpy(refused_pnum, keep, sizeof(keep));
++			refused_n = nkeep;
++			refused_last_why = UBI_REFUSED_ECC;
++			refused_last_pebs = ai->maybe_bad_peb_count;
++			err = ubi_refuse(ubi, UBI_REFUSED_ECC,
++					 ai->maybe_bad_peb_count);
++			goto out_vidh;
++		}
+ 	}
+ 
+ 	ubi_msg(ubi, "scanning is finished");
+@@ -1391,6 +1513,99 @@
+ 
+ #endif
+ 
++/* Headerless, non-erased PEBs tolerated as leftovers of interrupted erases */
++#define UBI_FOREIGN_PEBS_MAX	2
++
++/*
++ * PEBs with neither an EC nor a VID header, and not erased, go on the erase
++ * list, and U-Boot erases that list at once in ubi_wl_init().  One of them
++ * is what a power cut during an erase leaves behind.  Several mean the
++ * partition covers data UBI never wrote.
++ *
++ * That is expected right after an image was written over the start of the
++ * flash and the rest left as it was -- the UBI then carries this project's
++ * "fip" volume, and wiping the leftovers is the point.  Without it, it is a
++ * stock layout whose raw partitions sit under an "ubi" partition that starts
++ * at 0x20000, and attaching would wipe them before anyone had a chance to
++ * back them up.  Refuse that, and touch nothing; a deliberate rebuild erases
++ * the partition first and never gets here.
++ */
++static int foreign_data(struct ubi_device *ubi, struct ubi_attach_info *ai)
++{
++	int i;
++
++	if (ai->foreign_peb_count <= UBI_FOREIGN_PEBS_MAX)
++		return 0;
++
++	for (i = 0; i < ubi->vtbl_slots; i++)
++		if (ubi->volumes[i] && !strcmp(ubi->volumes[i]->name, "fip"))
++			return 0;
++
++	if (ubi_forced())
++		return 0;
++
++	ubi_err(ubi, "%d PEBs hold data that UBI did not write and there is no fip volume; refusing to attach",
++		ai->foreign_peb_count);
++
++	return ubi_refuse(ubi, UBI_REFUSED_FOREIGN, ai->foreign_peb_count);
++}
++
++/* PEBs sampled before a scan */
++#define UBI_SAMPLE_PEBS		16
++
++/*
++ * Where the controller computes the ECC (parallel NAND), flash written with
++ * another ECC layout -- the stock loader's, or this project's own before it
++ * changed strength -- does not decode here at all.  Every read fails, and
++ * scan_all() reads two headers per PEB, each with UBI_IO_RETRIES retries and
++ * every one of them logged: tens of thousands of console lines, minutes over
++ * a serial console, on every attach -- the environment load, the boot
++ * script, each look the recovery page takes -- for foreign_data() to refuse
++ * it at the end.
++ *
++ * So look first, at the start of a few PEBs across the device.  Our own UBI
++ * decodes, and an erased page that does not reads back as 0xFF, which
++ * ubi_io_read_ec_hdr() takes for erased as well.  If three in four of the
++ * rest fail, refuse the way foreign_data() would, and touch nothing.  Nor
++ * would forcing get anywhere: the volume table is in that layout too, and
++ * the attach fails once the whole device has been scanned for it.  Flash
++ * that does its own ECC (SPI NAND) reads another layout without an error
++ * and is left to foreign_data().
++ */
++static int foreign_layout(struct ubi_device *ubi)
++{
++	int step = ubi->peb_count / UBI_SAMPLE_PEBS ?: 1;
++	int pnum, n = 0, failed = 0, err;
++	size_t read;
++	void *buf;
++
++	buf = kmalloc(UBI_EC_HDR_SIZE, GFP_KERNEL);
++	if (!buf)
++		return 0;
++
++	for (pnum = 0; pnum < ubi->peb_count; pnum += step) {
++		if (ubi_io_is_bad(ubi, pnum))
++			continue;
++		err = mtd_read(ubi->mtd, (loff_t)pnum * ubi->peb_size,
++			       UBI_EC_HDR_SIZE, &read, buf);
++		if (mtd_is_eccerr(err) &&
++		    ubi_check_pattern(buf, 0xFF, UBI_EC_HDR_SIZE))
++			continue;
++		n++;
++		if (mtd_is_eccerr(err))
++			failed++;
++	}
++	kfree(buf);
++
++	if (n < 4 || failed * 4 < n * 3)
++		return 0;
++
++	ubi_err(ubi, "%d of %d sampled PEBs do not decode with this ECC layout: written with another one? refusing to attach",
++		failed, n);
++
++	return ubi_refuse(ubi, UBI_REFUSED_ECC_ALL, failed);
++}
++
+ /**
+  * ubi_attach - attach an MTD device.
+  * @ubi: UBI device descriptor
+@@ -1404,6 +1619,20 @@
+ 	int err;
+ 	struct ubi_attach_info *ai;
+ 
++	ubi_refused_why = 0;
++	ubi_refused_pebs = 0;
++	ubi_force_once = env_get_yesno("ubi_force") == 1;
++	if (ubi_force_once) {
++		env_set("ubi_force", NULL);
++		refused_mtd = NULL;
++	} else {
++		err = refused_again(ubi);
++		if (!err)
++			err = foreign_layout(ubi);
++		if (err)
++			return err;
++	}
++
+ 	ai = alloc_ai();
+ 	if (!ai)
+ 		return -ENOMEM;
+@@ -1449,6 +1678,10 @@
+ 	if (err)
+ 		goto out_ai;
+ 
++	err = foreign_data(ubi, ai);
++	if (err)
++		goto out_vtbl;
++
+ 	err = ubi_wl_init(ubi, ai);
+ 	if (err)
+ 		goto out_vtbl;
+diff --git a/drivers/mtd/ubi/ubi.h b/drivers/mtd/ubi/ubi.h
+--- a/drivers/mtd/ubi/ubi.h
++++ b/drivers/mtd/ubi/ubi.h
+@@ -737,6 +737,7 @@
+ 	int alien_peb_count;
+ 	int bad_peb_count;
+ 	int maybe_bad_peb_count;
++	int foreign_peb_count;
+ 	int vols_found;
+ 	int highest_vol_id;
+ 	int is_empty;
+@@ -795,6 +796,13 @@
+ struct ubi_ainf_peb *ubi_early_get_peb(struct ubi_device *ubi,
+ 				       struct ubi_attach_info *ai);
+ int ubi_attach(struct ubi_device *ubi, int force_scan);
++
++/* Why ubi_attach() last refused, and how many PEBs made it; see attach.c */
++#define UBI_REFUSED_ECC		1	/* many PEBs in another ECC layout */
++#define UBI_REFUSED_FOREIGN	2	/* data UBI did not write, no fip */
++#define UBI_REFUSED_ECC_ALL	3	/* all of it: forcing cannot attach */
++extern int ubi_refused_why;
++extern int ubi_refused_pebs;
+ void ubi_destroy_ai(struct ubi_attach_info *ai);
+ 
+ /* vtbl.c */

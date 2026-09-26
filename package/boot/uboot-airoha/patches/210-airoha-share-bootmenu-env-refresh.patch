@@ -1,0 +1,36 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] arm: airoha: share the boot menu environment refresh
+
+A new FIP ships a new default environment, but the saved one shadows it
+completely -- ubootenv holds a full copy, so menu entries added since the
+board was first initialised never appear.  The fix is a web_uboot_envver in the
+default environment plus an EVT_POST_PREBOOT spy that re-imports just the
+variables spelling out the menu when the saved copy is behind; an
+EVT_SETTINGS_R spy alongside it drops an ethaddr of ff:ff:ff:ff:ff:ff, which
+is what an erased ri volume reads as.
+
+None of that is board-specific.  It gates itself on web_uboot_envver: a board whose
+default environment has no web_uboot_envver gets a negative return from
+env_get_default_into() and returns early, so the file is inert everywhere it
+is not wanted.
+
+It started out inside board/airoha/an7581/an7581_rfb.c because there was one
+board.  With a second one (an7583 / xg-040g-mf) wanting the same behaviour,
+the choice is between a second copy and a shared file; a copy of 130 lines
+that must stay in step across boards is the worse of the two.  So it moves to
+arch/arm/mach-airoha/, built for every airoha SoC via obj-y, and the board
+file goes back to what upstream has.
+
+No functional change on an7581: same two spies, same variable list, same
+order.
+
+--- a/arch/arm/mach-airoha/Makefile
++++ b/arch/arm/mach-airoha/Makefile
+@@ -1,6 +1,7 @@
+ # SPDX-License-Identifier:	GPL-2.0
+ 
+ obj-y	+= cpu.o
++obj-y	+= bootmenu-refresh.o
+ 
+ obj-$(CONFIG_TARGET_EN7523) += en7523/
+ obj-$(CONFIG_TARGET_AN7581) += an7581/

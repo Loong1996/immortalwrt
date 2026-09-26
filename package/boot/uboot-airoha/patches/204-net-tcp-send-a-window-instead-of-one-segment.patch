@@ -1,0 +1,386 @@
+From: Loong <1031313955@qq.com>
+Subject: [PATCH] net: tcp: keep a window of segments in flight
+
+tcp_steam_tx_try() sent one segment and would not send the next until it
+was acknowledged.  A peer that gets a lone segment does not acknowledge it
+at once but when its delayed-ACK timer runs out -- 40 ms on Linux, up to
+200 ms on Windows -- so every 1448 bytes waited that long.  The web
+recovery server's /dump (202) ran at about 30 KB/s: two and a half hours
+for a 256 MiB chip.
+
+Send up to TCP_SND_WND_SIZE (16 segments, bounded by the peer's window)
+before waiting.  The peer then sees segments in pairs and ACKs at once.
+tx() is already a pull at an arbitrary offset, which is what a retransmit
+needs, so nothing is kept per segment; snd_cur tracks where sending goes
+on from, and snd_nxt stays the highest sequence sent, which is what the
+ACK acceptability check wants.
+
+Losses:
+ - one timer covers the oldest unacknowledged byte and is restarted by
+   progress; when it runs out, go back to snd_una and send it all again,
+   with the same retry count and back-off as before;
+ - three duplicate ACKs resend the missing segment alone (fast
+   retransmit), and while that recovery lasts each partial ACK resends
+   the next hole, so a lost segment rarely costs the 2 s timeout.
+
+The receive path is untouched.
+
+Also fix the window update test: SND.WL2 is an acknowledgment number and
+was compared with the peer's sequence number, so while the peer sent no
+data its window updates were taken or ignored more or less at random.
+
+And the window scale on a passive open: the SYN-ACK carries no window
+scale option, so by RFC 7323 neither side scales, yet the shift the
+peer's SYN asked for was kept and applied to every window it advertised
+after -- an 8 KiB window read as 1 MiB, and a whole TCP_SND_WND_SIZE
+sent into it, most of it to be dropped and sent again.  Clear it on the
+SYN, and take the SYN's own window unscaled.
+
+A retransmit that tx() cannot fill resets the stream the way the first
+send always did, instead of being dropped without a word until the
+timeout found out.
+
+diff --git a/include/net/tcp.h b/include/net/tcp.h
+--- a/include/net/tcp.h
++++ b/include/net/tcp.h
+@@ -345,7 +345,10 @@
+  *
+  * @iss:		Initial send sequence number
+  * @snd_una:		Send unacknowledged
+- * @snd_nxt:		Send next
++ * @snd_nxt:		Send next (highest sequence sent so far)
++ * @snd_cur:		Next sequence to transmit. Equals snd_nxt, except
++ *			  after a retransmit timeout, when it goes back to
++ *			  snd_una and walks forward again
+  * @snd_wnd:		Send window (in bytes)
+  * @snd_wl1:		Segment sequence number used for last window update
+  * @snd_wl2:		Segment acknowledgment number used for last window update
+@@ -368,6 +371,11 @@
+  * @retry_seq_num:	TCP sequence for retransmit
+  * retry_tx_len:	Number of data to transmit
+  * @retry_tx_offs:	Position in the TX stream
++ *
++ * @dup_acks:		Duplicate ACKs seen for snd_una
++ * @recovery:		Non-zero while recovering from a loss (see tcp.c)
++ * @recover:		snd_nxt when the recovery started; it ends once
++ *			  snd_una gets there
+  */
+ struct tcp_stream {
+ 	struct in_addr	rhost;
+@@ -406,6 +414,7 @@
+ 	u32		iss;
+ 	u32		snd_una;
+ 	u32		snd_nxt;
++	u32		snd_cur;
+ 	u32		snd_wnd;
+ 	u32		snd_wl1;
+ 	u32		snd_wl2;
+@@ -431,6 +440,11 @@
+ 	u32		retry_seq_num;
+ 	u32		retry_tx_len;
+ 	u32		retry_tx_offs;
++
++	/* used for loss recovery while a window is in flight */
++	int		dup_acks;
++	int		recovery;
++	u32		recover;
+ };
+ 
+ void tcp_init(void);
+diff --git a/net/tcp.c b/net/tcp.c
+--- a/net/tcp.c
++++ b/net/tcp.c
+@@ -42,6 +42,22 @@
+   #define TCP_RCV_WND_SIZE	(4 * TCP_MSS)
+ #endif
+ 
++/*
++ * Data in flight at most, whatever the peer advertises.  One segment at a
++ * time left every segment waiting out the peer's delayed-ACK timer, which
++ * held a download to some 30 KB/s.  There is no congestion window, so this
++ * is also all that a timeout sends again: it goes back to snd_una and walks
++ * the whole window once more.
++ */
++#define TCP_SND_WND_SIZE	(16 * TCP_MSS)
++
++/* Duplicate ACKs that make a fast retransmit (RFC 5681) */
++#define TCP_DUP_ACKS		3
++
++/* tcp->recovery */
++#define TCP_RECOVERY_FAST	1	/* resend each hole as it is reported */
++#define TCP_RECOVERY_RTO	2	/* going back over everything unacked */
++
+ #define TCP_PACKET_OK		0
+ #define TCP_PACKET_DROP		1
+ 
+@@ -351,52 +367,148 @@
+ 	return (tcp->fin_tx && (tcp_seq_num == tcp->fin_tx_seq)) ? TCP_FIN : 0;
+ }
+ 
+-static void tcp_steam_tx_try(struct tcp_stream *tcp)
++/* Where user data stops: the FIN once closing, else what was sent. */
++static inline u32 tcp_data_end(struct tcp_stream *tcp)
++{
++	return tcp->fin_tx ? tcp->fin_tx_seq : tcp->snd_nxt;
++}
++
++/*
++ * Send one segment of user data starting at @seq and not reaching @end.
++ * The tx() callback is a pull at an offset, so a retransmit is the same
++ * call as the first send; nothing has to be kept per segment.
++ *
++ * Return: bytes sent, 0 if tx() had none, negative on error
++ */
++static int tcp_send_data(struct tcp_stream *tcp, u32 seq, u32 end)
+ {
++	u32 tcp_opts_size;
+ 	uchar *ptr;
+ 	int tx_len;
+-	u32 tx_offs, tcp_opts_size;
+ 
+-	if (tcp->state != TCP_ESTABLISHED ||
+-	    tcp->time_handler ||
+-	    !tcp->tx)
+-		return;
++	if (tcp_seq_cmp(seq, end) >= 0)
++		return 0;
+ 
+ 	tcp_opts_size = ROUND_TCPHDR_BYTES(TCP_TSOPT_SIZE + tcp->lost.len);
+-	tx_len = TCP_MSS - tcp_opts_size;
+-	if (tcp->fin_tx) {
+-		/* do not try to send beyonds FIN packet limits */
+-		if (tcp_seq_cmp(tcp->snd_una, tcp->fin_tx_seq) >= 0)
+-			return;
+-
+-		tx_len = tcp->fin_tx_seq - tcp->snd_una;
+-		if (tx_len > TCP_MSS - tcp_opts_size)
+-			tx_len = TCP_MSS - tcp_opts_size;
+-	}
+-
+-	tx_offs = tcp_stream_tx_offs(tcp);
+ 	ptr = net_tx_packet + net_eth_hdr_size() +
+ 		IP_TCP_HDR_SIZE + tcp_opts_size;
+ 
+-	/* fill packet data and adjust size */
+-	tx_len = tcp->tx(tcp, tx_offs, ptr, tx_len);
+-	if (tx_len < 0) {
+-		puts("\nTCP: send failure\n");
+-		tcp_send_packet(tcp, TCP_RST, tcp->retry_seq_num,
+-				tcp->rcv_nxt, 0);
+-		tcp_stream_set_status(tcp, TCP_ERR_IO);
++	tx_len = end - seq;
++	if (tx_len > TCP_MSS - tcp_opts_size)
++		tx_len = TCP_MSS - tcp_opts_size;
++
++	tx_len = tcp->tx(tcp, seq - tcp->iss - 1, ptr, tx_len);
++	if (tx_len > 0)
++		tcp_send_packet(tcp, TCP_ACK | TCP_PUSH, seq, tcp->rcv_nxt,
++				tx_len);
++
++	return tx_len;
++}
++
++/*
++ * tx() could not produce what it had promised (a flash read failed, say):
++ * the stream cannot go on without leaving a hole, so reset it.
++ */
++static void tcp_send_fail(struct tcp_stream *tcp)
++{
++	puts("\nTCP: send failure\n");
++	tcp_send_packet(tcp, TCP_RST, tcp->snd_una, tcp->rcv_nxt, 0);
++	tcp_stream_set_status(tcp, TCP_ERR_IO);
++	tcp_stream_set_state(tcp, TCP_CLOSED);
++	tcp_stream_destroy(tcp);
++}
++
++/*
++ * Retransmit timeout for data.  There is one timer, for the oldest
++ * unacknowledged byte, and every ACK that moves snd_una stops it; it
++ * fires only when nothing has been acknowledged for a whole timeout.
++ * Go back to snd_una and send everything again from there.
++ */
++static void tcp_send_window_repeat(struct tcp_stream *tcp)
++{
++	if (!tcp->retry_cnt) {
++		puts("\nTCP: send retry counter exceeded\n");
++		tcp_send_packet(tcp, TCP_RST, tcp->snd_una, tcp->rcv_nxt, 0);
++		tcp_stream_set_status(tcp, TCP_ERR_TOUT);
+ 		tcp_stream_set_state(tcp, TCP_CLOSED);
+ 		tcp_stream_destroy(tcp);
+ 		return;
+ 	}
+-	if (!tx_len)
++	tcp->retry_cnt--;
++	tcp->retry_timeout += tcp->initial_timeout;
++
++	tcp->snd_cur = tcp->snd_una;
++	/*
++	 * What is sent again the peer mostly has already, and it answers
++	 * each such segment with a duplicate ACK.  Those must not start a
++	 * fast retransmit of their own.
++	 */
++	tcp->recovery = TCP_RECOVERY_RTO;
++	tcp->recover = tcp->snd_nxt;
++	tcp->dup_acks = 0;
++
++	tcp_stream_set_time_handler(tcp, tcp->retry_timeout,
++				    tcp_send_window_repeat);
++}
++
++static void tcp_steam_tx_try(struct tcp_stream *tcp)
++{
++	u32 end, wnd, seg;
++	int tx_len;
++
++	if ((tcp->state != TCP_ESTABLISHED &&
++	     tcp->state != TCP_FIN_WAIT_1) ||
++	    !tcp->tx)
+ 		return;
+ 
+-	if (tcp_seq_cmp(tcp->snd_una + tx_len, tcp->snd_nxt) > 0)
+-		tcp->snd_nxt = tcp->snd_una + tx_len;
++	/* Behind snd_una means acknowledged meanwhile; also starts it off. */
++	if (tcp_seq_cmp(tcp->snd_cur, tcp->snd_una) < 0 ||
++	    tcp_seq_cmp(tcp->snd_cur, tcp->snd_nxt) > 0)
++		tcp->snd_cur = tcp->snd_una;
++
++	seg = TCP_MSS - ROUND_TCPHDR_BYTES(TCP_TSOPT_SIZE + tcp->lost.len);
++	wnd = tcp->snd_wnd < TCP_SND_WND_SIZE ? tcp->snd_wnd : TCP_SND_WND_SIZE;
++	/* A segment is always allowed: what this did before, and a probe. */
++	if (wnd < seg)
++		wnd = seg;
++
++	end = tcp->snd_una + wnd;
++	/* do not try to send beyonds FIN packet limits */
++	if (tcp->fin_tx && tcp_seq_cmp(end, tcp->fin_tx_seq) > 0)
++		end = tcp->fin_tx_seq;
++
++	while (tcp_seq_cmp(tcp->snd_cur, end) < 0) {
++		/* no runts for a window edge; wait for a whole segment */
++		if (end - tcp->snd_cur < seg && tcp->snd_cur != tcp->snd_una &&
++		    !(tcp->fin_tx && end == tcp->fin_tx_seq))
++			break;
+ 
+-	tcp_send_packet_with_retry(tcp, TCP_ACK | TCP_PUSH,
+-				   tcp->snd_una, tx_len, tx_offs);
++		tx_len = tcp_send_data(tcp, tcp->snd_cur, end);
++		if (tx_len < 0) {
++			tcp_send_fail(tcp);
++			return;
++		}
++		if (!tx_len)
++			break;
++
++		tcp->snd_cur += tx_len;
++		if (tcp_seq_cmp(tcp->snd_cur, tcp->snd_nxt) > 0)
++			tcp->snd_nxt = tcp->snd_cur;
++	}
++
++	/*
++	 * Arm the timer for whatever is outstanding.  It is left alone while
++	 * it runs -- in FIN_WAIT_1 it may be the FIN's -- and
++	 * tcp_rx_check_ack_num() stops it on progress, so this restarts it.
++	 */
++	if (!tcp->time_handler &&
++	    tcp_seq_cmp(tcp->snd_una, tcp_data_end(tcp)) < 0) {
++		tcp->retry_cnt = tcp->max_retry_count;
++		tcp->retry_timeout = tcp->initial_timeout;
++		tcp->retry_seq_num = tcp->snd_una;
++		tcp_stream_set_time_handler(tcp, tcp->retry_timeout,
++					    tcp_send_window_repeat);
++	}
+ }
+ 
+ static void tcp_stream_poll(struct tcp_stream *tcp, ulong time)
+@@ -837,7 +949,8 @@
+ }
+ 
+ static int tcp_rx_check_ack_num(struct tcp_stream *tcp, u32 tcp_seq_num,
+-				u32 tcp_ack_num, u32 tcp_win_size)
++				u32 tcp_ack_num, u32 tcp_win_size,
++				int payload_len)
+ {
+ 	u32 old_offs, new_offs;
+ 	u8 action;
+@@ -881,15 +994,48 @@
+ 			    tcp_seq_cmp(tcp->snd_una, tcp->retry_seq_num) > 0) {
+ 				tcp_stream_set_time_handler(tcp, 0, NULL);
+ 			}
++
++			tcp->dup_acks = 0;
++			if (tcp->recovery &&
++			    tcp_seq_cmp(tcp->snd_una, tcp->recover) >= 0)
++				tcp->recovery = 0;
++			else if (tcp->recovery == TCP_RECOVERY_FAST &&
++				 /* partial ACK: it names the next hole */
++				 tcp_send_data(tcp, tcp->snd_una,
++					       tcp_data_end(tcp)) < 0) {
++				tcp_send_fail(tcp);
++				return TCP_PACKET_DROP;
++			}
++
+ 			if (tcp->on_snd_una_update &&
+ 			    old_offs != new_offs)
+ 				tcp->on_snd_una_update(tcp, new_offs);
++		} else if (!payload_len && tcp_ack_num == tcp->snd_una &&
++			   tcp_seq_cmp(tcp->snd_una, tcp_data_end(tcp)) < 0 &&
++			   !tcp->recovery &&
++			   ++tcp->dup_acks == TCP_DUP_ACKS) {
++			/*
++			 * The peer keeps asking for snd_una while later
++			 * segments reach it: that one was lost.  Send it
++			 * alone instead of waiting out the timer.  The window
++			 * is not compared, unlike RFC 5681: a window update
++			 * taken for a duplicate costs one segment, a missed
++			 * duplicate costs a whole timeout.
++			 */
++			tcp->recovery = TCP_RECOVERY_FAST;
++			tcp->recover = tcp->snd_nxt;
++			if (tcp_send_data(tcp, tcp->snd_una,
++					  tcp_data_end(tcp)) < 0) {
++				tcp_send_fail(tcp);
++				return TCP_PACKET_DROP;
++			}
+ 		}
+ 
+ 		if (tcp_seq_cmp(tcp->snd_una, tcp_ack_num) <= 0) {
++			/* RFC 9293 3.10.7.4: SND.WL2 is compared with SEG.ACK */
+ 			if (tcp_seq_cmp(tcp->snd_wl1, tcp_seq_num) < 0 ||
+ 			    (tcp->snd_wl1 == tcp_seq_num &&
+-			     tcp_seq_cmp(tcp->snd_wl2, tcp_seq_num) <= 0)) {
++			     tcp_seq_cmp(tcp->snd_wl2, tcp_ack_num) <= 0)) {
+ 				tcp->snd_wnd = tcp_win_size;
+ 				tcp->snd_wl1 = tcp_seq_num;
+ 				tcp->snd_wl2 = tcp_ack_num;
+@@ -1009,10 +1155,20 @@
+ 		tcp->irs = tcp_seq_num;
+ 		tcp->rcv_nxt = tcp->irs + 1;
+ 
++		/*
++		 * Our SYN-ACK goes out through net_set_ack_options(), which
++		 * offers no window scale, and RFC 7323 scales in neither
++		 * direction unless both SYNs carry the option.  Keeping the
++		 * shift this SYN asked for would read an 8 KiB window as
++		 * 1 MiB and send far past it.  The SYN's own window is never
++		 * scaled either way.
++		 */
++		tcp->rmt_win_scale = 0;
++
+ 		tcp->iss = tcp_get_start_seq();
+ 		tcp->snd_una = tcp->iss;
+ 		tcp->snd_nxt = tcp->iss + 1;
+-		tcp->snd_wnd = tcp_win_size;
++		tcp->snd_wnd = ntohs(b->ip.hdr.tcp_win);
+ 
+ 		tcp_stream_restart_rx_timer(tcp);
+ 
+@@ -1097,7 +1253,8 @@
+ 			return;
+ 
+ 		if (tcp_rx_check_ack_num(tcp, tcp_seq_num, tcp_ack_num,
+-					 tcp_win_size) == TCP_PACKET_DROP) {
++					 tcp_win_size,
++					 payload_len) == TCP_PACKET_DROP) {
+ 			return;
+ 		}
+ 
