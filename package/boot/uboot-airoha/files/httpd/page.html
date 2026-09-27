@@ -928,11 +928,16 @@ $('.pct',pg).textContent=''}
  * 的出厂卷存过没有」。只记完整传完、没有读取失败的；整片备份算全都存过。
  * 浏览器不让存也不要紧，那就每次都提醒。
  */
+/*
+ * 读浏览器里备份记录的那一行会被指南同步整行删掉，所以它必须单独成行，
+ * 函数的花括号留在别的行上。删掉之后函数还在，示意框不读访客自己的记录。
+ */
 function bkall(){var m=INFO&&INFO.mac,a={};if(!m)return{};
-try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}return a[m]||{}}
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{}}catch(e){}
+return a[m]||{}}
 function bkmark(w){var m=INFO&&INFO.mac,a={};if(!m||!w)return;
-try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();
-localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}}
+try{a=JSON.parse(localStorage.getItem('xgbk')||'{}')||{};(a[m]=a[m]||{})[w]=Date.now();localStorage.setItem('xgbk',JSON.stringify(a))}catch(e){}
+}
 /* 重建会清掉的出厂卷里，这台还没备份过的；整片备份过就一个都不缺 */
 function bkmissing(){var b=bkall();if(b.all)return[];
 return FV.map(function(v){return v.n}).filter(function(n){return !b[n]})}
