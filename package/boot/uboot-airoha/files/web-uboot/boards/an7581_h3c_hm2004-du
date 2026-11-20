@@ -1,0 +1,11 @@
+# Compile-only board definition; no package target or Linux image is registered.
+# This is not firmware-signature validation or hardware boot support.
+soc=an7581
+profile=h3c_hm2004-du
+dts=airoha/an7581-h3c-hm2004-du
+fdt=airoha/an7581-h3c-hm2004-du.dtb
+led=green:power
+bundle=an7581_web_defconfig
+fragments=menu.env
+factory_vols=factory:0x100000
+extra_defconfig=fragments/hm2004-ci.config
