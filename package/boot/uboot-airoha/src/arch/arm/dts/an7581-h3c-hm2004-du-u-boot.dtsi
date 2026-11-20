@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: (GPL-2.0-only OR BSD-2-Clause)
+#include "an7581-u-boot.dtsi"
+/ {
+	options {
+		u-boot {
+			compatible = "u-boot,config";
+			httpd-chase-leds = "green:power", "green:wlan";
+		};
+	};
+};
+
+&gdm1 {
+	status = "okay";
+	bootph-all;
+};
